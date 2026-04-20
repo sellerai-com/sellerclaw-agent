@@ -1,0 +1,116 @@
+#!/bin/bash
+# Diagnostic script for OpenClaw gateway startup issues.
+# Run via SSH on the gateway machine:
+#   flyctl ssh console -a sellerclaw-agents-staging -s
+#   /usr/local/bin/openclaw_diagnose_startup
+#
+# Optional: pass --trigger-report to send SIGUSR2 to the Node process
+# and generate a lightweight JSON diagnostic report (not a heap snapshot).
+set -euo pipefail
+
+TAG="[diagnose]"
+
+log() { echo "$TAG $*"; }
+separator() { echo ""; echo "===== $1 ====="; }
+
+if ! python -m openclaw_diagnostics --help >/dev/null 2>&1; then
+    log "WARNING: openclaw_diagnostics module not available; diagnostic output will be limited"
+fi
+
+# ---------- 1. Process state ----------
+separator "Process state"
+
+if command -v supervisorctl >/dev/null 2>&1; then
+    supervisorctl -c /etc/supervisor/conf.d/openclaw.conf status 2>/dev/null || true
+fi
+
+OPENCLAW_PID=""
+for pid in $(pgrep -f "openclaw.mjs gateway" 2>/dev/null || true); do
+    OPENCLAW_PID="$pid"
+    log "Found openclaw gateway process: pid=$pid"
+    cat "/proc/$pid/cmdline" 2>/dev/null | tr '\0' ' '; echo
+done
+
+if [ -z "$OPENCLAW_PID" ]; then
+    log "No openclaw gateway process found"
+fi
+
+# ---------- 2. Port listeners ----------
+separator "Port listeners"
+
+ss -tlnp 2>/dev/null || log "ss not available"
+
+# ---------- 3. Memory (cgroup — accurate in containers, unlike free) ----------
+separator "Cgroup memory"
+python -m openclaw_diagnostics cgroup-limits 2>/dev/null || true
+
+if [ -n "$OPENCLAW_PID" ]; then
+    separator "Gateway process memory (pid=$OPENCLAW_PID)"
+    python -m openclaw_diagnostics monitor-memory --pid "$OPENCLAW_PID" --interval 1 --max-samples 1 2>/dev/null || true
+
+    separator "Process wchan (kernel wait channel)"
+    cat "/proc/$OPENCLAW_PID/wchan" 2>/dev/null; echo
+
+    separator "Node.js environment"
+    grep -z NODE_OPTIONS "/proc/$OPENCLAW_PID/environ" 2>/dev/null | tr '\0' '\n' || true
+    grep -z OPENCLAW_BUNDLED "/proc/$OPENCLAW_PID/environ" 2>/dev/null | tr '\0' '\n' || true
+fi
+
+# ---------- 4. Node diagnostic reports ----------
+separator "Node diagnostic reports"
+
+DIAG_DIR="${OPENCLAW_NODE_DIAGNOSTIC_DIR:-/tmp/openclaw-diagnostics}"
+if [ -d "$DIAG_DIR" ]; then
+    ls -lah "$DIAG_DIR/" 2>/dev/null || true
+    python -m openclaw_diagnostics node-report "$DIAG_DIR" 2>/dev/null || true
+else
+    log "Diagnostic directory not found: $DIAG_DIR"
+fi
+
+# ---------- 5. Readiness probe ----------
+separator "Readiness probe (one-shot)"
+
+python -m openclaw_diagnostics probe-readiness 2>/dev/null || true
+python -m openclaw_diagnostics probe-readyz 2>/dev/null || true
+
+# ---------- 6. Plugin directories ----------
+separator "Plugin directories"
+
+log "OPENCLAW_BUNDLED_PLUGINS_DIR=${OPENCLAW_BUNDLED_PLUGINS_DIR:-<not set>}"
+log "When unset, OpenClaw uses bundled extensions under /app/dist/extensions (see image Dockerfile)."
+
+for dir in /opt/openclaw-plugins /app/dist/extensions /app/extensions; do
+    if [ -d "$dir" ]; then
+        count=$(find "$dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+        size=$(du -sh "$dir" 2>/dev/null | cut -f1)
+        log "$dir: $count subdirs, $size total"
+    else
+        log "$dir: does not exist"
+    fi
+done
+
+# ---------- 7. Config summary ----------
+separator "OpenClaw config"
+
+CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/home/node/.openclaw/openclaw.json}"
+if [ -f "$CONFIG_PATH" ]; then
+    log "Config size: $(wc -c < "$CONFIG_PATH") bytes"
+    python -m openclaw_diagnostics config-summary "$CONFIG_PATH" 2>/dev/null || true
+else
+    log "Config not found at $CONFIG_PATH"
+fi
+
+# ---------- 8. Trigger Node diagnostic report (optional) ----------
+if [ -n "$OPENCLAW_PID" ] && [ "${1:-}" = "--trigger-report" ]; then
+    separator "Triggering Node.js diagnostic report (SIGUSR2)"
+    log "Sending SIGUSR2 to pid=$OPENCLAW_PID — this writes a JSON report, not a heap snapshot"
+    kill -USR2 "$OPENCLAW_PID" 2>/dev/null || log "Failed to send signal"
+    sleep 2
+    log "Check $DIAG_DIR for new report files:"
+    ls -lah "$DIAG_DIR/" 2>/dev/null || true
+fi
+
+separator "Done"
+if [ -n "$OPENCLAW_PID" ] && [ "${1:-}" != "--trigger-report" ]; then
+    log "To generate a Node diagnostic report (lightweight, ~100KB JSON): re-run with --trigger-report"
+fi

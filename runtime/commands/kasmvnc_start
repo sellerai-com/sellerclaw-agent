@@ -1,0 +1,20 @@
+#!/bin/bash
+set -euo pipefail
+
+KASM_USER="user"
+VNC_DISPLAY=":1"
+
+mkdir -p /home/node/.vnc
+
+# Minimal xstartup: keep the session alive for externally managed Chrome.
+cat > /home/node/.vnc/xstartup <<'XSTARTUP'
+#!/bin/bash
+exec sleep infinity
+XSTARTUP
+chmod +x /home/node/.vnc/xstartup
+
+# Create KasmVNC user from VNC_PASSWORD (or a fallback default).
+printf '%s\n%s\n' "${VNC_PASSWORD:-password}" "${VNC_PASSWORD:-password}" \
+    | kasmvncpasswd -u "${KASM_USER}" -ow
+
+exec vncserver "${VNC_DISPLAY}" -fg

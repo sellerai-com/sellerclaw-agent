@@ -1,0 +1,23 @@
+{
+  "name": "@sellerclaw/sellerclaw-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "~5.7.2",
+    "vitest": "^3.0.5"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "setupEntry": "./setup-entry.ts",
+    "channel": {
+      "id": "sellerclaw-ui",
+      "label": "SellerClaw UI",
+      "blurb": "Delivers assistant messages to the SellerClaw web application chat."
+    }
+  }
+}

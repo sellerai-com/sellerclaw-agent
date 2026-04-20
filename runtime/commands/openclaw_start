@@ -1,0 +1,552 @@
+#!/bin/bash
+set -euo pipefail
+
+readonly STATE_DIR="/home/node/.openclaw"
+readonly CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${STATE_DIR}/openclaw.json}"
+readonly TEMPLATES_ROOT="/opt/openclaw-workspaces"
+readonly RUNTIME_CONFIG_ROOT="/opt/openclaw-config"
+readonly APP_SKILLS_ROOT="/app/skills"
+# Workaround: OpenClaw may resolve workspace skill <location> to bundled install paths
+# under /app/skills/... instead of per-agent workspace (see openclaw/openclaw#42095).
+# Symlinks don't work — the gateway rejects paths that resolve outside its configured root.
+# Set OPENCLAW_APP_SKILLS_COPIES=1 to copy workspace skills into /app/skills/ instead.
+readonly OPENCLAW_APP_SKILLS_COPIES="${OPENCLAW_APP_SKILLS_COPIES:-0}"
+# Legacy symlink mode — disabled; kept for reference.
+readonly OPENCLAW_APP_SKILLS_ALIASES="${OPENCLAW_APP_SKILLS_ALIASES:-0}"
+readonly EXTENDED_DIAG="${OPENCLAW_EXTENDED_DIAGNOSTICS:-1}"
+AGENT_IDS=()
+
+openclaw_diagnostics_enabled() {
+    # OPENCLAW_DIAGNOSTICS: optional extra startup logging (cgroup-limits only).
+    # Config summary, validate-config, monitor-readiness, and monitor-sessions always run (when applicable).
+    # Default off (${OPENCLAW_DIAGNOSTICS:-0}). Enable extras with 1 / true / on / yes / enable.
+    local v
+    v="$(printf '%s' "${OPENCLAW_DIAGNOSTICS:-0}" | tr '[:upper:]' '[:lower:]')"
+    case "${v}" in
+        0|false|off|no|disable) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+log() {
+    echo "[openclaw_start] $*"
+}
+
+log_config_summary() {
+    if [ ! -f "${CONFIG_PATH}" ]; then
+        return
+    fi
+
+    python -m openclaw_diagnostics config-summary "${CONFIG_PATH}"
+}
+
+validate_config() {
+    python -m openclaw_diagnostics validate-config "${CONFIG_PATH}"
+}
+
+monitor_gateway_readiness() {
+    local openclaw_pid="$1"
+    local attempts="${OPENCLAW_STARTUP_READY_LOG_ATTEMPTS:-70}"
+    local interval_seconds="${OPENCLAW_STARTUP_READY_LOG_INTERVAL_SECONDS:-5}"
+
+    python -m openclaw_diagnostics monitor-readiness \
+        --pid "${openclaw_pid}" \
+        --attempts "${attempts}" \
+        --interval "${interval_seconds}"
+}
+
+configure_node_runtime() {
+    local default_old_space_mb="${OPENCLAW_NODE_MAX_OLD_SPACE_SIZE_MB:-2048}"
+    local base_node_options="${NODE_OPTIONS:---max-old-space-size=${default_old_space_mb}}"
+
+    if [ "${EXTENDED_DIAG}" = "1" ]; then
+        local diagnostic_dir="${OPENCLAW_NODE_DIAGNOSTIC_DIR:-/tmp/openclaw-diagnostics}"
+        local enable_gc_trace="${OPENCLAW_NODE_TRACE_GC:-0}"
+        local diagnostic_flags=""
+
+        mkdir -p "${diagnostic_dir}"
+
+        diagnostic_flags+=" --diagnostic-dir=${diagnostic_dir}"
+        diagnostic_flags+=" --report-on-fatalerror"
+        diagnostic_flags+=" --report-uncaught-exception"
+        if [ "${enable_gc_trace}" = "1" ]; then
+            diagnostic_flags+=" --trace-gc"
+        fi
+        if [ -n "${OPENCLAW_EXTRA_NODE_OPTIONS:-}" ]; then
+            diagnostic_flags+=" ${OPENCLAW_EXTRA_NODE_OPTIONS}"
+        fi
+
+        export OPENCLAW_NODE_DIAGNOSTIC_DIR="${diagnostic_dir}"
+        export NODE_OPTIONS="${base_node_options}${diagnostic_flags}"
+        log "Using NODE_OPTIONS=${NODE_OPTIONS}"
+        log "Node diagnostic directory=${OPENCLAW_NODE_DIAGNOSTIC_DIR}"
+    else
+        export NODE_OPTIONS="${base_node_options}"
+        log "Using NODE_OPTIONS=${NODE_OPTIONS} (extended diagnostics disabled)"
+    fi
+}
+
+monitor_gateway_process_memory() {
+    local openclaw_pid="$1"
+    local interval_seconds="${OPENCLAW_PROCESS_MEMORY_LOG_INTERVAL_SECONDS:-10}"
+
+    python -m openclaw_diagnostics monitor-memory \
+        --pid "${openclaw_pid}" \
+        --interval "${interval_seconds}"
+}
+
+monitor_session_logs() {
+    local state_dir="${STATE_DIR}"
+    local interval_seconds="${OPENCLAW_SESSION_LOG_SCAN_INTERVAL_SECONDS:-1}"
+
+    python -m openclaw_diagnostics monitor-sessions \
+        --state-dir "${state_dir}" \
+        --interval "${interval_seconds}"
+}
+
+log_gateway_diagnostic_artifacts() {
+    local diagnostic_dir="${OPENCLAW_NODE_DIAGNOSTIC_DIR:-/tmp/openclaw-diagnostics}"
+
+    python -m openclaw_diagnostics diagnostic-artifacts "${diagnostic_dir}"
+}
+
+log_node_report_summary() {
+    local diagnostic_dir="${OPENCLAW_NODE_DIAGNOSTIC_DIR:-/tmp/openclaw-diagnostics}"
+
+    python -m openclaw_diagnostics node-report "${diagnostic_dir}"
+}
+
+start_gateway() {
+    local proxy_config="/etc/nginx/openclaw-proxy.conf"
+    local nginx_bin=""
+
+    if command -v nginx >/dev/null 2>&1; then
+        nginx_bin="$(command -v nginx)"
+    elif [ -x "/usr/sbin/nginx" ]; then
+        nginx_bin="/usr/sbin/nginx"
+    elif [ -x "/usr/bin/nginx" ]; then
+        nginx_bin="/usr/bin/nginx"
+    else
+        log "nginx is required to start OpenClaw gateway"
+        return 1
+    fi
+    if [ ! -f "${proxy_config}" ]; then
+        log "nginx config is missing: ${proxy_config}"
+        return 1
+    fi
+
+    mkdir -p /tmp/nginx/body /tmp/nginx/proxy /tmp/nginx/fastcgi /tmp/nginx/uwsgi /tmp/nginx/scgi
+
+    local vnc_password="${VNC_PASSWORD:-password}"
+    export VNC_AUTH_BASIC="Basic $(printf 'user:%s' "${vnc_password}" | base64 -w0)"
+    envsubst '${VNC_AUTH_BASIC}' < "${proxy_config}" > /tmp/nginx/openclaw-proxy.conf
+
+    "${nginx_bin}" -c /tmp/nginx/openclaw-proxy.conf &
+    local nginx_pid=$!
+
+    configure_node_runtime
+    node openclaw.mjs gateway --bind loopback --port 7789 &
+    local openclaw_pid=$!
+    local bg_pids=()
+    monitor_gateway_readiness "${openclaw_pid}" &
+    bg_pids+=("$!")
+
+    if [ "${OPENCLAW_SESSION_STDOUT_LOGS:-1}" = "1" ]; then
+        log "Session stdout logs enabled (interval=${OPENCLAW_SESSION_LOG_SCAN_INTERVAL_SECONDS:-1}s)"
+        monitor_session_logs &
+        bg_pids+=("$!")
+    fi
+
+    if [ "${EXTENDED_DIAG}" = "1" ]; then
+        monitor_gateway_process_memory "${openclaw_pid}" &
+        bg_pids+=("$!")
+        trap "log 'Received SIGUSR1, forwarding to openclaw pid=${openclaw_pid}'; kill -USR1 ${openclaw_pid} 2>/dev/null || true" USR1
+    fi
+
+    if [ "${#bg_pids[@]}" -gt 0 ]; then
+        trap "kill ${nginx_pid} ${openclaw_pid} ${bg_pids[*]} 2>/dev/null || true" EXIT INT TERM
+    else
+        trap "kill ${nginx_pid} ${openclaw_pid} 2>/dev/null || true" EXIT INT TERM
+    fi
+
+    local wait_status=0
+    wait -n "${nginx_pid}" "${openclaw_pid}" || wait_status=$?
+    if [ "${#bg_pids[@]}" -gt 0 ]; then
+        kill "${bg_pids[@]}" 2>/dev/null || true
+    fi
+
+    if [ "${EXTENDED_DIAG}" = "1" ]; then
+        log_gateway_diagnostic_artifacts
+        log_node_report_summary
+    fi
+
+    return "${wait_status}"
+}
+
+ensure_state_dirs() {
+    mkdir -p "${STATE_DIR}/credentials" "${STATE_DIR}/agents/main/sessions"
+    # Precreate per-agent session dirs to avoid permission/lock issues after restarts.
+    local agent_id
+    for agent_id in "${AGENT_IDS[@]}"; do
+        mkdir -p "${STATE_DIR}/agents/${agent_id}/sessions"
+    done
+    chmod 700 "${STATE_DIR}"
+}
+
+copy_runtime_config() {
+    # Config is fully rendered by the API (all values baked in).
+    # Copy into state volume so openclaw doctor --fix can modify it there.
+    local config_src="/opt/openclaw-config/openclaw.json"
+    if [ -f "${config_src}" ]; then
+        mkdir -p "$(dirname "${CONFIG_PATH}")"
+        cp "${config_src}" "${CONFIG_PATH}"
+    fi
+}
+
+log_runtime_diagnostics() {
+    log "Runtime UID=$(id -u) GID=$(id -g) HOME=${HOME:-}"
+    log "OPENCLAW_DIAGNOSTICS=${OPENCLAW_DIAGNOSTICS:-0} (cgroup extras; OPENCLAW_EXTENDED_DIAGNOSTICS=${EXTENDED_DIAG})"
+    log "Resolved OPENCLAW_CONFIG_PATH=${CONFIG_PATH}"
+
+    if [ -f "${CONFIG_PATH}" ]; then
+        local size
+        size="$(wc -c < "${CONFIG_PATH}" | tr -d ' ')"
+        log "Config present at ${CONFIG_PATH} (${size} bytes)"
+    else
+        log "Config missing at ${CONFIG_PATH}"
+    fi
+
+    if openclaw_diagnostics_enabled; then
+        log_cgroup_limits
+    else
+        log "Skipping cgroup diagnostics (OPENCLAW_DIAGNOSTICS disabled)"
+    fi
+}
+
+log_cgroup_limits() {
+    python -m openclaw_diagnostics cgroup-limits
+}
+
+hydrate_bundle_assets() {
+    if [ -x "/usr/local/bin/fetch_config_bundle" ]; then
+        /usr/local/bin/fetch_config_bundle
+    fi
+
+    local bundle_openclaw_config="/opt/config-bundle/openclaw/openclaw.json"
+    if [ -f "${bundle_openclaw_config}" ]; then
+        mkdir -p "${RUNTIME_CONFIG_ROOT}"
+        cp "${bundle_openclaw_config}" "${RUNTIME_CONFIG_ROOT}/openclaw.json"
+    fi
+
+    local bundle_workspaces_root="/opt/config-bundle/workspaces"
+    if [ -d "${bundle_workspaces_root}" ]; then
+        mkdir -p "${TEMPLATES_ROOT}"
+        find "${TEMPLATES_ROOT}" -mindepth 1 -delete
+        cp -a "${bundle_workspaces_root}/." "${TEMPLATES_ROOT}/"
+    fi
+}
+
+cleanup_stale_chrome_locks() {
+    local browser_root="${STATE_DIR}/browser"
+    if [ ! -d "${browser_root}" ]; then
+        return
+    fi
+
+    # Chrome can leave stale singleton lock/socket files after abrupt exits.
+    # They prevent managed profile restart until removed.
+    while IFS= read -r -d '' lock_file; do
+        rm -f "${lock_file}"
+    done < <(find "${browser_root}" -type l \( -name 'SingletonLock' -o -name 'SingletonSocket' -o -name 'SingletonCookie' \) -print0)
+}
+
+cleanup_stale_session_locks() {
+    local agents_root="${STATE_DIR}/agents"
+    if [ ! -d "${agents_root}" ]; then
+        return
+    fi
+
+    local now
+    now="$(date +%s)"
+
+    # OpenClaw session locks are plain files next to *.jsonl.
+    # After abrupt exits, they may persist and block the agent with:
+    # "session file locked ... <session>.jsonl.lock"
+    while IFS= read -r -d '' lock_file; do
+        local mtime=0
+        mtime="$(stat -c %Y "${lock_file}" 2>/dev/null || echo 0)"
+        local age_seconds=$(( now - mtime ))
+        # Important: PIDs can be reused after container restarts, so we DO NOT trust
+        # the PID inside the lock file. We treat locks older than a minute as stale.
+        if [ "${age_seconds}" -ge 60 ]; then
+            log "Removing stale session lock ${lock_file} (age=${age_seconds}s)"
+            rm -f "${lock_file}"
+        fi
+    done < <(find "${agents_root}" -type f -name '*.lock' -path '*/sessions/*' -print0)
+}
+
+discover_agent_ids() {
+    AGENT_IDS=()
+    if [ ! -d "${TEMPLATES_ROOT}" ]; then
+        return
+    fi
+
+    local template_dir
+    while IFS= read -r template_dir; do
+        AGENT_IDS+=("${template_dir}")
+    done < <(find "${TEMPLATES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+}
+
+is_user_owned_path() {
+    local rel_path="$1"
+    case "${rel_path}" in
+        MEMORY.md|memory/*|skills/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+cleanup_managed_markdown() {
+    local workspace_dir="$1"
+    if [ ! -d "${workspace_dir}" ]; then
+        return
+    fi
+
+    while IFS= read -r -d '' dst_file; do
+        local rel="${dst_file#${workspace_dir}/}"
+        if is_user_owned_path "${rel}"; then
+            continue
+        fi
+        rm -f "${dst_file}"
+    done < <(find "${workspace_dir}" -type f -name '*.md' -print0)
+}
+
+copy_managed_markdown() {
+    local src_workspace="$1"
+    local dst_workspace="$2"
+
+    while IFS= read -r -d '' src_file; do
+        local rel="${src_file#${src_workspace}/}"
+        if is_user_owned_path "${rel}"; then
+            continue
+        fi
+
+        local dst_file="${dst_workspace}/${rel}"
+        mkdir -p "$(dirname "${dst_file}")"
+        cp "${src_file}" "${dst_file}"
+    done < <(find "${src_workspace}" -type f -name '*.md' -print0)
+}
+
+seed_memory_if_missing() {
+    local src_workspace="$1"
+    local dst_workspace="$2"
+
+    if [ -f "${src_workspace}/MEMORY.md" ] && [ ! -f "${dst_workspace}/MEMORY.md" ]; then
+        cp "${src_workspace}/MEMORY.md" "${dst_workspace}/MEMORY.md"
+    fi
+}
+
+sync_skills() {
+    local src_workspace="$1"
+    local dst_workspace="$2"
+
+    rm -rf "${dst_workspace}/skills"
+    if [ -d "${src_workspace}/skills" ]; then
+        cp -a "${src_workspace}/skills" "${dst_workspace}/skills"
+    fi
+}
+
+sync_skill_compat_copies() {
+    if [ "${OPENCLAW_APP_SKILLS_COPIES}" != "1" ]; then
+        log "App skills copies disabled (OPENCLAW_APP_SKILLS_COPIES=${OPENCLAW_APP_SKILLS_COPIES}); skipping openclaw#42095 copy workaround"
+        return
+    fi
+
+    mkdir -p "${APP_SKILLS_ROOT}"
+
+    local agent_id=""
+    local workspace_dir=""
+    local skill_dir=""
+    local skill_name=""
+    local dest_path=""
+    for agent_id in "${AGENT_IDS[@]}"; do
+        workspace_dir="${STATE_DIR}/workspace-${agent_id}"
+        if [ ! -d "${workspace_dir}/skills" ]; then
+            continue
+        fi
+
+        while IFS= read -r -d '' skill_dir; do
+            skill_name="$(basename "${skill_dir}")"
+            dest_path="${APP_SKILLS_ROOT}/${skill_name}"
+
+            # Preserve built-in OpenClaw skills; only copy workspace-only skills.
+            if [ -d "${dest_path}" ] && [ ! -f "${dest_path}/.openclaw-workspace-copy" ]; then
+                log "Skipping app skills copy for ${skill_name}: ${dest_path} is a built-in skill"
+                continue
+            fi
+
+            rm -rf "${dest_path}"
+            cp -a "${skill_dir}" "${dest_path}"
+            touch "${dest_path}/.openclaw-workspace-copy"
+            log "App skills copy ${dest_path} <- ${skill_dir}"
+        done < <(find "${workspace_dir}/skills" -mindepth 1 -maxdepth 1 -type d -print0)
+    done
+}
+
+sync_skill_compat_aliases() {
+    if [ "${OPENCLAW_APP_SKILLS_ALIASES}" != "1" ]; then
+        return
+    fi
+
+    log "WARNING: OPENCLAW_APP_SKILLS_ALIASES=1 is deprecated; use OPENCLAW_APP_SKILLS_COPIES=1 instead (symlinks are rejected by gateway security check)"
+
+    mkdir -p "${APP_SKILLS_ROOT}"
+
+    local alias_path=""
+    local target=""
+    while IFS= read -r -d '' alias_path; do
+        target="$(readlink "${alias_path}" || true)"
+        case "${target}" in
+            "${STATE_DIR}"/workspace-*/skills/*)
+                if [ ! -e "${target}" ]; then
+                    log "Removing stale app skills symlink ${alias_path} -> ${target}"
+                    rm -f "${alias_path}"
+                fi
+                ;;
+        esac
+    done < <(find "${APP_SKILLS_ROOT}" -mindepth 1 -maxdepth 1 -type l -print0)
+
+    local agent_id=""
+    local workspace_dir=""
+    local skill_dir=""
+    local skill_name=""
+    for agent_id in "${AGENT_IDS[@]}"; do
+        workspace_dir="${STATE_DIR}/workspace-${agent_id}"
+        if [ ! -d "${workspace_dir}/skills" ]; then
+            continue
+        fi
+
+        while IFS= read -r -d '' skill_dir; do
+            skill_name="$(basename "${skill_dir}")"
+            alias_path="${APP_SKILLS_ROOT}/${skill_name}"
+
+            # Preserve built-in OpenClaw skills and only add aliases for workspace-only skills.
+            if [ -e "${alias_path}" ] && [ ! -L "${alias_path}" ]; then
+                log "Skipping app skills alias for ${skill_name}: ${alias_path} exists and is not a symlink"
+                continue
+            fi
+
+            ln -sfn "${skill_dir}" "${alias_path}"
+            log "App skills alias ${alias_path} -> ${skill_dir}"
+        done < <(find "${workspace_dir}/skills" -mindepth 1 -maxdepth 1 -type d -print0)
+    done
+}
+
+sync_agent_workspace() {
+    local agent_id="$1"
+    local src_workspace="${TEMPLATES_ROOT}/${agent_id}"
+    local dst_workspace="${STATE_DIR}/workspace-${agent_id}"
+
+    if [ ! -d "${src_workspace}" ]; then
+        log "Skipping ${agent_id}: template workspace not found at ${src_workspace}"
+        return
+    fi
+
+    mkdir -p "${dst_workspace}"
+    cleanup_managed_markdown "${dst_workspace}"
+    copy_managed_markdown "${src_workspace}" "${dst_workspace}"
+    seed_memory_if_missing "${src_workspace}" "${dst_workspace}"
+    sync_skills "${src_workspace}" "${dst_workspace}"
+}
+
+sync_all_workspaces() {
+    for agent_id in "${AGENT_IDS[@]}"; do
+        sync_agent_workspace "${agent_id}"
+    done
+    sync_skill_compat_copies
+    sync_skill_compat_aliases
+}
+
+reset_agent_memory() {
+    local agent_id="$1"
+    local src_workspace="${TEMPLATES_ROOT}/${agent_id}"
+    local dst_workspace="${STATE_DIR}/workspace-${agent_id}"
+
+    if [ ! -d "${src_workspace}" ]; then
+        echo "Unknown agent or missing template workspace: ${agent_id}" >&2
+        exit 1
+    fi
+
+    mkdir -p "${dst_workspace}"
+    rm -rf "${dst_workspace}/memory"
+    mkdir -p "${dst_workspace}/memory"
+
+    if [ -f "${src_workspace}/MEMORY.md" ]; then
+        cp "${src_workspace}/MEMORY.md" "${dst_workspace}/MEMORY.md"
+    else
+        rm -f "${dst_workspace}/MEMORY.md"
+    fi
+}
+
+is_known_agent() {
+    local needle="$1"
+    local item
+    for item in "${AGENT_IDS[@]}"; do
+        if [ "${item}" = "${needle}" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+main() {
+    export HOME="/home/node"
+    export OPENCLAW_CONFIG_PATH="${CONFIG_PATH}"
+
+    hydrate_bundle_assets
+    discover_agent_ids
+    ensure_state_dirs
+    copy_runtime_config
+    cleanup_stale_chrome_locks
+    log_runtime_diagnostics
+    log_config_summary
+    validate_config
+
+    case "${1:-gateway}" in
+        gateway)
+            cleanup_stale_session_locks
+            sync_all_workspaces
+            start_gateway
+            ;;
+        sync-workspaces)
+            sync_all_workspaces
+            ;;
+        reset-memory)
+            local target="${2:-}"
+            if [ -z "${target}" ]; then
+                echo "Usage: openclaw_start reset-memory <agent-id|all>" >&2
+                exit 1
+            fi
+            if [ "${target}" = "all" ]; then
+                local agent_id
+                for agent_id in "${AGENT_IDS[@]}"; do
+                    reset_agent_memory "${agent_id}"
+                done
+            else
+                if ! is_known_agent "${target}"; then
+                    echo "Unknown agent id: ${target}" >&2
+                    exit 1
+                fi
+                reset_agent_memory "${target}"
+            fi
+            ;;
+        *)
+            echo "Usage: openclaw_start [gateway|sync-workspaces|reset-memory <agent-id|all>]" >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

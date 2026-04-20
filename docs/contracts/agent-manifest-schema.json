@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sellerclaw.ai/contracts/agent-manifest-v1.json",
+  "title": "SellerClaw edge agent manifest (POST /manifest body)",
+  "description": "Wire format aligned with sellerclaw-agent SaveManifestRequest / BundleManifest.to_save_manifest_mapping().",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "user_id",
+    "gateway_token",
+    "hooks_token",
+    "litellm_base_url",
+    "litellm_api_key",
+    "models",
+    "webhook_api_base_url"
+  ],
+  "properties": {
+    "user_id": { "type": "string", "format": "uuid" },
+    "gateway_token": { "type": "string" },
+    "hooks_token": { "type": "string" },
+    "litellm_base_url": { "type": "string" },
+    "litellm_api_key": { "type": "string" },
+    "models": {
+      "type": "object",
+      "required": ["complex", "simple"],
+      "properties": {
+        "complex": { "$ref": "#/$defs/modelSpec" },
+        "simple": { "$ref": "#/$defs/modelSpec" }
+      }
+    },
+    "webhook_api_base_url": { "type": "string" },
+    "template_variables": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "enabled_modules": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "dropshipping_supplier",
+          "ebay_store_manager",
+          "marketing_manager",
+          "product_scout",
+          "shopify_store_manager"
+        ]
+      }
+    },
+    "connected_integrations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "ebay_store",
+          "facebook_ads",
+          "google_ads",
+          "research_seo",
+          "research_social",
+          "research_trends",
+          "shopify_store",
+          "shopify_themes",
+          "supplier_any",
+          "supplier_cj"
+        ]
+      }
+    },
+    "global_browser_enabled": { "type": "boolean" },
+    "per_module_browser": {
+      "type": "object",
+      "additionalProperties": { "type": "boolean" }
+    },
+    "telegram": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "bot_token": { "type": "string" },
+        "allowed_user_ids": { "type": "array", "items": { "type": "string" } },
+        "allowed_group_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "web_search": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "provider": { "type": ["string", "null"] },
+        "api_key": { "type": "string" }
+      }
+    },
+    "primary_channel": { "type": "string" },
+    "proxy_url": { "type": "string" },
+    "model_name_prefix": { "type": "string" },
+    "extra_allowed_origins": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "modelSpec": {
+      "type": "object",
+      "required": ["id", "name", "context_window", "max_tokens"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "reasoning": { "type": "boolean" },
+        "input": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "context_window": { "type": "integer" },
+        "max_tokens": { "type": "integer" }
+      }
+    }
+  }
+}

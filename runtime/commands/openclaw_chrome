@@ -1,0 +1,146 @@
+#!/bin/bash
+set -euo pipefail
+
+readonly SUPERVISOR_CONF="/etc/supervisor/conf.d/openclaw.conf"
+readonly SUPERVISOR_SOCK="/tmp/supervisor.sock"
+readonly X11_SOCKET="/tmp/.X11-unix/X1"
+
+# Per-user settings (PROXY_URL, ...) come from the bundle manifest via
+# runtime.env written by sellerclaw_agent; source it to honor manifest values.
+readonly RUNTIME_ENV="${OPENCLAW_BUNDLE_VOLUME_PATH:-/opt/config-bundle}/runtime.env"
+if [ -f "$RUNTIME_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_ENV"
+fi
+
+wait_for_supervisor_socket() {
+  local deadline=$(( $(date +%s) + 60 ))
+  while [ ! -S "$SUPERVISOR_SOCK" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+    sleep 0.2
+  done
+  [[ -S "$SUPERVISOR_SOCK" ]]
+}
+
+_supervisor_program_state() {
+  local svc="$1"
+  supervisorctl -c "$SUPERVISOR_CONF" status "$svc" 2>/dev/null | head -n1 | awk '{print $2}'
+}
+
+_wait_supervisor_running() {
+  local svc="$1"
+  local deadline=$(( $(date +%s) + 60 ))
+  local state
+  while [[ "$(date +%s)" -lt "$deadline" ]]; do
+    state=$(_supervisor_program_state "$svc") || state=""
+    [[ "$state" == "RUNNING" ]] && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
+# Prints one of: already-running | was-starting | started (to stdout). Returns non-zero on failure.
+_ensure_supervisor_program_with_detail() {
+  local svc="$1"
+  local state
+  state=$(_supervisor_program_state "$svc") || state=""
+  if [[ "$state" == "RUNNING" ]]; then
+    printf '%s' "already-running"
+    return 0
+  fi
+  if [[ "$state" == "STARTING" ]]; then
+    if ! _wait_supervisor_running "$svc"; then
+      echo "[openclaw_chrome] supervisor program ${svc} did not reach RUNNING in time" >&2
+      return 1
+    fi
+    printf '%s' "was-starting"
+    return 0
+  fi
+  supervisorctl -c "$SUPERVISOR_CONF" start "$svc" >&2
+  printf '%s' "started"
+  return 0
+}
+
+ensure_browser_sidecars_via_supervisor() {
+  if [[ "${OPENCLAW_BROWSER_LAZY_START:-1}" == "0" ]]; then
+    return 0
+  fi
+  if ! command -v supervisorctl >/dev/null 2>&1; then
+    echo "[openclaw_chrome] supervisorctl not found; cannot start KasmVNC/gost" >&2
+    return 1
+  fi
+  if [[ ! -f "$SUPERVISOR_CONF" ]]; then
+    echo "[openclaw_chrome] missing ${SUPERVISOR_CONF}" >&2
+    return 1
+  fi
+  wait_for_supervisor_socket || {
+    echo "[openclaw_chrome] supervisor socket not ready: ${SUPERVISOR_SOCK}" >&2
+    return 1
+  }
+  local kasm_detail gost_detail
+  kasm_detail=$(_ensure_supervisor_program_with_detail kasmvnc) || return 1
+  gost_detail=$(_ensure_supervisor_program_with_detail gost) || return 1
+  local deadline=$(( $(date +%s) + 60 ))
+  while [[ ! -e "$X11_SOCKET" ]] && [[ "$(date +%s)" -lt "$deadline" ]]; do
+    sleep 0.2
+  done
+  if [[ ! -e "$X11_SOCKET" ]]; then
+    echo "[openclaw_chrome] X11 display :1 not ready (${X11_SOCKET})" >&2
+    return 1
+  fi
+  local proxy_note=""
+  if [[ -n "${PROXY_URL:-}" && -n "${OPENCLAW_CHROME_PROXY_SERVER:-}" ]]; then
+    deadline=$(( $(date +%s) + 30 ))
+    while [[ "$(date +%s)" -lt "$deadline" ]]; do
+      if timeout 1 bash -c "echo >/dev/tcp/127.0.0.1/18080" 2>/dev/null; then
+        proxy_note="; proxy=127.0.0.1:18080"
+        break
+      fi
+      sleep 0.2
+    done
+    if [[ -z "$proxy_note" ]]; then
+      echo "[openclaw_chrome] gost not accepting connections on 127.0.0.1:18080" >&2
+      return 1
+    fi
+  fi
+  echo "[openclaw_chrome] browser sidecars ready (kasmvnc: ${kasm_detail}; gost: ${gost_detail}${proxy_note})"
+}
+
+has_user_data_dir=0
+for arg in "$@"; do
+  if [[ "$arg" == --user-data-dir=* ]]; then
+    has_user_data_dir=1
+    break
+  fi
+done
+
+extra_args=(
+  --no-first-run
+  --no-default-browser-check
+  --disable-crash-reporter
+  --disable-dev-shm-usage
+  --disable-blink-features=AutomationControlled
+  --disable-features=AutomationControlled
+  --disable-infobars
+  --lang=en-US
+  --start-maximized
+  --window-size=1920,1080
+  --window-position=0,0
+)
+
+if [[ "$has_user_data_dir" -eq 0 ]]; then
+  extra_args+=(--user-data-dir=/home/node/.openclaw/chrome-profile)
+fi
+
+if [[ -n "${PROXY_URL:-}" && -n "${OPENCLAW_CHROME_PROXY_SERVER:-}" ]]; then
+  extra_args+=(--proxy-server="${OPENCLAW_CHROME_PROXY_SERVER}")
+fi
+
+ensure_browser_sidecars_via_supervisor
+
+if command -v google-chrome-stable >/dev/null 2>&1; then
+  CHROME_BIN=/usr/bin/google-chrome-stable
+else
+  CHROME_BIN=/usr/bin/chromium
+fi
+
+exec "$CHROME_BIN" "${extra_args[@]}" "$@"

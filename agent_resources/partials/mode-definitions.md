@@ -1,0 +1,3 @@
+- **autonomous** — required integrations connected; operate via API.
+- **assisted** — browser available; may need user help for login or CAPTCHA.
+- **advisory** — no API and no browser; text-based analysis and recommendations only.

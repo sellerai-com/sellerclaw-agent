@@ -1,0 +1,102 @@
+#!/bin/bash
+set -euo pipefail
+
+GOST_PORT=18080
+CHECK_INTERVAL=15
+
+# Per-user settings (PROXY_URL, ...) are delivered via the bundle manifest
+# (POST /manifest) and written by sellerclaw_agent to runtime.env. Source it
+# so values flow from the manifest instead of container env.
+RUNTIME_ENV="${OPENCLAW_BUNDLE_VOLUME_PATH:-/opt/config-bundle}/runtime.env"
+if [ -f "$RUNTIME_ENV" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_ENV"
+fi
+
+# -----------------------------------------------------------------------
+# 1. Determine effective upstream
+#    PROXY_URL set -> proxy mode
+#    PROXY_URL empty -> direct mode
+# -----------------------------------------------------------------------
+if [ -n "${PROXY_URL:-}" ]; then
+  EFFECTIVE_PROXY="${PROXY_URL}"
+  echo "[gost] Proxy mode -> upstream ${EFFECTIVE_PROXY}"
+else
+  echo "[gost] No upstream configured -> permanent direct mode on :${GOST_PORT}"
+  exec /usr/local/bin/gost -L=:${GOST_PORT}
+fi
+
+# -----------------------------------------------------------------------
+# 2. Parse upstream host:port for health checks
+# -----------------------------------------------------------------------
+upstream="${EFFECTIVE_PROXY#*://}"
+# Strip userinfo (user:pass@)
+upstream="${upstream#*@}"
+upstream="${upstream%%/*}"
+UPSTREAM_HOST="${upstream%%:*}"
+UPSTREAM_PORT="${upstream##*:}"
+
+check_upstream() {
+  timeout 2 bash -c "echo >/dev/tcp/${UPSTREAM_HOST}/${UPSTREAM_PORT}" 2>/dev/null
+}
+
+# -----------------------------------------------------------------------
+# 3. gost lifecycle
+# -----------------------------------------------------------------------
+CURRENT_MODE=""
+GOST_PID=""
+
+start_gost() {
+  local mode="$1"
+
+  if [ -n "$GOST_PID" ] && kill -0 "$GOST_PID" 2>/dev/null; then
+    kill "$GOST_PID" 2>/dev/null
+    wait "$GOST_PID" 2>/dev/null || true
+  fi
+
+  if [ "$mode" = "proxy" ]; then
+    echo "[gost] Proxy mode -> :${GOST_PORT} -> ${EFFECTIVE_PROXY}"
+    /usr/local/bin/gost -L=:${GOST_PORT} -F="${EFFECTIVE_PROXY}" &
+  else
+    echo "[gost] Direct mode -> :${GOST_PORT} (upstream unavailable)"
+    /usr/local/bin/gost -L=:${GOST_PORT} &
+  fi
+  GOST_PID=$!
+  CURRENT_MODE="$mode"
+}
+
+cleanup() {
+  [ -n "$GOST_PID" ] && kill "$GOST_PID" 2>/dev/null
+  exit 0
+}
+trap cleanup SIGTERM SIGINT
+
+# --- initial start ---
+if check_upstream; then
+  start_gost "proxy"
+else
+  start_gost "direct"
+fi
+
+# --- monitor loop: auto-switch when upstream availability changes ---
+while true; do
+  sleep "$CHECK_INTERVAL"
+
+  if [ -n "$GOST_PID" ] && ! kill -0 "$GOST_PID" 2>/dev/null; then
+    echo "[gost] Process exited unexpectedly, restarting..."
+    if check_upstream; then start_gost "proxy"; else start_gost "direct"; fi
+    continue
+  fi
+
+  if check_upstream; then
+    if [ "$CURRENT_MODE" != "proxy" ]; then
+      echo "[gost] Upstream now reachable -> switching to proxy mode"
+      start_gost "proxy"
+    fi
+  else
+    if [ "$CURRENT_MODE" != "direct" ]; then
+      echo "[gost] Upstream unreachable -> switching to direct mode"
+      start_gost "direct"
+    fi
+  fi
+done

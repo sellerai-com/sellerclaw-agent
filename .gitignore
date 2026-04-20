@@ -1,0 +1,11 @@
+# Runtime data (manifest, credentials — never commit secrets)
+data/
+
+# Local env overrides (may contain secrets)
+.env.local
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

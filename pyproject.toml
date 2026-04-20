@@ -1,0 +1,29 @@
+[project]
+name = "sellerclaw-agent"
+version = "0.1.0"
+description = "SellerClaw edge agent (OpenClaw wrapper) with CLI onboarding"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.0",
+    "pyyaml>=6.0.3",
+    "structlog>=24.0.0",
+    "rich>=13.0",
+    "questionary>=2.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.116.0",
+    "uvicorn[standard]>=0.35.0",
+    "pydantic>=2.11.0",
+]
+
+[project.scripts]
+sellerclaw-agent = "sellerclaw_agent.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sellerclaw_agent"]

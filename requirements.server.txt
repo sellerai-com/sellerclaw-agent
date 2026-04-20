@@ -1,0 +1,6 @@
+httpx>=0.28.0
+pyyaml>=6.0.3
+structlog>=24.0.0
+fastapi>=0.116.0
+uvicorn[standard]>=0.35.0
+pydantic>=2.11.0

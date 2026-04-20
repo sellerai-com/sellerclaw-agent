@@ -1,0 +1,197 @@
+# `sellerclaw-agent` CLI
+
+Command-line tool for the local edge agent: it brings up the Docker stack, connects the agent to the SellerClaw cloud, and prints the Admin UI URL. **All auth traffic goes to the local Agent Server only** (not directly to the cloud) — your credentials never leave your machine without passing through the agent process first.
+
+This page covers installation, environments, every CLI command, and common failure modes. If you only want to get started quickly, run `./setup.sh` from the `sellerclaw-agent/` directory and come back here when something surprises you.
+
+## Requirements
+
+- **Docker** and **Docker Compose v2** (`docker compose version` must succeed).
+- **Python 3.12+** (only for running the CLI itself; the agent services run inside Docker).
+- **Combined runtime image** — `docker compose` builds a single image (OpenClaw browser stack + SellerClaw agent) from `runtime/Dockerfile` target `staging`.
+
+For normal local use the image is built automatically on first run. If you want to pre-build or publish your own copy, see [Building the runtime image](#building-the-runtime-image) below.
+
+Optional: set `OPENCLAW_RUNTIME_IMAGE` to a tag for display in `GET /openclaw/status`.
+
+## Quick start
+
+One command from the `sellerclaw-agent/` directory:
+
+```bash
+cd sellerclaw-agent
+./setup.sh
+```
+
+This script checks for Docker, installs Python dependencies (via `uv` or `pip`), brings up the Docker stack, and starts the interactive sign-in — all in a single step.
+
+Alternatively, if you already have [uv](https://docs.astral.sh/uv/) installed:
+
+```bash
+cd sellerclaw-agent
+uv run sellerclaw-agent setup
+```
+
+Or via Make:
+
+```bash
+cd sellerclaw-agent
+make setup
+```
+
+## Environments
+
+The agent supports multiple environment profiles. Each profile is a `.env.<name>` file in the repo root that controls which SellerClaw cloud the agent connects to.
+
+| File | Cloud target |
+|------|-------------|
+| `.env` | Local development (`http://host.docker.internal:8000`) |
+| `.env.staging` | Staging (`https://api.staging.sellerclaw.ai`) |
+| `.env.production` | Production (`https://api.sellerclaw.ai`) |
+
+### Switching environments
+
+Pass `--env <name>` to `setup.sh`:
+
+```bash
+./setup.sh --env staging
+./setup.sh --env production
+```
+
+Or export `AGENT_ENV` before any command:
+
+```bash
+export AGENT_ENV=staging
+./setup.sh
+# or
+uv run sellerclaw-agent status
+```
+
+When `AGENT_ENV` is not set, `.env` (local development) is used by default.
+
+### Creating a custom profile
+
+Copy any existing file and adjust the values:
+
+```bash
+cp .env.staging .env.custom
+# edit .env.custom
+./setup.sh --env custom
+```
+
+### Local overrides
+
+Create `.env.local` for machine-specific settings (it is git-ignored):
+
+```bash
+cp .env .env.local
+# tweak ports, URLs, etc.
+./setup.sh --env local
+```
+
+## Environment variables
+
+All variables are defined in the `.env*` files. Key settings:
+
+| Variable | Purpose | Default (`.env`) |
+|----------|---------|-------------------|
+| `SELLERCLAW_API_URL` | Cloud API the agent server talks to | `http://host.docker.internal:8000` |
+| `AGENT_PORT` | Host port the agent server is exposed on | `8001` |
+| `AGENT_CORS_ORIGINS` | CORS origins accepted by the agent | `http://localhost:5174` |
+| `SELLERCLAW_AGENT_URL` | URL the CLI uses to reach the agent on the host | `http://127.0.0.1:8001` |
+| `AGENT_API_KEY` | Bearer token for `/manifest`, `/bundle/archive`, `/openclaw/*` | *(unset; required for those routes when self-hosting)* |
+| `SELLERCLAW_DATA_DIR` | Where the agent stores credentials/session files | `/data` (inside the container) |
+| `SELLERCLAW_EDGE_PING` | Enable the background ping loop (cloud mode) | `1` |
+| `SELLERCLAW_AGENT_IMAGE` | Pin a specific runtime image tag instead of building locally | *(unset)* |
+
+See the [cloud connection protocol](./connection-protocol.md) for how the ping loop uses `SELLERCLAW_API_URL` and `SELLERCLAW_DATA_DIR`.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `setup` | **Default** when no argument is given: `docker compose up -d --build`, wait for `GET /auth/status`, interactive cloud sign-in, print Admin UI URL. |
+| `start` | Start the stack only: `docker compose up -d --build` in the agent directory. |
+| `stop` | Stop the stack: `docker compose down`. |
+| `status` | Show whether the agent is connected to the cloud (`GET /auth/status`). |
+| `login` | Sign in to the cloud (server must be running): up to 15 s wait for the agent, then the same interactive flow as `setup`. |
+| `logout` | Clear stored cloud credentials on the agent (`POST /auth/disconnect`). |
+| `help` | Short help. Same idea: `-h`, `--help`, `help`. |
+
+Unknown command: exit code `2`.
+
+## Signing in to the cloud (interactive)
+
+For `setup` or `login` you can choose:
+
+1. **Email and password** — sent to the local agent at `POST /auth/connect`; the agent talks to the cloud.
+2. **Browser (device flow)** — the agent requests codes (`POST /auth/device/start`); the terminal shows the user code and verification link; the CLI polls `GET /auth/device/poll?device_code=...` until success or timeout. In the browser, sign in to SellerClaw and approve the device.
+
+## Where the CLI looks for `docker-compose.yml`
+
+Compose runs in the **parent directory of the installed `sellerclaw_agent` package**; `docker-compose.yml` is expected next to that directory.
+
+- With an **editable** install from the repo (`pip install -e .` / `uv sync` from `sellerclaw-agent/`), that directory is the `sellerclaw-agent/` root and matches the repository.
+- With a **wheel-only** install and no repo checkout, the path may resolve under `site-packages`, where there is **no** `docker-compose.yml`. For `setup` / `start` / `stop`, use a repo checkout with an editable install.
+
+## Building the runtime image
+
+The combined OpenClaw + agent image is built from [`runtime/Dockerfile`](../runtime/Dockerfile) with target `staging`. For local development `docker compose` builds it automatically; for publishing to a registry (forks, self-hosted deployments) use the `make deploy-ghcr` target:
+
+```bash
+# From the sellerclaw-agent/ directory.
+GHCR_OWNER=<your-gh-user> GHCR_USERNAME=<your-gh-user> GHCR_TOKEN=<gh-pat> \
+  make deploy-ghcr
+```
+
+This builds and pushes `ghcr.io/<owner>/sellerclaw-agent:<short-sha>`. The last line of output prints the exact `SELLERCLAW_AGENT_IMAGE=...` value to pin on the consuming side. If you are already authenticated with `docker login ghcr.io`, you can omit `GHCR_TOKEN`/`GHCR_USERNAME`.
+
+The manual equivalent, run from the monorepo root, is:
+
+```bash
+docker build \
+  -f sellerclaw-agent/runtime/Dockerfile \
+  --target staging \
+  -t sellerclaw-agent:latest .
+```
+
+## Troubleshooting
+
+### First-run failures
+
+- **`Docker Compose v2 not found`** — install the Compose plugin and verify `docker compose version`. On Linux the plugin ships as the `docker-compose-plugin` package; on macOS it is bundled with Docker Desktop.
+- **`permission denied while trying to connect to the Docker daemon`** — add your user to the `docker` group (`sudo usermod -aG docker $USER`) and start a new shell, or run `docker` with `sudo` temporarily.
+- **First `setup` takes a very long time** — the runtime image is large (~1.5 GB). The initial `docker compose up --build` pulls the OpenClaw base image and installs Chromium, KasmVNC, supervisord, and Playwright. Subsequent runs are fast.
+
+### After setup
+
+- **Timeout waiting for `/auth/status` after setup** — inspect logs with `docker compose logs` in `sellerclaw-agent/`. The most common causes are the server still booting (wait another 10–20 s and retry `sellerclaw-agent status`) or `AGENT_PORT` being in use by another process.
+- **Agent unreachable for `login` / `status`** — run `sellerclaw-agent start` or check that `SELLERCLAW_AGENT_URL` matches the published port (`AGENT_PORT`). If you changed the port, export `SELLERCLAW_AGENT_URL=http://127.0.0.1:<new-port>` before calling the CLI.
+- **Wrong cloud URL after switching environments** — run `docker compose down` **before** switching profiles so the container picks up the new `SELLERCLAW_API_URL`. Containers do not re-read env vars on simple restart.
+- **Admin UI at `http://localhost:5174/admin/` does not load** — confirm the `admin-ui` service is running (`docker compose ps`). If you recently added an npm dependency, rebuild with `docker compose build admin-ui && docker compose up -d admin-ui`. See [`developer/admin-ui.md`](./developer/admin-ui.md) for details.
+
+### Cloud sign-in issues
+
+- **Device flow never confirms** — check the browser tab actually signed in to the same cloud (`https://app.staging.sellerclaw.ai` for staging, etc.). The CLI polls for up to ~10 minutes; after that, rerun `sellerclaw-agent login`.
+- **`401 invalid credentials` on email/password** — the cloud rejected the login; try again through the web, or use the device flow instead.
+- **`502` during sign-in** — the agent could reach the cloud but the cloud returned a bad upstream response. Usually transient; retry after a minute.
+- **Repeated `agent_session_invalidated`** — another agent instance is signed in with the same account. Either log out from the other device or accept that only the newest session survives (this is by design — see the [connection protocol](./connection-protocol.md#session-lifecycle)).
+
+### Wiping local state
+
+If you want to start completely over:
+
+```bash
+docker compose down
+rm -rf data/credentials.json data/edge_session.json
+./setup.sh
+```
+
+This clears the stored JWT pair and the current session ID so the next `setup` registers a fresh session.
+
+## See also
+
+- [Documentation index](./README.md)
+- [Cloud connection protocol](./connection-protocol.md)
+- [Agent manifest contract](./contracts/agent-manifest.md)
+- [Admin UI](./developer/admin-ui.md)

@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+
+BUNDLE_URL="${CONFIG_BUNDLE_URL:-}"
+TARGET_DIR="/opt/config-bundle"
+
+log() {
+    echo "[fetch_config_bundle] $*"
+}
+
+if [ -z "${BUNDLE_URL}" ]; then
+    log "CONFIG_BUNDLE_URL is empty, skipping bundle download."
+    exit 0
+fi
+
+mkdir -p "${TARGET_DIR}"
+find "${TARGET_DIR}" -mindepth 1 -delete
+
+log "Downloading config bundle archive."
+curl -sSfL "${BUNDLE_URL}" | tar -xz -C "${TARGET_DIR}"
+log "Config bundle unpacked into ${TARGET_DIR}."

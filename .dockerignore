@@ -1,0 +1,11 @@
+data/
+plugins/
+runtime/
+tests/
+__pycache__/
+*.pyc
+Makefile
+docker-compose.yml
+Dockerfile.*
+admin-ui/node_modules
+admin-ui/dist
