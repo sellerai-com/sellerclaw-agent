@@ -86,33 +86,6 @@ jobs:
           cache-from: type=registry,ref=${{ needs.resolve.outputs.image }}:cache
           cache-to: type=registry,ref=${{ needs.resolve.outputs.image }}:cache,mode=max
 
-      - name: Ensure package is public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IMAGE: ${{ needs.resolve.outputs.image }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          package_name="${IMAGE##*/}"
-          owner="${GITHUB_REPOSITORY%%/*}"
-          owner_type="$(gh api "/users/${owner}" --jq '.type')"
-          if [[ "$owner_type" == "Organization" ]]; then
-            scope="/orgs/${owner}"
-          else
-            scope="/users/${owner}"
-          fi
-          current="$(gh api "${scope}/packages/container/${package_name}" --jq '.visibility' 2>/dev/null || echo "unknown")"
-          echo "Current visibility: ${current}"
-          if [[ "$current" != "public" ]]; then
-            gh api --method PATCH \
-              -H "Accept: application/vnd.github+json" \
-              "${scope}/packages/container/${package_name}/visibility" \
-              -f visibility=public
-            echo "Package visibility set to public."
-          else
-            echo "Package is already public."
-          fi
-
       - name: Write image info to job summary
         shell: bash
         run: |
