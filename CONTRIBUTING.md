@@ -89,14 +89,7 @@ For the server only (faster cycle when you are not touching the UI):
 make up-server
 ```
 
-Building and publishing a runtime image from a fork (for example to test changes on a deployed machine):
-
-```bash
-GHCR_OWNER=<your-gh-user> GHCR_USERNAME=<your-gh-user> GHCR_TOKEN=<gh-pat> \
-  make deploy-ghcr
-```
-
-The final line of the output prints the `SELLERCLAW_AGENT_IMAGE=...` value you can pin on the consumer side.
+Building or publishing a runtime image from a fork is described under [Building the runtime image](docs/cli.md#building-the-runtime-image) in [`docs/cli.md`](docs/cli.md).
 
 See [`docs/cli.md`](docs/cli.md) for environment profiles (`.env`, `.env.staging`, `.env.production`, `.env.local`) and [`docs/developer/admin-ui.md`](docs/developer/admin-ui.md) for the admin UI setup.
 

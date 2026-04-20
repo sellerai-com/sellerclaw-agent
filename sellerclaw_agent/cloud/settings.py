@@ -12,11 +12,19 @@ def get_sellerclaw_api_url() -> str:
     return raw.strip().rstrip("/")
 
 
-def get_verification_base_url() -> str:
-    """Base URL of the UI that hosts ``/auth/device`` verification page.
+def get_sellerclaw_web_url() -> str:
+    """Base URL of the SellerClaw website (hosts ``/auth/device`` page).
 
-    Set via ``AGENT_VERIFICATION_BASE_URL``.
-    Defaults to the dev-admin UI at ``http://localhost:5173``.
+    Set via ``SELLERCLAW_WEB_URL``. Defaults to ``http://localhost:5173``.
     """
-    raw = os.environ.get("AGENT_VERIFICATION_BASE_URL", "http://localhost:5173")
+    raw = os.environ.get("SELLERCLAW_WEB_URL", "http://localhost:5173")
+    return raw.strip().rstrip("/")
+
+
+def get_admin_url() -> str:
+    """Base URL of the admin UI (used as CORS origin for the agent HTTP API).
+
+    Set via ``ADMIN_URL``. Defaults to ``http://localhost:5174``.
+    """
+    raw = os.environ.get("ADMIN_URL", "http://localhost:5174")
     return raw.strip().rstrip("/")

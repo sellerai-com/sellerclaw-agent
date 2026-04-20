@@ -142,9 +142,16 @@ RUN npm run build
 FROM base AS staging
 
 COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
-COPY sellerclaw-agent/requirements.server.txt /tmp/requirements.server.txt
+COPY sellerclaw-agent/pyproject.toml sellerclaw-agent/uv.lock /tmp/proj/
 # Debian bookworm Python is PEP 668 "externally managed"; allow system install in this image only.
-RUN UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/requirements.server.txt
+# Resolve the server-runtime dependency set from uv.lock (single source of truth: pyproject.toml),
+# then install it system-wide. No editable project, no dev/CLI extras — only what the API server needs.
+RUN cd /tmp/proj \
+    && UV_BREAK_SYSTEM_PACKAGES=1 uv export \
+        --frozen --no-dev --no-emit-project --extra server --no-hashes \
+        -o /tmp/requirements.txt \
+    && UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/requirements.txt \
+    && rm -rf /tmp/proj /tmp/requirements.txt
 
 COPY sellerclaw-agent/sellerclaw_agent/ /app/sellerclaw_agent/
 COPY sellerclaw-agent/agent_resources/ /app/agent_resources/

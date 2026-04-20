@@ -7,8 +7,6 @@ dependencies = [
     "httpx>=0.28.0",
     "pyyaml>=6.0.3",
     "structlog>=24.0.0",
-    "rich>=13.0",
-    "questionary>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +15,31 @@ server = [
     "uvicorn[standard]>=0.35.0",
     "pydantic>=2.11.0",
 ]
+cli = [
+    "rich>=13.0",
+    "questionary>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "jsonschema>=4.26.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.9.0",
+    "pyright>=1.1.390",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = [".", "runtime/commands"]
+addopts = ["--import-mode=importlib"]
+markers = [
+    "unit: unit tests (isolated, no external deps)",
+]
+
+[tool.pyright]
+extraPaths = ["runtime/commands"]
 
 [project.scripts]
 sellerclaw-agent = "sellerclaw_agent.cli:main"

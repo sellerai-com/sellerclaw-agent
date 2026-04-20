@@ -60,7 +60,7 @@ Manifest endpoints (only reachable after the user is signed in through the UI, t
 - `GET /manifest` → `{ manifest, version }` on 200, `404` with `{ detail: { code: "manifest_not_found" } }` when no manifest has been saved yet.
 - `POST /manifest` → accepts a `SaveManifestRequest` payload and returns `{ status, manifest_path, version }`. Validation errors surface as `422` (Pydantic) or `400` (bundle-level validation, e.g. unknown integration kind).
 
-The server adds a `CORSMiddleware` whose allowed origins come from the `AGENT_CORS_ORIGINS` environment variable (comma-separated). In docker-compose it is preset to `http://localhost:5174`.
+The server adds a `CORSMiddleware` whose allowed origin is taken from the `ADMIN_URL` environment variable (single URL). In docker-compose it is preset to `http://localhost:5174`.
 
 Relevant backend files:
 

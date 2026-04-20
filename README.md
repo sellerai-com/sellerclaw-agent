@@ -81,18 +81,7 @@ See [`docs/cli.md`](docs/cli.md) for full details and env var reference.
 
 ## Building the Runtime Image
 
-The agent runs inside a combined Docker image that includes the OpenClaw runtime plus the agent server. For normal local use you don't need to build it yourself — `docker compose` will do it on first run. If you are developing against a fork or deploying to your own infrastructure, you can build and push the image to GHCR with:
-
-```bash
-# From the sellerclaw-agent/ directory.
-# Override GHCR_OWNER to point at your own GitHub account/org.
-GHCR_OWNER=<your-gh-user> GHCR_USERNAME=<your-gh-user> GHCR_TOKEN=<gh-pat> \
-  make deploy-ghcr
-```
-
-The target builds `runtime/Dockerfile` (target `staging`), tags it as `ghcr.io/<owner>/sellerclaw-agent:<short-sha>`, and pushes it. Leave `GHCR_TOKEN` unset if you are already logged in via `docker login ghcr.io`.
-
-The final line of the command prints the exact `SELLERCLAW_AGENT_IMAGE=...` value to pin in your environment.
+The agent runs inside a combined Docker image that includes the OpenClaw runtime plus the agent server. For normal local use you don't need to build it yourself — `docker compose` will do it on first run. To build or publish a custom image (forks, self-hosted infra), see [Building the runtime image](docs/cli.md#building-the-runtime-image) in [`docs/cli.md`](docs/cli.md).
 
 ## Architecture
 

@@ -53,7 +53,7 @@ def agent_root() -> Path:
 
 def agent_base_url() -> str:
     """Base URL of the Agent Server (mapped host port in docker-compose)."""
-    return (os.environ.get("SELLERCLAW_AGENT_URL") or "http://127.0.0.1:8001").rstrip("/")
+    return "http://127.0.0.1:8001"
 
 
 _QUESTIONARY_STYLE = (
@@ -610,9 +610,6 @@ def cmd_help(console: Console) -> int:
     tbl.add_row("help", "Show this help")
     console.print(tbl)
 
-    console.print(
-        "\n[hint]Env:[/hint] SELLERCLAW_AGENT_URL [hint](default http://127.0.0.1:8001)[/hint]",
-    )
     console.print()
     return 0
 

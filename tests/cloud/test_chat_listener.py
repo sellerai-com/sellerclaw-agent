@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import time
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4

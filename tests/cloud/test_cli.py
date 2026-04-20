@@ -32,9 +32,8 @@ def test_parse_command(argv: list[str], expected: str) -> None:
     assert parse_command(argv) == expected
 
 
-def test_agent_base_url_strips_slash(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SELLERCLAW_AGENT_URL", "http://example:9/")
-    assert agent_base_url() == "http://example:9"
+def test_agent_base_url_returns_localhost_8001() -> None:
+    assert agent_base_url() == "http://127.0.0.1:8001"
 
 
 def test_agent_root_contains_sellerclaw_agent_package() -> None:

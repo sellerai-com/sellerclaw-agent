@@ -27,7 +27,7 @@ from sellerclaw_agent.cloud.exceptions import (
     CloudDevicePollTerminalError,
 )
 from sellerclaw_agent.cloud.service import AuthStatus, CloudAuthService
-from sellerclaw_agent.cloud.settings import get_verification_base_url
+from sellerclaw_agent.cloud.settings import get_admin_url, get_sellerclaw_web_url
 from sellerclaw_agent.cloud.supervisor_manager import (
     REJECT_ALREADY_RUNNING,
     SupervisorContainerManager,
@@ -240,11 +240,7 @@ async def health() -> dict[str, Any]:
     }
 
 
-_cors_origins_env = os.environ.get(
-    "AGENT_CORS_ORIGINS",
-    "http://localhost:5173,http://localhost:5174",
-)
-_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+_cors_origins = [get_admin_url()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -288,7 +284,7 @@ async def auth_device_start(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except CloudConnectionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    base = get_verification_base_url()
+    base = get_sellerclaw_web_url()
     local_uri = f"{base}/auth/device?code={result.user_code}"
     return DeviceStartResponse(
         device_code=result.device_code,

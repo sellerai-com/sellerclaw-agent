@@ -149,7 +149,7 @@ def test_auth_connect_returns_502_on_cloud_connection_error(tmp_path: Path) -> N
 
 @pytest.mark.usefixtures("_override_service_ok")
 def test_auth_device_start_returns_codes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AGENT_VERIFICATION_BASE_URL", "http://my-admin:5174")
+    monkeypatch.setenv("SELLERCLAW_WEB_URL", "http://my-admin:5174")
     with TestClient(app) as client:
         r = client.post("/auth/device/start")
         assert r.status_code == 200

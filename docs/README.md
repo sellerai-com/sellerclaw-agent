@@ -29,7 +29,7 @@ See also the top-level [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the contribut
 
 ## Quick reference
 
-- **Control-plane port (agent HTTP API):** `8001` by default (configurable via `AGENT_PORT`).
+- **Control-plane port (agent HTTP API):** `8001` (fixed; published from the container in `docker-compose.yml`).
 - **OpenClaw gateway port:** `7788` by default — runs as a separate process inside the same container, managed by `supervisord`.
 - **Admin UI port (dev):** `5174`.
 - **On-disk state:** `credentials.json` and `edge_session.json` under `SELLERCLAW_DATA_DIR` (default `/data` inside the container, bind-mounted to `./data` on the host).

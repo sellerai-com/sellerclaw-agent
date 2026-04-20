@@ -96,13 +96,14 @@ All variables are defined in the `.env*` files. Key settings:
 | Variable | Purpose | Default (`.env`) |
 |----------|---------|-------------------|
 | `SELLERCLAW_API_URL` | Cloud API the agent server talks to | `http://host.docker.internal:8000` |
-| `AGENT_PORT` | Host port the agent server is exposed on | `8001` |
-| `AGENT_CORS_ORIGINS` | CORS origins accepted by the agent | `http://localhost:5174` |
-| `SELLERCLAW_AGENT_URL` | URL the CLI uses to reach the agent on the host | `http://127.0.0.1:8001` |
+| `SELLERCLAW_WEB_URL` | SellerClaw website that hosts the `/auth/device` verification page | `http://localhost:5173` |
+| `ADMIN_URL` | Admin UI URL — used as the CORS origin for the agent HTTP API | `http://localhost:5174` |
 | `AGENT_API_KEY` | Bearer token for `/manifest`, `/bundle/archive`, `/openclaw/*` | *(unset; required for those routes when self-hosting)* |
 | `SELLERCLAW_DATA_DIR` | Where the agent stores credentials/session files | `/data` (inside the container) |
 | `SELLERCLAW_EDGE_PING` | Enable the background ping loop (cloud mode) | `1` |
 | `SELLERCLAW_AGENT_IMAGE` | Pin a specific runtime image tag instead of building locally | *(unset)* |
+
+The agent server always listens on port `8001` inside the container and is published on `8001` on the host (see `docker-compose.yml`); the CLI reaches it at `http://127.0.0.1:8001`.
 
 See the [cloud connection protocol](./connection-protocol.md) for how the ping loop uses `SELLERCLAW_API_URL` and `SELLERCLAW_DATA_DIR`.
 
@@ -136,17 +137,9 @@ Compose runs in the **parent directory of the installed `sellerclaw_agent` packa
 
 ## Building the runtime image
 
-The combined OpenClaw + agent image is built from [`runtime/Dockerfile`](../runtime/Dockerfile) with target `staging`. For local development `docker compose` builds it automatically; for publishing to a registry (forks, self-hosted deployments) use the `make deploy-ghcr` target:
+The combined OpenClaw + agent image is built from [`runtime/Dockerfile`](../runtime/Dockerfile) with target `staging`. For local development `docker compose` builds it automatically.
 
-```bash
-# From the sellerclaw-agent/ directory.
-GHCR_OWNER=<your-gh-user> GHCR_USERNAME=<your-gh-user> GHCR_TOKEN=<gh-pat> \
-  make deploy-ghcr
-```
-
-This builds and pushes `ghcr.io/<owner>/sellerclaw-agent:<short-sha>`. The last line of output prints the exact `SELLERCLAW_AGENT_IMAGE=...` value to pin on the consuming side. If you are already authenticated with `docker login ghcr.io`, you can omit `GHCR_TOKEN`/`GHCR_USERNAME`.
-
-The manual equivalent, run from the monorepo root, is:
+To build the image yourself, run from the monorepo root:
 
 ```bash
 docker build \
@@ -154,6 +147,8 @@ docker build \
   --target staging \
   -t sellerclaw-agent:latest .
 ```
+
+To publish to a registry (for example GHCR), tag the result with your `ghcr.io/<owner>/<image>:<tag>` and use `docker push` after `docker login` to that registry.
 
 ## Troubleshooting
 
@@ -165,8 +160,8 @@ docker build \
 
 ### After setup
 
-- **Timeout waiting for `/auth/status` after setup** — inspect logs with `docker compose logs` in `sellerclaw-agent/`. The most common causes are the server still booting (wait another 10–20 s and retry `sellerclaw-agent status`) or `AGENT_PORT` being in use by another process.
-- **Agent unreachable for `login` / `status`** — run `sellerclaw-agent start` or check that `SELLERCLAW_AGENT_URL` matches the published port (`AGENT_PORT`). If you changed the port, export `SELLERCLAW_AGENT_URL=http://127.0.0.1:<new-port>` before calling the CLI.
+- **Timeout waiting for `/auth/status` after setup** — inspect logs with `docker compose logs` in `sellerclaw-agent/`. The most common causes are the server still booting (wait another 10–20 s and retry `sellerclaw-agent status`) or port `8001` being in use by another process.
+- **Agent unreachable for `login` / `status`** — run `sellerclaw-agent start` and confirm nothing else is listening on `127.0.0.1:8001`.
 - **Wrong cloud URL after switching environments** — run `docker compose down` **before** switching profiles so the container picks up the new `SELLERCLAW_API_URL`. Containers do not re-read env vars on simple restart.
 - **Admin UI at `http://localhost:5174/admin/` does not load** — confirm the `admin-ui` service is running (`docker compose ps`). If you recently added an npm dependency, rebuild with `docker compose build admin-ui && docker compose up -d admin-ui`. See [`developer/admin-ui.md`](./developer/admin-ui.md) for details.
 

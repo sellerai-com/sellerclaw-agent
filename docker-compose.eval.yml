@@ -1,8 +1,0 @@
-# Merge with docker-compose.yml for benchmarks: OpenClaw state is shared with sellerclaw-api
-# (read-only mount of deploy/local/eval_openclaw_state).
-# Usage: docker compose -f docker-compose.yml -f docker-compose.eval.yml up server -d
-#   or:  make -C sellerclaw-agent up-server-eval
-services:
-  server:
-    volumes:
-      - ../deploy/local/eval_openclaw_state:/home/node/.openclaw
