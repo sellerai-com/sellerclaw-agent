@@ -1,11 +1,15 @@
 # Runtime data (manifest, credentials — never commit secrets)
 data/
 
-# Local env overrides (may contain secrets)
-.env.local
+# Local secrets
+secrets.env
 
 # Python
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Dev
+AGENTS.md
+CLAUDE.md
