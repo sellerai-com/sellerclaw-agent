@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -69,6 +69,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -84,3 +85,117 @@ jobs:
             org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
           cache-from: type=registry,ref=${{ needs.resolve.outputs.image }}:cache
           cache-to: type=registry,ref=${{ needs.resolve.outputs.image }}:cache,mode=max
+
+      - name: Ensure package is public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="${IMAGE##*/}"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          owner_type="$(gh api "/users/${owner}" --jq '.type')"
+          if [[ "$owner_type" == "Organization" ]]; then
+            scope="/orgs/${owner}"
+          else
+            scope="/users/${owner}"
+          fi
+          current="$(gh api "${scope}/packages/container/${package_name}" --jq '.visibility' 2>/dev/null || echo "unknown")"
+          echo "Current visibility: ${current}"
+          if [[ "$current" != "public" ]]; then
+            gh api --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              "${scope}/packages/container/${package_name}/visibility" \
+              -f visibility=public
+            echo "Package visibility set to public."
+          else
+            echo "Package is already public."
+          fi
+
+      - name: Write image info to job summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${{ needs.resolve.outputs.image }}"
+          version="${{ needs.resolve.outputs.version }}"
+          digest="${{ steps.build.outputs.digest }}"
+          package_name="${image##*/}"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          package_url="https://github.com/${owner}/${GITHUB_REPOSITORY#*/}/pkgs/container/${package_name}"
+          {
+            echo "## GHCR image"
+            echo ""
+            echo "- Image: \`${image}:${version}\`"
+            echo "- Also tagged: \`${image}:latest\`"
+            echo "- Digest: \`${digest}\`"
+            echo "- Pull: \`docker pull ${image}:${version}\`"
+            echo "- Registry: ${package_url}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Create GitHub release
+    needs: [resolve, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="${IMAGE##*/}"
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          package_url="https://github.com/${owner}/${repo_name}/pkgs/container/${package_name}"
+          prev_tag="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          if [[ -n "$prev_tag" ]]; then
+            changes="$(git log --pretty=format:'- %s (%h)' "${prev_tag}..${TAG}")"
+            compare="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${prev_tag}...${TAG}"
+          else
+            changes="$(git log --pretty=format:'- %s (%h)' "${TAG}")"
+            compare=""
+          fi
+          notes_file="$(mktemp)"
+          {
+            echo "## Docker image"
+            echo ""
+            echo "Published to GHCR: [\`${IMAGE}:${VERSION}\`](${package_url})"
+            echo ""
+            echo "\`\`\`bash"
+            echo "docker pull ${IMAGE}:${VERSION}"
+            echo "\`\`\`"
+            echo ""
+            echo "Also available as \`${IMAGE}:latest\`."
+            echo ""
+            echo "## Changes"
+            echo ""
+            echo "${changes:-_no commits_}"
+            if [[ -n "$compare" ]]; then
+              echo ""
+              echo "**Full diff:** ${compare}"
+            fi
+          } > "$notes_file"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" --title "${TAG}" --notes-file "$notes_file"
+          else
+            gh release create "${TAG}" --title "${TAG}" --notes-file "$notes_file"
+          fi
+
+          {
+            echo "## Release"
+            echo ""
+            echo "- Tag: \`${TAG}\`"
+            echo "- Image: [\`${IMAGE}:${VERSION}\`](${package_url})"
+            echo "- Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          } >> "$GITHUB_STEP_SUMMARY"
