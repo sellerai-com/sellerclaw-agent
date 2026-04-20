@@ -1,4 +1,4 @@
-.PHONY: install setup up up-server down test test_unit test_unit_dirs test_cloud lint \
+.PHONY: install setup up up-stage up-dev down test test_unit test_unit_dirs test_cloud lint \
 	openclaw-skills openclaw-plugins openclaw-measure-gateway-memory openclaw-measure-gateway-memory-cold
 
 UV ?= uv
@@ -15,10 +15,13 @@ setup:
 	$(UV) run sellerclaw-agent setup
 
 up:
-	$(DOCKER_COMPOSE) up --build
+	$(DOCKER_COMPOSE) --env-file .env.production up server --build
 
-up-server:
-	$(DOCKER_COMPOSE) up server --build -d
+up-stage:
+	$(DOCKER_COMPOSE) --env-file .env.staging up server --build
+
+up-dev:
+	$(DOCKER_COMPOSE) --env-file .env up --build
 
 down:
 	$(DOCKER_COMPOSE) down --remove-orphans
@@ -50,7 +53,7 @@ openclaw-measure-gateway-memory:
 	@$(DOCKER_COMPOSE) exec server bash -lc '\
 		pid=$$(pidof openclaw-gateway 2>/dev/null | awk "{print \$$1}"); \
 		if [ -z "$$pid" ]; then pid=$$(pidof openclaw 2>/dev/null | awk "{print \$$1}"); fi; \
-		if [ -z "$$pid" ]; then echo "openclaw gateway not found. Is server up (make up or make up-server)?" >&2; exit 1; fi; \
+		if [ -z "$$pid" ]; then echo "openclaw gateway not found. Is server up (make up, make up-stage, or make up-dev)?" >&2; exit 1; fi; \
 		echo "[measure] pid=$$pid interval=$(OPENCLAW_MEASURE_INTERVAL)s samples=$(OPENCLAW_MEASURE_SAMPLES) OPENCLAW_NODE_MAX_OLD_SPACE_SIZE_MB=$${OPENCLAW_NODE_MAX_OLD_SPACE_SIZE_MB:-2048}"; \
 		python -m openclaw_diagnostics cgroup-limits || true; \
 		python -m openclaw_diagnostics monitor-memory --pid "$$pid" --interval $(OPENCLAW_MEASURE_INTERVAL) --max-samples $(OPENCLAW_MEASURE_SAMPLES)'
