@@ -176,33 +176,53 @@ quick lookups. Mutating operations must be delegated to the appropriate subagent
 
 When you produce an artifact for the user — a **screenshot**, an exported report, a
 generated document, a rendered chart — the text "done, sent it" is not enough. The
-chat is a message stream: only **HTTPS URLs** visible to the user actually render.
+chat is a message stream: the user sees only what the `message` tool actually delivers.
 
-**Mandatory workflow:**
+### Route A — local container file (screenshots, downloaded artifacts)
 
-1. **Obtain the file.** Either the file is produced by a tool (e.g. `browser` returns
-   `result.media.mediaUrl` — a local container path), or you create it (CSV, JSON, etc.).
-2. **Upload it** via the File Storage API — see the **`file-storage`** skill.
+If the file already lives inside the container — typical for `browser` screenshots at
+`/home/node/.openclaw/media/...` or temp artifacts at `/tmp/...` — pass the local path
+directly to the `message` tool. The plugin auto-uploads it and forwards the HTTPS
+`download_url` to the user in a single call:
+
+```
+message.send(
+  text="Here is the page.",
+  imagePath="/home/node/.openclaw/media/browser/<uuid>.jpg"
+)
+```
+
+Local paths in `imagePath`, `imageUrl`, `mediaUrl`, or `localImagePath` all trigger
+the auto-upload. `file://` prefixes are stripped. No `AGENT_API_KEY`, no `exec curl`.
+
+This is the default for screenshots and any artifact written to disk.
+
+### Route B — manual File Storage upload
+
+Use this route when you need the `download_url` for something other than the current
+`message.send` call (passing it to a subagent, embedding in markdown, storing it), or
+when the content exists only in memory and you need to POST it as JSON.
+
+1. **Upload** via the File Storage API — see the **`file-storage`** skill.
    `POST /files/upload` (binary, multipart) or `POST /files/` (text) → returns
    `download_url` (HTTPS, valid 7 days).
-3. **Deliver it** to the user in the reply:
-   - **For images** (`.png` / `.jpg` / `.jpeg` / `.webp` / `.gif`) — attach inline so
-     the preview renders. Send via the `message` tool with `mediaUrls=[download_url]`
-     (or equivalently `imageUrl` / `mediaUrl`). The text field is the caption.
+2. **Deliver** it to the user in the reply:
+   - **For images** — `message.send(text=..., mediaUrls=[download_url])` (or
+     `imageUrl` / `mediaUrl`). The text field is the caption.
    - **For other files** (`.csv` / `.json` / `.md` / `.txt`) — put a markdown link in
      the message body: `Report: [weekly-sales.csv]({download_url})`.
 
-**Prohibited:**
+### Prohibited
 
 - **Never** write "✅ Screenshot sent" / "file attached" / "here is the image" unless
-  the same reply actually contains an HTTPS URL from File Storage in `mediaUrls` or
-  a markdown link in the text. A bare acknowledgement without the URL is a lie — the
+  the same reply actually invokes the `message` tool with either a local path (Route A)
+  or an HTTPS URL (Route B). A bare acknowledgement without delivery is a lie — the
   user sees no file.
-- **Never** emit a container-local path (`/home/node/...`, `/tmp/...`, `file://...`)
-  as `mediaUrls`. The runtime strips non-HTTPS media before delivery — those messages
-  arrive with no attachment.
-- **Never** promise to "send the screenshot" before you have completed step 2 (upload)
-  and have a `download_url` in hand.
+- **Never** emit a container-local path as `mediaUrls` (the plural array). Only the
+  singular image params (`imagePath`, `imageUrl`, `mediaUrl`, `localImagePath`) auto-
+  upload locals; `mediaUrls` entries must already be HTTPS.
+- **Never** promise to "send the screenshot" before you actually call `message.send`
+  with a path or URL in hand.
 
 If upload fails (quota, network, unsupported extension per `file-storage` constraints),
 say so explicitly and offer a text summary instead — do not claim success.

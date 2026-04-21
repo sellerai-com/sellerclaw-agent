@@ -10,8 +10,34 @@ Upload content as files and provide download URLs to the user (owner) or other a
 
 **Rule of thumb:** whenever you produce an artifact (screenshot, report, export, chart,
 rendered document) that you want the user to actually *see* or *download* — you MUST
-upload it first and share the `download_url`. A local path on disk (e.g. the `mediaUrl`
-returned by the `browser` tool) is **never** visible to the user on its own.
+ensure it reaches the user as an HTTPS `download_url`. A local path on disk (e.g. the
+`mediaUrl` returned by the `browser` tool) is **never** visible to the user on its own.
+
+## Plugin-native shortcut for local container files (preferred)
+
+If the file already lives inside the container (typical for `browser` screenshots at
+`/home/node/.openclaw/media/...`, or artifacts you wrote to `/tmp/...`), you do **not**
+need to run `curl` against File Storage yourself. The `message` tool's image params
+auto-upload local paths through the agent's internal proxy:
+
+```
+message.send(
+  text="Here is the page.",
+  imagePath="/home/node/.openclaw/media/browser/<uuid>.jpg"
+)
+```
+
+Also accepted for auto-upload: passing a local path (absolute `/...` or `file://...`)
+as `imageUrl`, `mediaUrl`, or `localImagePath`. The plugin strips `file://`, uploads
+the file, and forwards the resulting HTTPS `download_url` to the user.
+
+Use this shortcut whenever the file is already on the container filesystem — no
+`AGENT_API_KEY`, no `exec curl`, no manual upload step.
+
+Fallback to the manual curl flow below only when:
+- you need the `download_url` for something other than the current `message.send` call
+  (e.g. storing it, passing it to another agent, embedding in a markdown link), or
+- the content is generated in-memory and not yet on disk.
 
 ## Text Upload
 
@@ -69,7 +95,19 @@ The `browser` tool's `screenshot` / `snapshot` action returns
 `result.media.mediaUrl` = a **local path inside the container** (e.g.
 `/home/node/.openclaw/media/browser/<uuid>.jpg`). That path is NOT reachable by the user.
 
-Canonical flow:
+**Preferred (plugin-native):** pass the local path straight to the message tool:
+
+```
+message.send(
+  text="Here is the page.",
+  imagePath="${result.media.mediaUrl}"
+)
+```
+
+The plugin uploads it and delivers an HTTPS preview in one call.
+
+**Manual curl flow** — use only when you need the `download_url` for something beyond
+the current reply:
 
 1. Call `browser` to take the screenshot → copy `result.media.mediaUrl` (local path).
 2. Upload it:
@@ -81,9 +119,10 @@ Canonical flow:
    → response contains `download_url`.
 3. Send to user via `message.send(text=..., mediaUrls=[download_url])`.
 
-**Never claim "screenshot sent" / "file attached" without having actually called step 3
-with an HTTPS `download_url` in `mediaUrls` (or an explicit markdown link in the text).**
-A plain text "done" without the URL means the user sees nothing.
+**Never claim "screenshot sent" / "file attached" without having actually passed a
+local `imagePath` (plugin-native route) or an HTTPS `download_url` to the `message` tool
+in the same reply.** A plain text "done" without delivering the image means the user
+sees nothing.
 
 ## Constraints
 

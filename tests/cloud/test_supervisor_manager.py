@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,7 @@ from sellerclaw_agent.bundle.builder import BundleBuilder
 from sellerclaw_agent.bundle.manifest import BundleManifest
 from sellerclaw_agent.cloud.supervisor_manager import (
     REJECT_ALREADY_RUNNING,
+    REJECT_OPENCLAW_RUNNING_BROWSER,
     SupervisorContainerManager,
     _parse_uptime_seconds_from_line,
     create_supervisor_manager,
@@ -34,6 +36,8 @@ def _mgr(
         "gateway_host_port": 7788,
         "vnc_host_port": 6080,
         "runtime_image_tag": "sellerclaw-openclaw-runtime:test",
+        "kasm_program_name": "kasmvnc",
+        "gost_program_name": "gost",
     }
     defaults.update(kwargs)
     return SupervisorContainerManager(**defaults)  # type: ignore[arg-type]
@@ -419,3 +423,239 @@ def test_create_supervisor_manager_uses_env(
     assert m.gateway_host_port == 7789
     assert m.vnc_host_port == 6081
     assert m.runtime_image_tag == "img:tag"
+
+
+def test_probe_browser_status_kasm_stopped(
+    tmp_path: Path,
+    agent_resources_root: Path,
+) -> None:
+    mgr = _mgr(tmp_path, agent_resources_root)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if "status" in cmd and mgr.kasm_program_name in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=f"{mgr.kasm_program_name}                         STOPPED   Not started\n",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        b = mgr.probe_browser_status()
+    assert b.status == "stopped"
+    assert b.kasmvnc_running is False
+    assert b.chrome_running is False
+    assert b.pages is None
+
+
+def test_probe_browser_status_kasm_starting(
+    tmp_path: Path,
+    agent_resources_root: Path,
+) -> None:
+    mgr = _mgr(tmp_path, agent_resources_root)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if "status" in cmd and mgr.kasm_program_name in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=f"{mgr.kasm_program_name}                         STARTING  \n",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        b = mgr.probe_browser_status()
+    assert b.status == "starting"
+    assert b.kasmvnc_running is True
+
+
+def test_probe_browser_cdp_timeout_short_uptime_is_starting(
+    tmp_path: Path,
+    agent_resources_root: Path,
+) -> None:
+    mgr = _mgr(tmp_path, agent_resources_root)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if "status" in cmd and mgr.kasm_program_name in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=f"{mgr.kasm_program_name}                         RUNNING   pid 1, uptime 0:00:02\n",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    def urlopen_side_effect(*_a: object, **_kw: object) -> None:
+        raise TimeoutError("cdp")
+
+    with (
+        patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect),
+        patch("sellerclaw_agent.cloud.supervisor_manager.urllib.request.urlopen", side_effect=urlopen_side_effect),
+    ):
+        b = mgr.probe_browser_status()
+    assert b.status == "starting"
+
+
+def test_probe_browser_cdp_timeout_long_uptime_is_error(
+    tmp_path: Path,
+    agent_resources_root: Path,
+) -> None:
+    mgr = _mgr(tmp_path, agent_resources_root)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if "status" in cmd and mgr.kasm_program_name in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=f"{mgr.kasm_program_name}                         RUNNING   pid 1, uptime 0:10:00\n",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    def urlopen_side_effect(*_a: object, **_kw: object) -> None:
+        raise TimeoutError("cdp")
+
+    with (
+        patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect),
+        patch("sellerclaw_agent.cloud.supervisor_manager.urllib.request.urlopen", side_effect=urlopen_side_effect),
+    ):
+        b = mgr.probe_browser_status()
+    assert b.status == "error"
+    assert b.error is not None
+
+
+def test_probe_browser_running_with_page_targets(
+    tmp_path: Path,
+    agent_resources_root: Path,
+) -> None:
+    mgr = _mgr(tmp_path, agent_resources_root)
+    cdp_payload = [
+        {"type": "page", "url": "https://seller.shopify.com/orders", "title": "Orders"},
+        {"type": "service_worker", "url": "ignored"},
+    ]
+
+    class _Resp:
+        def __enter__(self) -> "_Resp":
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(cdp_payload).encode("utf-8")
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if "status" in cmd and mgr.kasm_program_name in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=f"{mgr.kasm_program_name}                         RUNNING   pid 1, uptime 0:01:00\n",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect),
+        patch(
+            "sellerclaw_agent.cloud.supervisor_manager.urllib.request.urlopen",
+            return_value=_Resp(),
+        ),
+    ):
+        b = mgr.probe_browser_status()
+    assert b.status == "running"
+    assert b.kasmvnc_running is True
+    assert b.chrome_running is True
+    assert b.pages is not None and len(b.pages) == 1
+    assert b.pages[0].url.startswith("https://seller.shopify.com")
+    assert b.pages[0].title == "Orders"
+
+
+def test_probe_browser_cdp_ok_no_page_targets_long_uptime_is_running(
+    tmp_path: Path,
+    agent_resources_root: Path,
+) -> None:
+    """Kasm RUNNING + reachable CDP + zero page targets after warm-up → running (not stopped)."""
+    mgr = _mgr(tmp_path, agent_resources_root)
+
+    class _Resp:
+        def __enter__(self) -> "_Resp":
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def read(self) -> bytes:
+            return b"[]"
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if "status" in cmd and mgr.kasm_program_name in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout=f"{mgr.kasm_program_name}                         RUNNING   pid 1, uptime 0:10:00\n",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect),
+        patch(
+            "sellerclaw_agent.cloud.supervisor_manager.urllib.request.urlopen",
+            return_value=_Resp(),
+        ),
+    ):
+        b = mgr.probe_browser_status()
+    assert b.status == "running"
+    assert b.kasmvnc_running is True
+    assert b.chrome_running is False
+    assert b.pages is None
+
+
+def test_open_browser_rejected_when_openclaw_running(
+    tmp_path: Path,
+    agent_resources_root: Path,
+) -> None:
+    mgr = _mgr(tmp_path, agent_resources_root)
+    with patch.object(mgr, "probe_openclaw_status", return_value=("running", None)):
+        outcome, err = mgr.open_browser()
+    assert outcome == "rejected"
+    assert err == REJECT_OPENCLAW_RUNNING_BROWSER
+
+
+def test_open_browser_starts_sidecars_and_chrome(
+    tmp_path: Path,
+    agent_resources_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mgr = _mgr(tmp_path, agent_resources_root)
+    sock = tmp_path / "X1"
+    sock.parent.mkdir(parents=True, exist_ok=True)
+    sock.write_bytes(b"")
+    monkeypatch.setenv("OPENCLAW_BROWSER_X11_SOCKET", str(sock))
+    monkeypatch.setenv("OPENCLAW_CHROME_LAUNCHER", "/bin/true")
+
+    with patch.object(mgr, "probe_openclaw_status", return_value=("stopped", None)):
+        with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stdout="ok\n", stderr="")
+            with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.Popen") as popen:
+                popen.return_value = MagicMock()
+                outcome, err = mgr.open_browser()
+    assert outcome == "completed"
+    assert err is None
+    ctl_cmds = [c.args[0] for c in run.call_args_list if c.args and c.args[0][:1] == ["supervisorctl"]]
+    assert any("start" in c and mgr.kasm_program_name in c for c in ctl_cmds)
+    assert any("start" in c and mgr.gost_program_name in c for c in ctl_cmds)
+    popen.assert_called_once()
+
+
+def test_close_browser_idempotent(
+    tmp_path: Path,
+    agent_resources_root: Path,
+) -> None:
+    mgr = _mgr(tmp_path, agent_resources_root)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if cmd and cmd[0] == "/bin/sh":
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if "stop" in cmd:
+            return MagicMock(returncode=0, stdout="stopped\n", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        assert mgr.close_browser() == ("completed", None)

@@ -356,3 +356,39 @@ async def test_connect_wraps_connecterror_as_cloud_connection_error(
     )
     with pytest.raises(CloudConnectionError, match="simulated"):
         await client.connect(agent_version="1", protocol_version=1)
+
+
+@pytest.mark.asyncio
+async def test_ping_includes_browser_payload_in_json_body(tmp_path: Path) -> None:
+    browser = {
+        "status": "running",
+        "kasmvnc_running": True,
+        "chrome_running": True,
+        "error": None,
+        "pages": [{"url": "https://a.example", "title": "A", "type": "page"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/connection/ping":
+            body = _json_body(request)
+            assert body["protocol_version"] == 2
+            assert body["browser"] == browser
+            return httpx.Response(200, json={"pending_command": None})
+        return httpx.Response(404)
+
+    storage = _write_creds(tmp_path)
+    client = SellerClawConnectionClient(
+        credentials_storage=storage,
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    out = await client.ping(
+        agent_instance_id=UUID("77777777-7777-4777-8777-777777777777"),
+        agent_version="1",
+        protocol_version=2,
+        openclaw_status="running",
+        openclaw_error=None,
+        command_result=None,
+        browser=browser,
+    )
+    assert out.pending_command is None

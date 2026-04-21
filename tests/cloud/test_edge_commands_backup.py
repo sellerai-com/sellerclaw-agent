@@ -72,3 +72,78 @@ async def test_disconnect_also_uploads_backup(tmp_path: Path, monkeypatch: pytes
 
     assert outcome == "completed"
     assert mock_client.upload_state_backup.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_open_browser_delegates_to_container_manager(tmp_path: Path) -> None:
+    mock_client = MagicMock()
+    mock_mgr = MagicMock()
+    mock_mgr.open_browser = MagicMock(return_value=("completed", None))
+
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(1, thread_name_prefix="edge_open_browser")
+    try:
+        outcome, err = await _execute_remote_command(
+            loop=loop,
+            executor=executor,
+            cmd_type="open_browser",
+            client=mock_client,
+            data_dir=tmp_path,
+            container_mgr=mock_mgr,
+        )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    assert outcome == "completed"
+    assert err is None
+    mock_mgr.open_browser.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_open_browser_normalizes_command_type_string(tmp_path: Path) -> None:
+    mock_client = MagicMock()
+    mock_mgr = MagicMock()
+    mock_mgr.open_browser = MagicMock(return_value=("completed", None))
+
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(1, thread_name_prefix="edge_open_browser_norm")
+    try:
+        outcome, err = await _execute_remote_command(
+            loop=loop,
+            executor=executor,
+            cmd_type="  OPEN_BROWSER  ",
+            client=mock_client,
+            data_dir=tmp_path,
+            container_mgr=mock_mgr,
+        )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    assert outcome == "completed"
+    assert err is None
+    mock_mgr.open_browser.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_close_browser_delegates_to_container_manager(tmp_path: Path) -> None:
+    mock_client = MagicMock()
+    mock_mgr = MagicMock()
+    mock_mgr.close_browser = MagicMock(return_value=("completed", None))
+
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(1, thread_name_prefix="edge_close_browser")
+    try:
+        outcome, err = await _execute_remote_command(
+            loop=loop,
+            executor=executor,
+            cmd_type="close_browser",
+            client=mock_client,
+            data_dir=tmp_path,
+            container_mgr=mock_mgr,
+        )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    assert outcome == "completed"
+    assert err is None
+    mock_mgr.close_browser.assert_called_once()

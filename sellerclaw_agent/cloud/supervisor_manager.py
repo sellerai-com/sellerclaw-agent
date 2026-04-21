@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +21,7 @@ from sellerclaw_agent.paths import get_agent_resources_root
 _log = structlog.get_logger(__name__)
 
 REJECT_ALREADY_RUNNING = "openclaw_already_running"
+REJECT_OPENCLAW_RUNNING_BROWSER = "openclaw_running_browser_command_rejected"
 
 
 def _env_int(key: str, default: str) -> int:
@@ -126,6 +131,22 @@ def _classify_supervisor_status_line(line: str) -> tuple[str, str | None]:
     return "stopped", None
 
 
+@dataclass(frozen=True)
+class BrowserPageProbe:
+    url: str
+    title: str
+    page_type: str
+
+
+@dataclass(frozen=True)
+class BrowserStatusProbe:
+    status: str
+    kasmvnc_running: bool
+    chrome_running: bool
+    error: str | None
+    pages: tuple[BrowserPageProbe, ...] | None
+
+
 @dataclass
 class SupervisorContainerManager:
     """Manage OpenClaw gateway process via supervisord (supervisorctl)."""
@@ -138,6 +159,8 @@ class SupervisorContainerManager:
     gateway_host_port: int
     vnc_host_port: int
     runtime_image_tag: str | None = None
+    kasm_program_name: str = "kasmvnc"
+    gost_program_name: str = "gost"
 
     def _run_ctl(self, *args: str, timeout: float) -> subprocess.CompletedProcess[str]:
         cmd = ["supervisorctl", "-c", self.supervisord_config, *args]
@@ -171,6 +194,211 @@ class SupervisorContainerManager:
             return "", result
         line = _first_status_line(result.stderr)
         return line, result
+
+    def _program_status_line_raw(self, program: str) -> tuple[str, subprocess.CompletedProcess[str]]:
+        result = self._run_ctl("status", program, timeout=5.0)
+        line = _first_status_line(result.stdout)
+        if line:
+            return line, result
+        if result.returncode != 0:
+            return "", result
+        line = _first_status_line(result.stderr)
+        return line, result
+
+    def _chrome_debug_list_url(self) -> str:
+        port = _env_int("OPENCLAW_CHROME_DEBUG_PORT", "7800")
+        return f"http://127.0.0.1:{port}/json/list"
+
+    def _fetch_cdp_page_targets(self) -> tuple[list[BrowserPageProbe], str | None]:
+        """Return (pages, error). Empty list means CDP reachable but no page targets."""
+        url = self._chrome_debug_list_url()
+        try:
+            with urllib.request.urlopen(url, timeout=1.0) as resp:  # noqa: S310
+                raw = resp.read().decode("utf-8", errors="replace")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            return [], str(exc)[:500]
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return [], "invalid CDP json/list"
+        if not isinstance(data, list):
+            return [], "CDP json/list not a list"
+        pages: list[BrowserPageProbe] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "") != "page":
+                continue
+            url_s = str(item.get("url") or "")[:2048]
+            title_s = str(item.get("title") or "")[:512]
+            if not url_s and not title_s:
+                continue
+            pages.append(BrowserPageProbe(url=url_s, title=title_s, page_type="page"))
+            if len(pages) >= 20:
+                break
+        return pages, None
+
+    def probe_browser_status(self) -> BrowserStatusProbe:
+        """Probe KasmVNC supervisord program and Chrome DevTools /json/list."""
+        try:
+            line, result = self._program_status_line_raw(self.kasm_program_name)
+            if not line:
+                err = (result.stderr or result.stdout or "").strip() or f"supervisorctl exit {result.returncode}"
+                return BrowserStatusProbe(
+                    status="error",
+                    kasmvnc_running=False,
+                    chrome_running=False,
+                    error=err[:500],
+                    pages=None,
+                )
+            kasm_norm, kasm_line_err = _classify_supervisor_status_line(line)
+            uptime = _parse_uptime_seconds_from_line(line)
+
+            if kasm_norm in {"error"}:
+                return BrowserStatusProbe(
+                    status="error",
+                    kasmvnc_running=False,
+                    chrome_running=False,
+                    error=(kasm_line_err or line)[:500],
+                    pages=None,
+                )
+            if kasm_norm == "stopped":
+                return BrowserStatusProbe(
+                    status="stopped",
+                    kasmvnc_running=False,
+                    chrome_running=False,
+                    error=None,
+                    pages=None,
+                )
+            if kasm_norm == "starting":
+                return BrowserStatusProbe(
+                    status="starting",
+                    kasmvnc_running=True,
+                    chrome_running=False,
+                    error=None,
+                    pages=None,
+                )
+
+            pages, cdp_err = self._fetch_cdp_page_targets()
+            up = uptime if uptime is not None else 9999.0
+            if cdp_err is not None:
+                if up < 5.0:
+                    return BrowserStatusProbe(
+                        status="starting",
+                        kasmvnc_running=True,
+                        chrome_running=False,
+                        error=None,
+                        pages=None,
+                    )
+                return BrowserStatusProbe(
+                    status="error",
+                    kasmvnc_running=True,
+                    chrome_running=False,
+                    error=cdp_err,
+                    pages=None,
+                )
+            if pages:
+                return BrowserStatusProbe(
+                    status="running",
+                    kasmvnc_running=True,
+                    chrome_running=True,
+                    error=None,
+                    pages=tuple(pages),
+                )
+            if up < 5.0:
+                return BrowserStatusProbe(
+                    status="starting",
+                    kasmvnc_running=True,
+                    chrome_running=False,
+                    error=None,
+                    pages=None,
+                )
+            # CDP responds but no page targets: VNC stack is up; Chrome may be idle or not exposing pages yet.
+            return BrowserStatusProbe(
+                status="running",
+                kasmvnc_running=True,
+                chrome_running=False,
+                error=None,
+                pages=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("browser_probe_failed", error=str(exc))
+            return BrowserStatusProbe(
+                status="error",
+                kasmvnc_running=False,
+                chrome_running=False,
+                error=str(exc)[:500],
+                pages=None,
+            )
+
+    def open_browser(self) -> tuple[str, str | None]:
+        """Start KasmVNC sidecars and launch Chrome (dev-admin / remote command)."""
+        probe, _ = self.probe_openclaw_status()
+        if probe == "running":
+            return "rejected", REJECT_OPENCLAW_RUNNING_BROWSER
+
+        try:
+            for svc in (self.kasm_program_name, self.gost_program_name):
+                proc = self._run_ctl("start", svc, timeout=60.0)
+                out = (proc.stdout or "") + (proc.stderr or "")
+                if proc.returncode != 0 and "already started" not in out.lower():
+                    return "failed", out.strip()[:500] or f"exit {proc.returncode}"
+        except Exception as exc:  # noqa: BLE001
+            return "failed", str(exc)[:500]
+
+        x11 = Path(os.environ.get("OPENCLAW_BROWSER_X11_SOCKET", "/tmp/.X11-unix/X1"))
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            if x11.exists():
+                break
+            time.sleep(0.2)
+        if not x11.exists():
+            return "failed", f"X11 display socket not ready: {x11}"
+
+        chrome_bin = os.environ.get("OPENCLAW_CHROME_LAUNCHER", "/usr/local/bin/openclaw_chrome")
+        try:
+            subprocess.Popen(  # noqa: S603
+                [chrome_bin, "about:blank"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return "failed", str(exc)[:500]
+        return "completed", None
+
+    def close_browser(self) -> tuple[str, str | None]:
+        """Kill Chrome/Chromium and stop VNC sidecars."""
+        pkill_err: str | None = None
+        try:
+            subprocess.run(  # noqa: S603
+                [
+                    "/bin/sh",
+                    "-c",
+                    "pkill -f google-chrome-stable 2>/dev/null || true; "
+                    "pkill -f openclaw_chrome 2>/dev/null || true; "
+                    "pkill -f '/usr/bin/chromium' 2>/dev/null || true",
+                ],
+                check=False,
+                timeout=30.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            pkill_err = str(exc)[:500]
+
+        try:
+            for svc in (self.kasm_program_name, self.gost_program_name):
+                proc = self._run_ctl("stop", svc, timeout=60.0)
+                out = (proc.stdout or "") + (proc.stderr or "")
+                if proc.returncode != 0:
+                    lowered = out.lower()
+                    if "not running" not in lowered and "no such process" not in lowered:
+                        return "failed", out.strip()[:500] or f"exit {proc.returncode}"
+        except Exception as exc:  # noqa: BLE001
+            return "failed", str(exc)[:500]
+
+        if pkill_err is not None:
+            return "failed", pkill_err
+        return "completed", None
 
     def probe_openclaw_status(self) -> tuple[str, str | None]:
         try:
@@ -333,4 +561,6 @@ def create_supervisor_manager(
         gateway_host_port=_env_int("OPENCLAW_PORT_GATEWAY", "7788"),
         vnc_host_port=_env_int("OPENCLAW_PORT_VNC", "6080"),
         runtime_image_tag=raw_image or None,
+        kasm_program_name=os.environ.get("OPENCLAW_SUPERVISOR_KASM_PROGRAM", "kasmvnc"),
+        gost_program_name=os.environ.get("OPENCLAW_SUPERVISOR_GOST_PROGRAM", "gost"),
     )

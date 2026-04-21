@@ -60,25 +60,37 @@ Reconnecting after a restart is automatic: the server invalidates the previous s
 
 1. Ensures an agent token is available (`agent_token.json` or `AGENT_API_KEY`) — otherwise sleeps.
 2. Probes the local OpenClaw program via `supervisorctl status` (→ `running` / `stopped` / `starting` / `error`).
-3. Creates a session with `POST /connect` if `edge_session.json` is missing.
-4. Sends `POST /agent/connection/ping` with the current status and `command_result: null`.
-5. If the response contains `pending_command`, executes it (`start` / `stop` / `restart` / `disconnect`).
-6. Sends a second ping with the `command_result` so the server can move the command to COMPLETED or FAILED.
+3. Probes the **edge browser** stack (KasmVNC supervisord program + Chrome DevTools `GET http://127.0.0.1:<debug-port>/json/list`) and attaches an optional `browser` object to each ping when `protocol_version >= 2`.
+4. Creates a session with `POST /connect` if `edge_session.json` is missing.
+5. Sends `POST /agent/connection/ping` with the current status, optional `browser`, and `command_result: null`.
+6. If the response contains `pending_command`, executes it (`start` / `stop` / `restart` / `disconnect` / `open_browser` / `close_browser`).
+7. Sends a second ping with the `command_result` (and the latest `browser` probe) so the server can move the command to COMPLETED or FAILED.
 
 ```text
 POST /agent/connection/ping
 {
   "agent_instance_id": "...",
   "agent_version": "0.1.0",
-  "protocol_version": 1,
+  "protocol_version": 2,
   "openclaw_status": "running",
   "openclaw_error": null,
+  "browser": {
+    "status": "running" | "stopped" | "starting" | "error",
+    "kasmvnc_running": true,
+    "chrome_running": true,
+    "error": null,
+    "pages": [
+      { "url": "https://example.com/path", "title": "Tab title", "type": "page" }
+    ]
+  },
   "command_result": null
 }
 
 → 200 { "pending_command": { "command_id", "command_type", "issued_at" } }
    or  { "pending_command": null }
 ```
+
+`browser` is **omitted** by agents speaking `protocol_version` 1, or when the probe is skipped; servers must treat it as optional for backward compatibility. Page list is capped (≤20 URLs; URL length truncated server-side as applicable).
 
 The server considers the agent **offline** when it has not pinged for longer than its `stale_after_seconds` threshold (default 30s on SellerClaw cloud). That status is virtual — it is computed on read, not written anywhere.
 
@@ -99,6 +111,8 @@ The server considers the agent **offline** when it has not pinged for longer tha
 | `stop` | Stops and releases the OpenClaw program. Idempotent if it is already stopped. |
 | `restart` | `stop` + `start`. If nothing was running, behaves like `start`. |
 | `disconnect` | `stop` + `POST /disconnect` + exits the ping loop. The local FastAPI server keeps running so the user can re-authenticate. |
+| `open_browser` | Starts KasmVNC + `gost` via supervisord, waits for the configured X11 socket, launches Chrome via `OPENCLAW_CHROME_LAUNCHER` (default `/usr/local/bin/openclaw_chrome`). **Rejected** while OpenClaw gateway is `running` (`openclaw_running_browser_command_rejected`). |
+| `close_browser` | Best-effort `pkill` of Chrome/Chromium, then `supervisorctl stop` for KasmVNC and `gost`. Idempotent. |
 
 The deprecated `update_manifest` command is **not supported**. Servers should use `start` or `restart` instead; the agent replies `failed` if it ever sees one.
 
@@ -176,7 +190,7 @@ Any transport error (timeout, 5xx, DNS) is treated as transient: the agent logs 
 
 ## Protocol version
 
-Every ping carries `protocol_version`. The current version is **1**. Servers may refuse clients whose version they no longer support; the agent in turn can gate behaviour on the server version exposed in future responses.
+Every ping carries `protocol_version`. The current agent version is **2** (ping includes optional `browser` telemetry). **1** remains valid: omit `browser` and use the same ping shape as before. Servers may refuse clients whose version they no longer support; the agent in turn can gate behaviour on the server version exposed in future responses.
 
 ## Security notes
 

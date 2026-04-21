@@ -21,7 +21,11 @@ from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.exceptions import CloudAgentSuspendedError, CloudAuthError, CloudConnectionError
-from sellerclaw_agent.cloud.supervisor_manager import SupervisorContainerManager, create_supervisor_manager
+from sellerclaw_agent.cloud.supervisor_manager import (
+    BrowserStatusProbe,
+    SupervisorContainerManager,
+    create_supervisor_manager,
+)
 from sellerclaw_agent.server.edge_commands import (
     CommandResultStore,
     CompletedRemoteCommand,
@@ -31,7 +35,20 @@ from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 
 _log = structlog.get_logger(__name__)
 
-AGENT_PROTOCOL_VERSION = 1
+AGENT_PROTOCOL_VERSION = 2
+
+
+def _browser_ping_payload(probe: BrowserStatusProbe) -> dict[str, object]:
+    pages = [{"url": p.url, "title": p.title, "type": p.page_type} for p in (probe.pages or ())]
+    return {
+        "status": probe.status,
+        "kasmvnc_running": probe.kasmvnc_running,
+        "chrome_running": probe.chrome_running,
+        "error": probe.error,
+        "pages": pages,
+    }
+
+
 _PERIODIC_STATE_BACKUP_SECONDS = 4 * 3600
 
 
@@ -101,6 +118,11 @@ async def run_edge_ping_loop(
             supervisor_executor,
             container_mgr.probe_openclaw_status,
         )
+        browser_probe = await loop.run_in_executor(
+            supervisor_executor,
+            container_mgr.probe_browser_status,
+        )
+        browser_payload = _browser_ping_payload(browser_probe)
 
         sess = session_storage.load()
         instance_id: UUID
@@ -129,6 +151,7 @@ async def run_edge_ping_loop(
                 openclaw_status=openclaw_status,
                 openclaw_error=openclaw_error,
                 command_result=None,
+                browser=browser_payload,
             )
         except CloudAgentSuspendedError:
             _log.warning("edge_agent_suspended_waiting_resume")
@@ -220,6 +243,11 @@ async def _flush_command_ack(
         supervisor_executor,
         container_mgr.probe_openclaw_status,
     )
+    browser_probe = await loop.run_in_executor(
+        supervisor_executor,
+        container_mgr.probe_browser_status,
+    )
+    browser_payload = _browser_ping_payload(browser_probe)
     result_payload = {
         "command_id": str(pending_ack.work.command_id),
         "outcome": pending_ack.outcome,
@@ -233,6 +261,7 @@ async def _flush_command_ack(
             openclaw_status=openclaw_status,
             openclaw_error=openclaw_error,
             command_result=result_payload,
+            browser=browser_payload,
         )
     except CloudAgentSuspendedError:
         _log.warning("edge_ping_ack_suspended")

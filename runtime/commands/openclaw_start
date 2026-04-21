@@ -116,6 +116,28 @@ log_node_report_summary() {
     python -m openclaw_diagnostics node-report "${diagnostic_dir}"
 }
 
+hydrate_agent_api_key() {
+    local data_dir="${SELLERCLAW_DATA_DIR:-/data}"
+    local token_file="${data_dir}/agent_token.json"
+    if [ -n "${AGENT_API_KEY:-}" ]; then
+        return 0
+    fi
+    if [ ! -r "${token_file}" ]; then
+        return 0
+    fi
+    local tok
+    tok="$(python3 -c "import json,sys,pathlib
+try:
+    d = json.loads(pathlib.Path('${token_file}').read_text())
+    print(d.get('agent_token','') or '')
+except Exception:
+    pass" 2>/dev/null || true)"
+    if [ -n "${tok}" ]; then
+        export AGENT_API_KEY="${tok}"
+        log "AGENT_API_KEY hydrated from ${token_file}"
+    fi
+}
+
 start_gateway() {
     local proxy_config="/etc/nginx/openclaw-proxy.conf"
     local nginx_bin=""
@@ -505,6 +527,7 @@ main() {
     export HOME="/home/node"
     export OPENCLAW_CONFIG_PATH="${CONFIG_PATH}"
 
+    hydrate_agent_api_key
     hydrate_bundle_assets
     discover_agent_ids
     ensure_state_dirs

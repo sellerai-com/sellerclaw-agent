@@ -234,6 +234,7 @@ class SellerClawConnectionClient:
         openclaw_status: str,
         openclaw_error: str | None,
         command_result: dict[str, Any] | None,
+        browser: dict[str, Any] | None = None,
     ) -> PingResponse:
         body: dict[str, Any] = {
             "agent_instance_id": str(agent_instance_id),
@@ -243,6 +244,8 @@ class SellerClawConnectionClient:
             "openclaw_error": openclaw_error,
             "command_result": command_result,
         }
+        if browser is not None:
+            body["browser"] = browser
         status, data = await self._request_json("POST", "/agent/connection/ping", json_body=body)
         if status == 401:
             raise CloudAuthError(self._detail_message(data), status_code=401)

@@ -79,7 +79,9 @@ async def _execute_remote_command(
     data_dir: Path,
     container_mgr: SupervisorContainerManager,
 ) -> tuple[str, str | None]:
-    if cmd_type in {"disconnect", "stop"}:
+    # Normalize API/enum quirks (must match server CommandType values, e.g. open_browser).
+    cmd = str(cmd_type).strip().lower().replace("-", "_")
+    if cmd in {"disconnect", "stop"}:
         outcome, err = await loop.run_in_executor(executor, container_mgr.stop)
         if outcome == "completed":
             state_dir = Path(os.environ.get("OPENCLAW_STATE_DIR", "/home/node/.openclaw"))
@@ -95,7 +97,7 @@ async def _execute_remote_command(
             except Exception as exc:  # noqa: BLE001
                 _log.warning("edge_state_backup_after_stop_failed", error=str(exc)[:500])
         return outcome, err
-    if cmd_type in {"start", "restart"}:
+    if cmd in {"start", "restart"}:
         try:
             mapping = await client.fetch_edge_manifest()
         except Exception as exc:  # noqa: BLE001 - surface as command failure
@@ -110,16 +112,20 @@ async def _execute_remote_command(
             manifest = bundle_manifest_from_mapping(mapping)
         except (TypeError, ValueError) as exc:
             return "failed", str(exc)[:500]
-        if cmd_type == "start":
+        if cmd == "start":
             fn = functools.partial(container_mgr.start, manifest)
         else:
             fn = functools.partial(container_mgr.restart, manifest)
         return await loop.run_in_executor(executor, fn)
-    if cmd_type == "update_manifest":
+    if cmd == "update_manifest":
         return (
             "failed",
             "update_manifest is no longer supported; use start or restart",
         )
+    if cmd == "open_browser":
+        return await loop.run_in_executor(executor, container_mgr.open_browser)
+    if cmd == "close_browser":
+        return await loop.run_in_executor(executor, container_mgr.close_browser)
     return "failed", f"unknown command_type {cmd_type!r}"
 
 
