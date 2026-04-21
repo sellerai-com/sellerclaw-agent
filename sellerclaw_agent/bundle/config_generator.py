@@ -26,6 +26,11 @@ OPENCLAW_BUNDLE_REDACT_SENSITIVE = "tools"
 
 OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 30000
 
+# Local sellerclaw-agent HTTP port inside the runtime container; plugins call back to it
+# via loopback for media upload proxying. Kept as a module constant so bundle tests can
+# assert the emitted config.
+OPENCLAW_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:8001"
+
 
 def _openclaw_litellm_model_ref(group_model_name: str) -> str:
     return f"{_LITELLM_OPENCLAW_PROVIDER}/{group_model_name}"
@@ -167,6 +172,7 @@ def generate_openclaw_config(
         "userId": str(user_id),
         "internalWebhookSecret": hooks_token,
         "primaryChannel": primary_channel,
+        "localAgentBaseUrl": OPENCLAW_LOCAL_AGENT_BASE_URL,
     }
 
     config_payload = {

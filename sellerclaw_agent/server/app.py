@@ -39,6 +39,7 @@ from sellerclaw_agent.cloud.supervisor_manager import (
 from sellerclaw_agent.server.command_history import CommandHistoryStorage
 from sellerclaw_agent.server.deps import require_local_api_key
 from sellerclaw_agent.server.local_api_key import get_local_api_key
+from sellerclaw_agent.server import media_upload
 from sellerclaw_agent.server.schemas import (
     AuthStatusResponse,
     CommandHistoryEntry,
@@ -538,6 +539,7 @@ def download_bundle_archive(
 
 
 app.include_router(control_plane)
+app.include_router(media_upload.router)
 
 _default_admin_ui_dist = Path(__file__).resolve().parents[2] / "admin-ui" / "dist"
 _admin_ui_dist = Path(os.environ.get("AGENT_ADMIN_UI_DIST", str(_default_admin_ui_dist)))

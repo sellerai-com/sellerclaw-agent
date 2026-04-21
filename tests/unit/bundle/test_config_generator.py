@@ -11,6 +11,7 @@ from sellerclaw_agent.bundle.config_generator import (
     OPENCLAW_BUNDLE_CONSOLE_STYLE,
     OPENCLAW_BUNDLE_LOG_LEVEL,
     OPENCLAW_BUNDLE_REDACT_SENSITIVE,
+    OPENCLAW_LOCAL_AGENT_BASE_URL,
     generate_openclaw_config,
 )
 from sellerclaw_agent.bundle.manifest import ModelSpec
@@ -76,6 +77,14 @@ def test_generate_openclaw_config_has_gateway_and_models(
     assert payload["channels"]["sellerclaw-ui"]["apiBaseUrl"] == "http://api"
     assert (
         payload["plugins"]["entries"]["sellerclaw-ui"]["config"]["apiBaseUrl"] == "http://api"
+    )
+    assert (
+        payload["channels"]["sellerclaw-ui"]["localAgentBaseUrl"]
+        == OPENCLAW_LOCAL_AGENT_BASE_URL
+    )
+    assert (
+        payload["plugins"]["entries"]["sellerclaw-ui"]["config"]["localAgentBaseUrl"]
+        == OPENCLAW_LOCAL_AGENT_BASE_URL
     )
 
 

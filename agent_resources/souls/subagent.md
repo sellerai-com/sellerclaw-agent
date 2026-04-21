@@ -24,6 +24,22 @@ from the supervisor agent and return structured results.
 - For partial success, clearly separate what succeeded from what failed in the `data`
   and `errors` fields.
 
+## Artifacts and file delivery
+
+If your task produces a file that the user should see (screenshot, CSV/JSON export,
+rendered report, chart image), you MUST:
+
+1. Upload it via the File Storage API (see the `file-storage` skill): `POST /files/upload`
+   for binary (images), `POST /files/` for text. Response contains `download_url`
+   (HTTPS, 7-day TTL).
+2. Return every such artifact in the `files` field of the result envelope:
+   `{"name": "screenshot.jpg", "download_url": "...", "content_type": "image/jpeg"}`.
+
+Never include a local container path (e.g. a `mediaUrl` from the `browser` tool like
+`/home/node/.openclaw/media/...`) in your result — that path is unreachable outside
+the container. Upload first, then return the `download_url`. The supervisor relies on
+this to actually deliver the artifact to the user.
+
 ## Self-monitoring
 
 - If you have made more than **6N API calls** for a task involving N items, stop and

@@ -3,6 +3,8 @@ export type ScwUiAccount = {
   userId: string;
   /** Per-user delivery Bearer (same as hooks token: HMAC from agent API key on the server). */
   internalWebhookSecret: string;
+  /** Local sellerclaw-agent base URL inside the container (for media upload proxy). */
+  localAgentBaseUrl: string;
 };
 
 /** Retries are safe: same `message_id` -> idempotent ingest on the API. */
@@ -79,6 +81,44 @@ export function resolveOutboundExtId(p: Record<string, unknown>): string {
     : typeof p.clientMessageId === "string"
       ? p.clientMessageId
       : crypto.randomUUID();
+}
+
+/**
+ * Upload a local container file path to the sellerclaw-agent's media proxy, which in turn
+ * pushes it to cloud File Storage and returns a public HTTPS `download_url`.
+ *
+ * Bearer auth reuses the per-user `internalWebhookSecret` (= hooks_token); the agent
+ * handles the separate AGENT_API_KEY internally when proxying to the cloud.
+ */
+export async function uploadLocalMedia(
+  account: ScwUiAccount,
+  localPath: string,
+): Promise<{ downloadUrl: string; filename: string; contentType: string }> {
+  const base = account.localAgentBaseUrl.replace(/\/$/, "");
+  if (!base) {
+    throw new Error("sellerclaw-ui: localAgentBaseUrl is required for media upload");
+  }
+  const url = `${base}/internal/openclaw/media/upload-local`;
+  const res = await postOpenclawWebhook(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${account.internalWebhookSecret}`,
+    },
+    body: JSON.stringify({ local_path: localPath }),
+  });
+  const body = (await res.json().catch(() => null)) as
+    | { download_url?: string; filename?: string; content_type?: string }
+    | null;
+  const downloadUrl = body?.download_url;
+  if (!downloadUrl || typeof downloadUrl !== "string") {
+    throw new Error("sellerclaw-ui: media upload response missing download_url");
+  }
+  return {
+    downloadUrl,
+    filename: typeof body?.filename === "string" ? body.filename : "",
+    contentType: typeof body?.content_type === "string" ? body.content_type : "",
+  };
 }
 
 export async function postWebhookMessage(

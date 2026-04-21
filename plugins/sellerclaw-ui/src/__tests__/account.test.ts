@@ -49,7 +49,20 @@ describe("resolveSellerclawUiAccount", () => {
       apiBaseUrl: "https://api.example.com",
       userId: "550e8400-e29b-41d4-a716-446655440000",
       internalWebhookSecret: "hooks-token",
+      localAgentBaseUrl: "http://127.0.0.1:8001",
     });
+  });
+
+  it("uses explicit localAgentBaseUrl when present", () => {
+    const result = resolveSellerclawUiAccount(
+      cfg({
+        apiBaseUrl: "https://api.example.com",
+        userId: "550e8400-e29b-41d4-a716-446655440000",
+        internalWebhookSecret: "hooks-token",
+        localAgentBaseUrl: "http://127.0.0.1:9999",
+      }),
+    );
+    expect(result.localAgentBaseUrl).toBe("http://127.0.0.1:9999");
   });
 
   it("ignores extra fields in section", () => {

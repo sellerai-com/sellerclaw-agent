@@ -8,6 +8,7 @@ import {
   enqueueSend,
   postWebhookMessage,
   resolveOutboundExtId,
+  uploadLocalMedia,
   type ScwUiAccount,
 } from "./send.js";
 
@@ -38,6 +39,10 @@ export function resolveSellerclawUiAccount(
     typeof section?.internalWebhookSecret === "string"
       ? section.internalWebhookSecret.trim()
       : "";
+  const localAgentBaseUrl =
+    typeof section?.localAgentBaseUrl === "string"
+      ? section.localAgentBaseUrl.trim()
+      : "http://127.0.0.1:8001";
   if (!apiBaseUrl) {
     throw new Error("sellerclaw-ui: apiBaseUrl is required");
   }
@@ -47,7 +52,7 @@ export function resolveSellerclawUiAccount(
   if (!internalWebhookSecret) {
     throw new Error("sellerclaw-ui: internalWebhookSecret is required");
   }
-  return { apiBaseUrl, userId, internalWebhookSecret };
+  return { apiBaseUrl, userId, internalWebhookSecret, localAgentBaseUrl };
 }
 
 /**
@@ -163,6 +168,44 @@ async function outboundSendText(params: unknown): Promise<{ messageId: string }>
   );
 }
 
+function looksLikeLocalPath(value: string): boolean {
+  return value.startsWith("/") || value.startsWith("file://");
+}
+
+function stripFilePrefix(value: string): string {
+  return value.startsWith("file://") ? value.slice("file://".length) : value;
+}
+
+/**
+ * Resolve the final public HTTPS image URL. If the caller supplies a local container path
+ * (either via `imagePath`/`localImagePath`/`mediaPath` or via `imageUrl` pointing at
+ * `/home/node/...` or `/tmp/...`), proxy-upload it through the agent so we get a real
+ * download URL before delivery.
+ */
+async function resolveDeliverableImageUrl(
+  account: ScwUiAccount,
+  p: OutboundParams,
+): Promise<string> {
+  const explicitPath =
+    (typeof p.imagePath === "string" && p.imagePath) ||
+    (typeof p.localImagePath === "string" && p.localImagePath) ||
+    (typeof p.mediaPath === "string" && p.mediaPath) ||
+    "";
+  const imageUrl = typeof p.imageUrl === "string" ? p.imageUrl.trim() : "";
+  if (explicitPath) {
+    const uploaded = await uploadLocalMedia(account, stripFilePrefix(explicitPath));
+    return uploaded.downloadUrl;
+  }
+  if (!imageUrl) {
+    throw new Error("sellerclaw-ui: imageUrl or imagePath is required for sendImage");
+  }
+  if (looksLikeLocalPath(imageUrl)) {
+    const uploaded = await uploadLocalMedia(account, stripFilePrefix(imageUrl));
+    return uploaded.downloadUrl;
+  }
+  return imageUrl;
+}
+
 async function outboundSendImage(params: unknown): Promise<{ messageId: string }> {
   const p = params as OutboundParams;
   const account = resolveOutboundAccount(p);
@@ -170,10 +213,7 @@ async function outboundSendImage(params: unknown): Promise<{ messageId: string }
   if (!sessionKey) {
     throw new Error("sellerclaw-ui: missing session key on outbound sendImage params");
   }
-  const imageUrl = typeof p.imageUrl === "string" ? p.imageUrl : "";
-  if (!imageUrl) {
-    throw new Error("sellerclaw-ui: imageUrl is required for sendImage");
-  }
+  const imageUrl = await resolveDeliverableImageUrl(account, p);
   const caption = typeof p.text === "string" ? p.text : "";
   const rawContent: Record<string, unknown>[] = [];
   if (caption) {

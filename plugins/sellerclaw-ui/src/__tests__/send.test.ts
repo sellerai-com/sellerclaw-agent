@@ -22,6 +22,7 @@ const account: ScwUiAccount = {
   apiBaseUrl: "https://api.example.com/",
   userId: "550e8400-e29b-41d4-a716-446655440000",
   internalWebhookSecret: "hooks-delivery-token",
+  localAgentBaseUrl: "http://127.0.0.1:8001",
 };
 
 describe("isTransientWebhookStatus", () => {
@@ -117,6 +118,7 @@ describe("postOpenclawWebhook / postWebhookMessage", () => {
       apiBaseUrl: "https://api.example.com",
       userId: "550e8400-e29b-41d4-a716-446655440000",
       internalWebhookSecret: "my-bearer",
+      localAgentBaseUrl: "http://127.0.0.1:8001",
     };
     const promise = postWebhookMessage(acc, "sk", { text: "t", message_id: "m" });
     await vi.runAllTimersAsync();
