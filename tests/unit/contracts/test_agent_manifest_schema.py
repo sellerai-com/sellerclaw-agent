@@ -49,11 +49,10 @@ def test_save_manifest_request_mapping_validates_against_packaged_schema(
                     "max_tokens": 50,
                 },
             },
-            "webhook_api_base_url": "http://api",
+            "template_variables": {"api_base_path": "/agent"},
             "enabled_modules": ["product_scout"],
             "connected_integrations": ["research_trends"],
             "model_name_prefix": "u:abc/",
-            "extra_allowed_origins": ["https://app.example"],
         }
     )
     jsonschema.validate(instance=req.to_mapping(), schema=agent_manifest_schema)

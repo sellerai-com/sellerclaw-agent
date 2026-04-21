@@ -8,7 +8,7 @@ The pages below are grouped by audience so you can jump straight to what you nee
 
 Start here if you want to install the agent, connect it to a cloud, and run it on your own machine.
 
-- [**CLI — installation and usage**](./cli.md) — install `sellerclaw-agent`, understand the `.env*` profiles, run `setup` / `login` / `status`, build the runtime image, and troubleshoot the most common first-run failures.
+- [**CLI — installation and usage**](./cli.md) — install `sellerclaw-agent`, understand `.env.local` / `.env.staging` / `.env.production` and `secrets.env`, run `setup` / `login` / `status`, build the runtime image, and troubleshoot the most common first-run failures.
 
 ## For developers integrating with the agent
 
@@ -32,4 +32,4 @@ See also the top-level [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the contribut
 - **Control-plane port (agent HTTP API):** `8001` (fixed; published from the container in `docker-compose.yml`).
 - **OpenClaw gateway port:** `7788` by default — runs as a separate process inside the same container, managed by `supervisord`.
 - **Admin UI port (dev):** `5174`.
-- **On-disk state:** `credentials.json` and `edge_session.json` under `SELLERCLAW_DATA_DIR` (default `/data` inside the container, bind-mounted to `./data` on the host).
+- **On-disk state:** `agent_token.json`, `local_api_key`, and `edge_session.json` under `SELLERCLAW_DATA_DIR` (default `/data` inside the container, bind-mounted to `./data` on the host).

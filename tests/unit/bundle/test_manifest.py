@@ -23,7 +23,6 @@ def _minimal_valid_bundle_mapping() -> dict[str, object]:
         "hooks_token": "h",
         "litellm_base_url": "http://litellm",
         "litellm_api_key": "k",
-        "webhook_api_base_url": "http://api",
         "models": {
             "complex": {
                 "id": "c",
@@ -57,16 +56,13 @@ def test_bundle_manifest_to_save_manifest_mapping_roundtrip(make_manifest) -> No
     assert again.proxy_url == manifest.proxy_url
 
 
-def test_bundle_manifest_roundtrip_preserves_model_prefix_and_origins() -> None:
+def test_bundle_manifest_roundtrip_preserves_model_prefix() -> None:
     mapping = _minimal_valid_bundle_mapping()
     mapping["model_name_prefix"] = "u:abc/"
-    mapping["extra_allowed_origins"] = ["https://app.example", "https://other.example"]
     loaded = bundle_manifest_from_mapping(mapping)
     assert loaded.model_name_prefix == "u:abc/"
-    assert loaded.extra_allowed_origins == ("https://app.example", "https://other.example")
     again = loaded.to_save_manifest_mapping()
     assert again["model_name_prefix"] == "u:abc/"
-    assert again["extra_allowed_origins"] == ["https://app.example", "https://other.example"]
 
 
 def test_bundle_manifest_roundtrip_preserves_proxy_url() -> None:
@@ -85,7 +81,6 @@ def test_bundle_manifest_yaml_roundtrip(tmp_path: Path, make_manifest) -> None:
         "hooks_token": manifest.hooks_token,
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": manifest.litellm_api_key,
-        "webhook_api_base_url": manifest.webhook_api_base_url,
         "models": {
             "complex": {
                 "id": manifest.model_complex.id,
@@ -123,7 +118,6 @@ def test_bundle_manifest_from_yaml_expands_env_vars(tmp_path: Path, make_manifes
         "hooks_token": manifest.hooks_token,
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": "${BUNDLE_TEST_LITELLM_KEY}",
-        "webhook_api_base_url": manifest.webhook_api_base_url,
         "models": {
             "complex": {
                 "id": manifest.model_complex.id,
@@ -172,11 +166,6 @@ def test_bundle_manifest_from_yaml_expands_env_vars(tmp_path: Path, make_manifes
             id="enabled-modules-not-list",
         ),
         pytest.param(
-            {**_minimal_valid_bundle_mapping(), "extra_allowed_origins": "not-a-list"},
-            "extra_allowed_origins must be a list",
-            id="extra-origins-not-list",
-        ),
-        pytest.param(
             {**_minimal_valid_bundle_mapping(), "user_id": "not-a-uuid"},
             "badly formed hexadecimal UUID string",
             id="invalid-user-id",
@@ -196,7 +185,6 @@ def test_bundle_manifest_minimal_yaml_defaults_nested_sections(tmp_path: Path, m
         "hooks_token": "h",
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": "k",
-        "webhook_api_base_url": manifest.webhook_api_base_url,
         "models": {
             "complex": {
                 "id": "c",
@@ -246,7 +234,6 @@ def test_bundle_manifest_connected_integrations_from_yaml(tmp_path: Path, make_m
         "hooks_token": manifest.hooks_token,
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": manifest.litellm_api_key,
-        "webhook_api_base_url": manifest.webhook_api_base_url,
         "models": {
             "complex": {
                 "id": "c",

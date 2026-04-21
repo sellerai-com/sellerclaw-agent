@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets as _secrets
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,91 @@ _THEME = Theme(
 )
 
 __all__ = ["agent_base_url", "agent_root", "main", "parse_command"]
+
+_cli_local_api_key_cache: str | None = None
+_VALID_AGENT_ENVS = ("local", "staging", "production")
+
+
+def _clear_local_control_plane_key_cache() -> None:
+    """Reset cached local API key (tests)."""
+    global _cli_local_api_key_cache
+    _cli_local_api_key_cache = None
+
+
+def _require_agent_env() -> str:
+    """Return ``AGENT_ENV`` value, or raise with a clear message (no fallback)."""
+    profile = (os.environ.get("AGENT_ENV") or "").strip()
+    if not profile:
+        msg = (
+            "AGENT_ENV is not set. Run ./setup.sh (default env: production) "
+            "or export AGENT_ENV=local|staging|production."
+        )
+        raise RuntimeError(msg)
+    if profile not in _VALID_AGENT_ENVS:
+        msg = (
+            f"Invalid AGENT_ENV='{profile}'. "
+            f"Expected one of: {', '.join(_VALID_AGENT_ENVS)}."
+        )
+        raise RuntimeError(msg)
+    return profile
+
+
+def _compose_profile_env_file(agent_dir: Path) -> Path:
+    """Resolve ``.env.<profile>``. Errors out when ``AGENT_ENV`` is unset or file is missing."""
+    profile = _require_agent_env()
+    path = agent_dir / f".env.{profile}"
+    if not path.is_file():
+        msg = f"Environment file not found: {path}"
+        raise RuntimeError(msg)
+    return path
+
+
+def _compose_env_file_args(agent_dir: Path) -> list[str]:
+    return ["--env-file", str(_compose_profile_env_file(agent_dir))]
+
+
+def _local_api_key_path(agent_dir: Path) -> Path:
+    """Host-side path to the local control-plane API key (same volume as container)."""
+    return agent_dir / "data" / "local_api_key"
+
+
+def _ensure_local_api_key(agent_dir: Path) -> str:
+    """Read (or create once) the local API key file shared with the container.
+
+    Precedence: env override ``SELLERCLAW_LOCAL_API_KEY`` > file in ``./data`` > new random token.
+    The file is owned by the host user so later reads never require Docker.
+    """
+    env_key = (os.environ.get("SELLERCLAW_LOCAL_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+    path = _local_api_key_path(agent_dir)
+    if path.is_file():
+        raw = path.read_text(encoding="utf-8").strip()
+        if raw:
+            return raw
+    path.parent.mkdir(parents=True, exist_ok=True)
+    token = _secrets.token_urlsafe(32)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(token + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return token
+
+
+def _local_control_plane_auth_headers(base_url: str) -> dict[str, str]:
+    """Bearer for control-plane routes, read from the on-disk key shared with the container.
+
+    ``base_url`` is kept for backwards compatibility but is no longer used for a
+    network bootstrap call — the CLI and the container read the exact same file.
+    """
+    del base_url  # unused: the file-based flow avoids an HTTP round-trip.
+    global _cli_local_api_key_cache
+    if _cli_local_api_key_cache is None:
+        _cli_local_api_key_cache = _ensure_local_api_key(agent_root())
+    return {"Authorization": f"Bearer {_cli_local_api_key_cache}"}
 
 
 def _console() -> Console:
@@ -135,8 +221,8 @@ def _confirm(console: Console, question: str, *, default: bool = True) -> bool:
 
 
 def _active_env_label() -> str:
-    """Human-readable label for the current AGENT_ENV (or 'local')."""
-    return os.environ.get("AGENT_ENV", "").strip() or "local"
+    """Human-readable label for the current ``AGENT_ENV`` (never guesses a default)."""
+    return (os.environ.get("AGENT_ENV") or "").strip() or "<unset>"
 
 
 def parse_command(argv: list[str]) -> str:
@@ -166,11 +252,181 @@ def _docker_compose_prefix() -> list[str] | None:
     return None
 
 
+def _diagnose_compose_failure(output: str) -> tuple[str, list[str]]:
+    """Map raw compose stderr/stdout to a short problem title and a list of hints."""
+    lo = output.lower()
+    if (
+        "failed to do request" in lo
+        or "dial tcp" in lo
+        or "i/o timeout" in lo
+        or "tls handshake timeout" in lo
+        or "connection refused" in lo
+        or "network is unreachable" in lo
+    ) and ("failed to solve" in lo or "failed to resolve source" in lo or "pull access denied" in lo or "manifests" in lo):
+        return (
+            "Could not download the Docker base image.",
+            [
+                "Check that this machine has Internet access (try: curl -I https://ghcr.io).",
+                "If you're on a corporate network or VPN, allow outbound HTTPS to ghcr.io "
+                "and docker.io, or configure a proxy for Docker "
+                "(https://docs.docker.com/network/proxy/).",
+                "If the image exists locally already, pull it once manually: "
+                "docker pull ghcr.io/openclaw/openclaw:2026.4.15",
+            ],
+        )
+    if "no such host" in lo or ("lookup" in lo and "dial tcp" in lo):
+        return (
+            "DNS lookup failed while pulling a Docker image.",
+            [
+                "Check /etc/resolv.conf and that your DNS server is reachable.",
+                "If you're behind a VPN/proxy, make sure DNS is routed correctly.",
+                "Retry: ./setup.sh",
+            ],
+        )
+    if "toomanyrequests" in lo or "rate limit" in lo:
+        return (
+            "Docker registry rate limit reached.",
+            [
+                "Wait a few minutes and try again.",
+                "Authenticate with Docker Hub / GHCR to raise the limit: docker login ghcr.io",
+            ],
+        )
+    if "unauthorized" in lo or "pull access denied" in lo or "requested access to the resource is denied" in lo:
+        return (
+            "Access to the Docker image was denied.",
+            [
+                "Log in to the registry: docker login ghcr.io",
+                "Make sure your account has permission to pull the image.",
+            ],
+        )
+    if "no space left" in lo:
+        return (
+            "Ran out of disk space while building or pulling images.",
+            [
+                "Free disk space (images cache: docker system df; clean: docker system prune -a --volumes).",
+                "Retry: ./setup.sh",
+            ],
+        )
+    if "permission denied" in lo and ("docker.sock" in lo or "/var/run/docker" in lo):
+        return (
+            "Docker daemon refused the connection (permissions).",
+            [
+                "Add your user to the 'docker' group: sudo usermod -aG docker $USER (then re-login).",
+                "Or run ./setup.sh with sudo.",
+            ],
+        )
+    if "cannot connect to the docker daemon" in lo:
+        return (
+            "Docker daemon is not running.",
+            [
+                "Start it: sudo systemctl start docker",
+                "Verify: docker info",
+            ],
+        )
+    if "port is already allocated" in lo or "address already in use" in lo:
+        return (
+            "A required port is already in use on this machine.",
+            [
+                "Stop the process using port 8001 / 7788 / 6080, or change the host port mapping in docker-compose.yml.",
+                "To see listeners: sudo lsof -iTCP -sTCP:LISTEN -n -P",
+            ],
+        )
+    return ("Docker Compose failed while building or starting the container.", [])
+
+
+def _print_generic_failure(
+    console: Console,
+    *,
+    stage: str,
+    reason: str,
+    hints: list[str] | None = None,
+) -> None:
+    """Render a red panel with a clear stage + reason + optional actionable hints."""
+    lines = [
+        f"[error]Step failed:[/error] {escape(stage)}",
+        f"[error]Reason:[/error] {escape(reason or 'unknown')}",
+    ]
+    if hints:
+        lines.append("")
+        lines.append("[label]What to try:[/label]")
+        for h in hints:
+            lines.append(f"  • {escape(h)}")
+    console.print(
+        Panel(
+            "\n".join(lines),
+            border_style="red",
+            expand=False,
+            padding=(1, 2),
+        ),
+    )
+
+
+def _print_cloud_verification_failure(console: Console, reason: str) -> None:
+    _print_generic_failure(
+        console,
+        stage="Verifying connection to SellerClaw cloud",
+        reason=reason,
+        hints=[
+            "Check your internet connection.",
+            "Container logs: docker compose logs server",
+            "Check status: ./setup.sh status",
+            "Retry: ./setup.sh",
+        ],
+    )
+
+
+def _print_start_failure(console: Console, base_url: str) -> None:
+    _print_generic_failure(
+        console,
+        stage="Step 2 of 3 — starting SellerClaw",
+        reason=f"The agent did not start responding at {base_url}/health in time.",
+        hints=[
+            "Check container logs: docker compose logs server",
+            "Make sure port 8001 on 127.0.0.1 is not taken by another process.",
+            "If the first build was killed/interrupted, rerun: ./setup.sh",
+        ],
+    )
+
+
+def _print_compose_failure(
+    console: Console,
+    *,
+    stage: str,
+    output: str,
+) -> None:
+    title, hints = _diagnose_compose_failure(output)
+    lines = [
+        f"[error]Step failed:[/error] {escape(stage)}",
+        f"[error]Reason:[/error] {escape(title)}",
+    ]
+    if hints:
+        lines.append("")
+        lines.append("[label]What to try:[/label]")
+        for h in hints:
+            lines.append(f"  • {escape(h)}")
+    tail = [ln for ln in (output or "").strip().splitlines()[-12:] if ln.strip()]
+    if tail:
+        lines.append("")
+        lines.append("[hint]Docker output (last lines):[/hint]")
+        for ln in tail:
+            lines.append(f"  [hint]{escape(ln)}[/hint]")
+    console.print(
+        Panel(
+            "\n".join(lines),
+            border_style="red",
+            expand=False,
+            padding=(1, 2),
+        ),
+    )
+
+
 def _run_compose(
     agent_dir: Path,
     *compose_args: str,
     console: Console,
     status_text: str | None = None,
+    extra_env: dict[str, str] | None = None,
+    stage: str | None = None,
 ) -> int:
     prefix = _docker_compose_prefix()
     if prefix is None:
@@ -179,21 +435,37 @@ def _run_compose(
             "[hint]Install: https://docs.docker.com/compose/install/[/hint]",
         )
         return 1
-    cmd = [*prefix, *compose_args]
+    try:
+        env_file_args = _compose_env_file_args(agent_dir)
+    except RuntimeError as exc:
+        console.print(f"[error]{escape(str(exc))}[/error]")
+        return 1
+    cmd = [*prefix, *env_file_args, *compose_args]
     label = status_text or f"$ {' '.join(cmd)}"
+    run_env = os.environ.copy()
+    if extra_env:
+        run_env.update(extra_env)
     with Progress(
         SpinnerColumn(),
         TextColumn(f"[hint]{escape(label)}[/hint]"),
         console=console,
         transient=True,
     ):
-        proc = subprocess.run(cmd, cwd=agent_dir, check=False, capture_output=True, text=True)
+        proc = subprocess.run(
+            cmd,
+            cwd=agent_dir,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=run_env,
+        )
     if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-30:]
-        if tail:
-            console.print("[error]Docker Compose failed:[/error]")
-            for line in tail:
-                console.print(f"  [hint]{escape(line)}[/hint]")
+        output = (proc.stderr or "") + "\n" + (proc.stdout or "")
+        _print_compose_failure(
+            console,
+            stage=stage or "docker compose " + " ".join(compose_args),
+            output=output,
+        )
     return int(proc.returncode)
 
 
@@ -217,7 +489,7 @@ def _extract_error_message(response: httpx.Response) -> str:
 
 
 def wait_for_agent(base_url: str, console: Console, *, timeout_s: float = 120) -> bool:
-    """Poll ``GET /auth/status`` until the Agent Server responds."""
+    """Poll ``GET /health`` until the Agent Server responds."""
     deadline = time.monotonic() + timeout_s
     with Progress(
         SpinnerColumn(),
@@ -228,7 +500,7 @@ def wait_for_agent(base_url: str, console: Console, *, timeout_s: float = 120) -
         with httpx.Client(timeout=5.0) as client:
             while time.monotonic() < deadline:
                 try:
-                    r = client.get(f"{base_url}/auth/status")
+                    r = client.get(f"{base_url}/health")
                     if r.status_code == 200:
                         return True
                 except httpx.RequestError:
@@ -238,8 +510,9 @@ def wait_for_agent(base_url: str, console: Console, *, timeout_s: float = 120) -
 
 
 def get_auth_status(base_url: str) -> dict[str, Any]:
+    headers = _local_control_plane_auth_headers(base_url)
     with httpx.Client(timeout=15.0) as client:
-        r = client.get(f"{base_url}/auth/status")
+        r = client.get(f"{base_url}/auth/status", headers=headers)
         r.raise_for_status()
         body = r.json()
         if not isinstance(body, dict):
@@ -248,13 +521,81 @@ def get_auth_status(base_url: str) -> dict[str, Any]:
         return body
 
 
+def _get_health_snapshot(base_url: str) -> dict[str, Any]:
+    with httpx.Client(timeout=5.0) as client:
+        r = client.get(f"{base_url}/health")
+        r.raise_for_status()
+        body = r.json()
+        if not isinstance(body, dict):
+            msg = "Invalid /health response"
+            raise RuntimeError(msg)
+        return body
+
+
+def _wait_for_cloud_live(
+    base_url: str,
+    console: Console,
+    *,
+    timeout_s: float = 45.0,
+) -> tuple[bool, str | None, bool]:
+    """Verify the edge agent completed a real cloud round-trip after sign-in.
+
+    Polls ``/health`` until ``session.connected`` is true AND ``ping_loop.last_success_at``
+    is set — meaning the background loop registered an edge session and successfully
+    heartbeated. Returns ``(ok, error_message, chat_sse_connected)``.
+    """
+    deadline = time.monotonic() + timeout_s
+    last_error: str | None = None
+    session_ok = False
+    ping_ok = False
+    chat_ok = False
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[hint]Verifying connection to SellerClaw cloud…[/hint]"),
+        console=console,
+        transient=True,
+    ):
+        while time.monotonic() < deadline:
+            try:
+                snap = _get_health_snapshot(base_url)
+            except (httpx.RequestError, httpx.HTTPStatusError, RuntimeError) as exc:
+                last_error = str(exc)
+                time.sleep(1.0)
+                continue
+
+            session = snap.get("session") or {}
+            tasks = snap.get("tasks") or {}
+            ping = tasks.get("ping_loop") or {}
+            chat = tasks.get("chat_sse") or {}
+
+            session_ok = bool(session.get("connected"))
+            ping_ok = ping.get("last_success_at") is not None
+            chat_ok = bool(chat.get("connected"))
+            ping_error = ping.get("last_error")
+            if isinstance(ping_error, str) and ping_error.strip():
+                last_error = ping_error
+
+            if session_ok and ping_ok:
+                return True, None, chat_ok
+
+            time.sleep(1.0)
+
+    if not session_ok:
+        reason = last_error or "edge session was not registered with the cloud in time."
+    elif not ping_ok:
+        reason = last_error or "no successful heartbeat with the cloud yet."
+    else:
+        reason = last_error or "unknown error."
+    return False, reason, chat_ok
+
+
 def _print_status(console: Console, base_url: str) -> int:
     try:
         s = get_auth_status(base_url)
     except httpx.ConnectError:
         console.print(
             f"[error]Agent is not reachable at {escape(base_url)}[/error]\n"
-            "[hint]Start it first: sellerclaw-agent start[/hint]",
+            "[hint]Start it first: ./setup.sh[/hint]",
         )
         return 1
     except Exception as exc:  # noqa: BLE001
@@ -276,7 +617,7 @@ def _print_status(console: Console, base_url: str) -> int:
             Panel(
                 f"[warning]Not connected[/warning] to SellerClaw cloud.\n"
                 f"{env_line}\n"
-                "[hint]Run: sellerclaw-agent login[/hint]",
+                "[hint]Run: ./setup.sh[/hint]",
                 border_style="yellow",
                 expand=False,
             ),
@@ -286,13 +627,14 @@ def _print_status(console: Console, base_url: str) -> int:
 
 def _logout(console: Console, base_url: str) -> int:
     try:
+        headers = _local_control_plane_auth_headers(base_url)
         with httpx.Client(timeout=15.0) as client:
-            r = client.post(f"{base_url}/auth/disconnect")
+            r = client.post(f"{base_url}/auth/disconnect", headers=headers)
             r.raise_for_status()
     except httpx.ConnectError:
         console.print(
             f"[error]Agent is not reachable at {escape(base_url)}[/error]\n"
-            "[hint]Is it running? sellerclaw-agent start[/hint]",
+            "[hint]Is it running? ./setup.sh[/hint]",
         )
         return 1
     except Exception as exc:  # noqa: BLE001
@@ -314,10 +656,12 @@ def _connect_password(console: Console, base_url: str, email: str, password: str
         console=console,
         transient=True,
     ):
+        headers = _local_control_plane_auth_headers(base_url)
         with httpx.Client(timeout=60.0) as client:
             r = client.post(
                 f"{base_url}/auth/connect",
                 json={"email": email, "password": password},
+                headers=headers,
             )
     if r.status_code == 401:
         console.print("[error]Invalid email or password.[/error]")
@@ -345,12 +689,13 @@ def _device_flow(console: Console, base_url: str) -> None:
         transient=True,
     ):
         try:
+            headers = _local_control_plane_auth_headers(base_url)
             with httpx.Client(timeout=60.0) as client:
-                start = client.post(f"{base_url}/auth/device/start")
+                start = client.post(f"{base_url}/auth/device/start", headers=headers)
         except httpx.ConnectError:
             console.print(
                 "[error]SellerClaw is not running.[/error]\n"
-                "[hint]Start it with: sellerclaw-agent start[/hint]",
+                "[hint]Start it with: ./setup.sh[/hint]",
             )
             raise SystemExit(1) from None
 
@@ -406,10 +751,15 @@ def _device_flow(console: Console, base_url: str) -> None:
         console=console,
         transient=True,
     ):
+        poll_headers = _local_control_plane_auth_headers(base_url)
         with httpx.Client(timeout=30.0) as client:
             while time.monotonic() < deadline:
                 try:
-                    pr = client.get(f"{base_url}/auth/device/poll", params={"device_code": device_code})
+                    pr = client.get(
+                        f"{base_url}/auth/device/poll",
+                        params={"device_code": device_code},
+                        headers=poll_headers,
+                    )
                 except httpx.ConnectError:
                     console.print("[error]Lost connection to SellerClaw while waiting.[/error]")
                     raise SystemExit(1) from None
@@ -432,7 +782,7 @@ def _device_flow(console: Console, base_url: str) -> None:
 
     console.print(
         "[error]Sign-in timed out.[/error]\n"
-        "[hint]Run `sellerclaw-agent login` to try again.[/hint]",
+        "[hint]Run `./setup.sh` to try again.[/hint]",
     )
     raise SystemExit(1)
 
@@ -485,6 +835,13 @@ def cmd_setup(console: Console) -> int:
         )
         return 1
 
+    try:
+        _require_agent_env()
+        _compose_profile_env_file(root)
+    except RuntimeError as exc:
+        console.print(f"[error]{escape(str(exc))}[/error]")
+        return 1
+
     env_label = _active_env_label()
     cloud_url = os.environ.get("SELLERCLAW_API_URL", "—")
 
@@ -492,7 +849,8 @@ def cmd_setup(console: Console) -> int:
     console.print(
         Panel(
             "[label]Welcome to SellerClaw[/label]\n"
-            "[hint]This wizard will install SellerClaw on your computer and sign you in.[/hint]\n"
+            "[hint]This wizard will install SellerClaw on your computer and "
+            "optionally connect it to your account.[/hint]\n"
             f"[hint]environment: {escape(env_label)}  ·  cloud: {escape(cloud_url)}[/hint]",
             border_style="cyan",
             expand=False,
@@ -501,6 +859,12 @@ def cmd_setup(console: Console) -> int:
     )
     console.print()
 
+    try:
+        local_api_key = _ensure_local_api_key(root)
+    except OSError as exc:
+        console.print(f"[error]Cannot prepare local API key: {escape(str(exc))}[/error]")
+        return 1
+
     console.print("[info]Step 1 of 3[/info]  Installing SellerClaw on your computer…")
     if (
         _run_compose(
@@ -508,30 +872,38 @@ def cmd_setup(console: Console) -> int:
             "up",
             "-d",
             "--build",
+            "server",
             console=console,
             status_text="Preparing SellerClaw — this can take a minute the first time…",
+            extra_env={"SELLERCLAW_LOCAL_API_KEY": local_api_key},
+            stage="Step 1 of 3 — installing SellerClaw (docker compose up --build server)",
         )
         != 0
     ):
-        console.print(
-            "\n[hint]If this keeps failing, please send us the error above so we can help.[/hint]",
-        )
         return 1
     console.print("[success]  Done.[/success]\n")
 
     console.print("[info]Step 2 of 3[/info]  Starting SellerClaw…")
     if not wait_for_agent(base, console):
-        console.print(
-            "[error]SellerClaw did not start in time.[/error]\n"
-            "[hint]Please try running setup again. If the problem continues, contact support.[/hint]",
-        )
+        _print_start_failure(console, base)
         return 1
     console.print("[success]  SellerClaw is running.[/success]\n")
 
     try:
         status = get_auth_status(base)
+    except httpx.ConnectError:
+        _print_start_failure(console, base)
+        return 1
     except Exception as exc:  # noqa: BLE001
-        console.print(f"[error]{escape(str(exc))}[/error]")
+        _print_generic_failure(
+            console,
+            stage="Step 2 of 3 — verifying SellerClaw is reachable",
+            reason=str(exc),
+            hints=[
+                "Check container logs: docker compose logs server",
+                "Retry: ./setup.sh",
+            ],
+        )
         return 1
 
     if status.get("connected"):
@@ -539,16 +911,24 @@ def cmd_setup(console: Console) -> int:
             f"You are already signed in as [label]{escape(status.get('user_email', '?'))}[/label].",
         )
         if not _confirm(console, "Sign in with a different account?", default=False):
-            _print_ready(console, base)
+            _print_ready(console, connected=True)
             return 0
         console.print()
 
-    console.print("[info]Step 3 of 3[/info]  Sign in to your SellerClaw account")
+    console.print("[info]Step 3 of 3[/info]  Connect to SellerClaw")
+    if not _confirm(console, "Connect to SellerClaw now?", default=True):
+        console.print()
+        _print_ready(console, connected=False)
+        return 0
+
+    console.print()
     _interactive_auth(console, base)
 
+    connected = False
     try:
         st = get_auth_status(base)
-        if st.get("connected"):
+        connected = bool(st.get("connected"))
+        if connected:
             console.print(
                 f"\n[success]Signed in[/success] as [label]{escape(st.get('user_name') or '?')}[/label] "
                 f"({escape(st.get('user_email') or '?')})",
@@ -556,18 +936,39 @@ def cmd_setup(console: Console) -> int:
     except Exception as exc:  # noqa: BLE001
         console.print(f"[warning]Could not refresh sign-in status: {escape(str(exc))}[/warning]")
 
+    if connected:
+        ok, reason, chat_ok = _wait_for_cloud_live(base, console)
+        if not ok:
+            _print_cloud_verification_failure(console, reason or "unknown error")
+            return 1
+        if not chat_ok:
+            console.print(
+                "[warning]Live chat stream is not connected yet — it should come up shortly.[/warning]",
+            )
+
     console.print()
-    _print_ready(console, base)
+    _print_ready(console, connected=connected)
     return 0
 
 
-def _print_ready(console: Console, base_url: str) -> None:
+def _print_ready(console: Console, *, connected: bool) -> None:
+    if connected:
+        console.print(
+            Panel(
+                "[success]SellerClaw is running and connected to your account.[/success]\n\n"
+                "To stop:    [info]./setup.sh stop[/info]",
+                border_style="green",
+                expand=False,
+                padding=(1, 3),
+            ),
+        )
+        return
     console.print(
         Panel(
-            f"[success]You're all set![/success]\n\n"
-            f"Open SellerClaw:  [link={base_url}/admin]{base_url}/admin[/link]\n"
-            f"Stop SellerClaw:  [info]sellerclaw-agent stop[/info]",
-            border_style="green",
+            "[warning]SellerClaw is installed but not connected to your account.[/warning]\n\n"
+            "To connect: [info]./setup.sh[/info]\n"
+            "To stop:    [info]./setup.sh stop[/info]",
+            border_style="yellow",
             expand=False,
             padding=(1, 3),
         ),
@@ -575,11 +976,46 @@ def _print_ready(console: Console, base_url: str) -> None:
 
 
 def cmd_start(console: Console) -> int:
-    return _run_compose(agent_root(), "up", "-d", "--build", console=console)
+    root = agent_root()
+    try:
+        local_api_key = _ensure_local_api_key(root)
+    except OSError as exc:
+        console.print(f"[error]Cannot prepare local API key: {escape(str(exc))}[/error]")
+        return 1
+    console.print("Starting SellerClaw…")
+    rc = _run_compose(
+        root,
+        "up",
+        "-d",
+        "--build",
+        "server",
+        console=console,
+        status_text="Starting SellerClaw…",
+        extra_env={"SELLERCLAW_LOCAL_API_KEY": local_api_key},
+        stage="start — docker compose up --build server",
+    )
+    if rc != 0:
+        return rc
+    base = agent_base_url()
+    if not wait_for_agent(base, console, timeout_s=60):
+        _print_start_failure(console, base)
+        return 1
+    console.print("[success]SellerClaw is running.[/success]")
+    return 0
 
 
 def cmd_stop(console: Console) -> int:
-    return _run_compose(agent_root(), "down", console=console)
+    console.print("Stopping SellerClaw…")
+    rc = _run_compose(
+        agent_root(),
+        "down",
+        console=console,
+        status_text="Stopping SellerClaw…",
+        stage="stop — docker compose down",
+    )
+    if rc == 0:
+        console.print("[success]SellerClaw stopped.[/success]")
+    return rc
 
 
 def cmd_login(console: Console) -> int:
@@ -587,10 +1023,18 @@ def cmd_login(console: Console) -> int:
     if not wait_for_agent(base, console, timeout_s=15):
         console.print(
             f"[error]Agent is not reachable at {escape(base)}[/error]\n"
-            "[hint]Start it first: sellerclaw-agent start[/hint]",
+            "[hint]Start it first: ./setup.sh[/hint]",
         )
         return 1
     _interactive_auth(console, base)
+    ok, reason, chat_ok = _wait_for_cloud_live(base, console)
+    if not ok:
+        _print_cloud_verification_failure(console, reason or "unknown error")
+        return 1
+    if not chat_ok:
+        console.print(
+            "[warning]Live chat stream is not connected yet — it should come up shortly.[/warning]",
+        )
     return _print_status(console, base)
 
 
@@ -601,12 +1045,12 @@ def cmd_help(console: Console) -> int:
     tbl = Table(show_header=False, box=None, padding=(0, 2))
     tbl.add_column("Command", style="info")
     tbl.add_column("Description")
-    tbl.add_row("setup", "Start Docker stack, sign in, show admin URL  [hint](default)[/hint]")
-    tbl.add_row("start", "docker compose up -d --build")
-    tbl.add_row("stop", "docker compose down")
+    tbl.add_row("setup", "Install the server and connect to your account  [hint](default)[/hint]")
+    tbl.add_row("start", "Start the SellerClaw container")
+    tbl.add_row("stop", "Stop the SellerClaw container")
     tbl.add_row("status", "Show cloud connection status")
-    tbl.add_row("login", "Sign in (server must be running)")
-    tbl.add_row("logout", "Clear stored cloud credentials on the agent")
+    tbl.add_row("login", "Connect to your account (server must be running)")
+    tbl.add_row("logout", "Disconnect from your account")
     tbl.add_row("help", "Show this help")
     console.print(tbl)
 
@@ -633,6 +1077,6 @@ def main() -> None:
         raise SystemExit(_logout(console, agent_base_url()))
     console.print(
         f"[error]Unknown command: {escape(cmd)}[/error]\n"
-        "[hint]Run: sellerclaw-agent help[/hint]",
+        "[hint]Run: ./setup.sh help[/hint]",
     )
     raise SystemExit(2)

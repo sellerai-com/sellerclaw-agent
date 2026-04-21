@@ -22,8 +22,8 @@
       "max_tokens": 4096
     }
   },
-  "webhook_api_base_url": "https://api.sellerclaw.ai",
   "template_variables": {
+    "api_base_path": "/agent",
     "user_name": "Ada"
   },
   "enabled_modules": ["shopify_store_manager"],
@@ -43,6 +43,5 @@
   },
   "primary_channel": "sellerclaw-ui",
   "proxy_url": "",
-  "model_name_prefix": "u:11111111/",
-  "extra_allowed_origins": ["https://app.sellerclaw.ai"]
+  "model_name_prefix": "u:11111111/"
 }

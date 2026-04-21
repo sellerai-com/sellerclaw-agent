@@ -4,10 +4,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
+import structlog
+
 from sellerclaw_agent.cloud.auth_client import DeviceCodeResult
+from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
+from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
-from sellerclaw_agent.cloud.exceptions import CloudConnectionError, CloudDevicePollTerminalError
+from sellerclaw_agent.cloud.exceptions import CloudAuthError, CloudConnectionError, CloudDevicePollTerminalError
 from sellerclaw_agent.cloud.ports import SellerClawAuthClientPort
+
+_log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -25,9 +31,10 @@ class CloudAuthService:
 
     auth_client: SellerClawAuthClientPort
     credentials_storage: CredentialsStorage
+    session_storage: EdgeSessionStorage
 
     async def connect(self, *, email: str, password: str) -> AuthStatus:
-        """Authenticate against the SellerClaw server and persist the tokens."""
+        """Authenticate against SellerClaw and persist the agent token."""
         result = await self.auth_client.login(email=email, password=password)
         connected_at = (
             datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -36,8 +43,7 @@ class CloudAuthService:
             user_id=result.user_id,
             user_email=result.user_email,
             user_name=result.user_name,
-            access_token=result.access_token,
-            refresh_token=result.refresh_token,
+            agent_token=result.agent_token,
             connected_at=connected_at,
         )
         return AuthStatus(
@@ -63,9 +69,9 @@ class CloudAuthService:
             ) from None
         if out.error:
             raise CloudConnectionError(f"Device authorization failed: {out.error}")
-        if out.login is None:
+        if out.auth is None:
             raise CloudConnectionError("Device authorization failed: empty result")
-        result = out.login
+        result = out.auth
         connected_at = (
             datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         )
@@ -73,8 +79,7 @@ class CloudAuthService:
             user_id=result.user_id,
             user_email=result.user_email,
             user_name=result.user_name,
-            access_token=result.access_token,
-            refresh_token=result.refresh_token,
+            agent_token=result.agent_token,
             connected_at=connected_at,
         )
         return AuthStatus(
@@ -97,5 +102,14 @@ class CloudAuthService:
             connected_at=stored.connected_at,
         )
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
+        """Notify cloud disconnect (invalidates server-side agent tokens), then clear local state."""
+        session = self.session_storage.load()
+        if session is not None:
+            client = SellerClawConnectionClient(credentials_storage=self.credentials_storage)
+            try:
+                await client.disconnect(agent_instance_id=session.agent_instance_id)
+            except (CloudAuthError, CloudConnectionError) as exc:
+                _log.warning("cloud_disconnect_revoke_failed", error=str(exc))
         self.credentials_storage.clear()
+        self.session_storage.clear()

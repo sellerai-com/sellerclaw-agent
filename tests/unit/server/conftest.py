@@ -44,8 +44,7 @@ def make_manifest_data() -> Callable[..., dict[str, Any]]:
                 "complex": dict(_DEFAULT_MODEL),
                 "simple": dict(_DEFAULT_SIMPLE_MODEL),
             },
-            "webhook_api_base_url": "http://api",
-            "template_variables": {},
+            "template_variables": {"api_base_path": "/agent"},
             "enabled_modules": [],
             "connected_integrations": [],
         }
@@ -70,8 +69,7 @@ def make_save_manifest_request() -> Callable[..., SaveManifestRequest]:
                 complex=ManifestModelSpec(**_DEFAULT_MODEL),
                 simple=ManifestModelSpec(**_DEFAULT_SIMPLE_MODEL),
             ),
-            "webhook_api_base_url": "http://api",
-            "template_variables": {"x": "y"},
+            "template_variables": {"x": "y", "api_base_path": "/agent"},
             "enabled_modules": [],
             "connected_integrations": [],
         }

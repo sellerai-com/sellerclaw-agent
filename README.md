@@ -15,7 +15,7 @@ In practice the agent is a small, boring runtime wrapper: a **CLI** for onboardi
 - **Pairs with a cloud** over HTTP polling — no inbound ports, no public IP required on the host.
 - **Stores a manifest** sent by the control plane and renders an OpenClaw bundle from it on demand (`GET /bundle/archive`).
 - **Runs OpenClaw** through `supervisord` in the same container (no `docker.sock` required).
-- **Handles auth** — user JWT or long-lived agent token, automatic refresh, device-flow sign-in.
+- **Handles auth** — long-lived **agent-scoped** cloud token (`sca_…`); user JWT is not stored or used on the agent. Password and device-flow sign-in both obtain the same token type.
 - **Exposes a local admin UI** at `http://localhost:5174/admin/` for viewing and editing the manifest in the browser.
 
 ## Who It Is For
@@ -56,11 +56,11 @@ After startup:
 
 ### Environments
 
-Each environment profile is a `.env.<name>` file in the repo root that controls which cloud the agent connects to:
+Each environment profile is a `.env.<name>` file in the repo root that controls which cloud the agent connects to. **Secrets** (for example `SELLERCLAW_LOCAL_API_KEY`, `AGENT_API_KEY`) belong in `secrets.env` (gitignored); copy `secrets.env.example` as a starting point.
 
 | File | Cloud target |
 |------|-------------|
-| `.env` | Local development (`http://host.docker.internal:8000`) |
+| `.env.local` | Local development (`http://host.docker.internal:8000`) |
 | `.env.staging` | Staging (`https://api.staging.sellerclaw.ai`) |
 | `.env.production` | Production (`https://api.sellerclaw.ai`) |
 

@@ -55,7 +55,7 @@ def test_generate_openclaw_config_has_gateway_and_models(
         gateway_token="g",
         hooks_token="h",
         user_id=_USER_ID,
-        webhook_api_base_url="http://api",
+        sellerclaw_api_url="http://api/",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
         model_complex=mc,
@@ -73,6 +73,10 @@ def test_generate_openclaw_config_has_gateway_and_models(
     assert payload["logging"]["consoleLevel"] == OPENCLAW_BUNDLE_LOG_LEVEL
     assert payload["logging"]["consoleStyle"] == OPENCLAW_BUNDLE_CONSOLE_STYLE
     assert payload["logging"]["redactSensitive"] == OPENCLAW_BUNDLE_REDACT_SENSITIVE
+    assert payload["channels"]["sellerclaw-ui"]["apiBaseUrl"] == "http://api"
+    assert (
+        payload["plugins"]["entries"]["sellerclaw-ui"]["config"]["apiBaseUrl"] == "http://api"
+    )
 
 
 def test_generate_openclaw_config_telegram_channel_and_bindings(
@@ -84,7 +88,7 @@ def test_generate_openclaw_config_telegram_channel_and_bindings(
         gateway_token="g",
         hooks_token="h",
         user_id=_USER_ID,
-        webhook_api_base_url="http://api",
+        sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
         model_complex=mc,
@@ -113,7 +117,7 @@ def test_generate_openclaw_config_web_search_plugin_and_tools(
         gateway_token="g",
         hooks_token="h",
         user_id=_USER_ID,
-        webhook_api_base_url="http://api",
+        sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
         model_complex=mc,
@@ -141,7 +145,7 @@ def test_generate_openclaw_config_browser_disabled(
         gateway_token="g",
         hooks_token="h",
         user_id=_USER_ID,
-        webhook_api_base_url="http://api",
+        sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
         model_complex=mc,
@@ -155,7 +159,7 @@ def test_generate_openclaw_config_browser_disabled(
     assert json.loads(raw)["browser"]["enabled"] is False
 
 
-def test_generate_openclaw_config_extra_allowed_origins_in_control_ui(
+def test_generate_openclaw_config_allowed_origins_in_control_ui(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
     mc, ms = _base_specs()
@@ -164,7 +168,7 @@ def test_generate_openclaw_config_extra_allowed_origins_in_control_ui(
         gateway_token="g",
         hooks_token="h",
         user_id=_USER_ID,
-        webhook_api_base_url="http://api",
+        sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
         model_complex=mc,
@@ -173,11 +177,15 @@ def test_generate_openclaw_config_extra_allowed_origins_in_control_ui(
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
         telegram_allowed_group_ids=(),
-        extra_allowed_origins=("https://app.example.com",),
+        allowed_origins=(
+            "https://app.example.com",
+            "https://admin.example.com/",
+            "https://app.example.com",
+        ),
     )
     payload = json.loads(raw)
     origins = payload["gateway"]["controlUi"]["allowedOrigins"]
-    assert "https://app.example.com" in origins
+    assert origins == ["https://app.example.com", "https://admin.example.com"]
     assert payload["gateway"]["controlUi"]["dangerouslyAllowHostHeaderOriginFallback"] is False
 
 
@@ -190,7 +198,7 @@ def test_generate_openclaw_config_model_name_prefix_on_litellm_groups(
         gateway_token="g",
         hooks_token="h",
         user_id=_USER_ID,
-        webhook_api_base_url="http://api",
+        sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
         model_complex=mc,
@@ -251,7 +259,7 @@ def test_generate_openclaw_config_agent_model_maps_tier(
         gateway_token="g",
         hooks_token="h",
         user_id=_USER_ID,
-        webhook_api_base_url="http://api",
+        sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
         model_complex=mc,
@@ -275,7 +283,7 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
         gateway_token="g",
         hooks_token="h",
         user_id=_USER_ID,
-        webhook_api_base_url="http://api",
+        sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
         model_complex=mc,
@@ -300,7 +308,7 @@ def test_generate_openclaw_config_web_search_enabled_without_provider_raises(
             gateway_token="g",
             hooks_token="h",
             user_id=_USER_ID,
-            webhook_api_base_url="http://api",
+            sellerclaw_api_url="http://api",
             litellm_base_url="http://litellm",
             litellm_api_key="k",
             model_complex=mc,

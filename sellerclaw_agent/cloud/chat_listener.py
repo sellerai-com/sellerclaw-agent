@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 import time
@@ -15,12 +14,17 @@ from uuid import UUID
 import httpx
 import structlog
 
-from sellerclaw_agent.async_backoff import sleep_until, sse_interval_after_error
+from sellerclaw_agent.async_backoff import ping_interval_when_suspended, sleep_until, sse_interval_after_error
+from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
-from sellerclaw_agent.cloud.auth_client import SellerClawAuthClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
-from sellerclaw_agent.cloud.credentials import CredentialsStorage, StoredCredentials
-from sellerclaw_agent.cloud.exceptions import CloudAuthError, CloudConnectionError
+from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.exceptions import (
+    CloudAgentSuspendedError,
+    CloudAuthError,
+    CloudConnectionError,
+    is_agent_suspended_api_payload,
+)
 from sellerclaw_agent.cloud.openclaw_forwarder import (
     INBOUND_FORWARD_TIMEOUT,
     LocalOpenClawForwarder,
@@ -39,75 +43,33 @@ _log = structlog.get_logger(__name__)
 
 _SSE_TIMEOUT = httpx.Timeout(connect=30.0, read=3600.0, write=30.0, pool=30.0)
 
-# Refresh access token before SSE if JWT ``exp`` is missing or within this many seconds.
-_ACCESS_REFRESH_SKEW_SEC = 120.0
 # Throttle supervisord probes while draining SSE (each probe is a ``supervisorctl`` subprocess).
 _OPENCLAW_PROBE_TTL_SEC = 5.0
 # When the probe itself fails, keep the stale "error" verdict longer to avoid hot loops.
 _OPENCLAW_PROBE_ERROR_TTL_SEC = 15.0
 
 
-def _jwt_expires_at_epoch(access_token: str) -> float | None:
-    """Return JWT ``exp`` as Unix time, or ``None`` if not a decodable JWT."""
+def _api_detail_message(payload: dict[str, Any]) -> str:
+    detail = payload.get("detail")
+    if isinstance(detail, dict):
+        msg = detail.get("message")
+        if isinstance(msg, str):
+            return msg
+    if isinstance(detail, str):
+        return detail
+    return "Request failed"
+
+
+async def _error_response_json(response: httpx.Response) -> dict[str, Any]:
     try:
-        parts = access_token.split(".")
-        if len(parts) != 3:
-            return None
-        payload_b64 = parts[1]
-        pad = (-len(payload_b64)) % 4
-        if pad:
-            payload_b64 += "=" * pad
-        raw = base64.urlsafe_b64decode(payload_b64.encode("ascii"))
-        data = json.loads(raw.decode("utf-8"))
-        exp = data.get("exp")
-        if isinstance(exp, (int, float)):
-            return float(exp)
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    return None
-
-
-_not_jwt_warning_emitted = False
-
-
-async def _ensure_fresh_access_token(
-    *,
-    creds: StoredCredentials,
-    creds_storage: CredentialsStorage,
-    auth_client: SellerClawAuthClient,
-    session_storage: EdgeSessionStorage,
-    stop: asyncio.Event,
-) -> StoredCredentials | None:
-    """Proactively refresh the access token when the JWT ``exp`` is close.
-
-    Returns updated credentials, the same credentials (no refresh needed or the
-    token is not a JWT), or ``None`` to signal the caller to skip this loop
-    iteration (auth failure or transient connection error).
-    """
-    global _not_jwt_warning_emitted
-    exp = _jwt_expires_at_epoch(creds.access_token)
-    if exp is None:
-        if not _not_jwt_warning_emitted:
-            _log.debug("access_token_not_jwt_skip_proactive_refresh")
-            _not_jwt_warning_emitted = True
-        return creds
-    now = time.time()
-    if exp > now + _ACCESS_REFRESH_SKEW_SEC:
-        return creds
+        await response.aread()
+    except Exception:
+        return {}
     try:
-        new_access = await auth_client.refresh(refresh_token=creds.refresh_token)
-    except CloudAuthError as exc:
-        _log.warning("chat_sse_proactive_refresh_failed", error=str(exc))
-        session_storage.clear()
-        await sleep_until(stop, 10.0)
-        return None
-    except CloudConnectionError as exc:
-        _log.warning("chat_sse_proactive_refresh_network_error", error=str(exc))
-        await sleep_until(stop, 5.0)
-        return None
-    creds_storage.update_access_token(access_token=new_access)
-    updated = creds_storage.load()
-    return updated if updated is not None else creds
+        raw = response.json()
+    except ValueError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 class _MessageIdDedup:
@@ -152,7 +114,7 @@ def _inbound_body_from_sse(payload: dict[str, Any]) -> dict[str, Any]:
 
 async def _consume_chat_sse(
     *,
-    access_token: str,
+    agent_token: str,
     agent_instance_id: UUID,
     forwarder: LocalOpenClawForwarder,
     supervisor_mgr: SupervisorContainerManager,
@@ -176,12 +138,15 @@ async def _consume_chat_sse(
     base = get_sellerclaw_api_url().rstrip("/")
     url = f"{base}/agent/chat/stream"
     params = {"agent_instance_id": str(agent_instance_id)}
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers = {"Authorization": f"Bearer {agent_token}"}
     async with httpx.AsyncClient(timeout=_SSE_TIMEOUT) as client:
         async with client.stream("GET", url, headers=headers, params=params) as response:
             if response.status_code == 401:
-                raise CloudAuthError("chat_sse_unauthorized")
+                raise CloudAuthError("chat_sse_unauthorized", status_code=401)
             if response.status_code == 403:
+                err_body = await _error_response_json(response)
+                if is_agent_suspended_api_payload(err_body):
+                    raise CloudAgentSuspendedError(_api_detail_message(err_body))
                 raise CloudConnectionError("chat_sse_forbidden")
             response.raise_for_status()
             async for event_name, data in iter_sse_events(response):
@@ -266,14 +231,13 @@ async def run_edge_chat_sse_loop(
     data_dir = Path(os.environ.get("SELLERCLAW_DATA_DIR", "/data"))
     creds_storage = CredentialsStorage(data_dir)
     session_storage = EdgeSessionStorage(data_dir)
-    auth_client = SellerClawAuthClient()
     supervisor_mgr = create_supervisor_manager()
     dedup = _MessageIdDedup()
     backoff = 2.0
 
     while not stop.is_set():
-        creds = creds_storage.load()
-        if creds is None:
+        bearer = resolve_agent_bearer_token(creds_storage)
+        if bearer is None:
             await sleep_until(stop, 10.0)
             backoff = 2.0
             continue
@@ -295,16 +259,6 @@ async def run_edge_chat_sse_loop(
             await sleep_until(stop, 10.0)
             continue
 
-        creds = await _ensure_fresh_access_token(
-            creds=creds,
-            creds_storage=creds_storage,
-            auth_client=auth_client,
-            session_storage=session_storage,
-            stop=stop,
-        )
-        if creds is None:
-            continue
-
         try:
             async with httpx.AsyncClient(timeout=INBOUND_FORWARD_TIMEOUT) as oc_http:
                 forwarder = LocalOpenClawForwarder(
@@ -317,7 +271,7 @@ async def run_edge_chat_sse_loop(
                     registry.mark_sse_connected(True)
                 try:
                     await _consume_chat_sse(
-                        access_token=creds.access_token,
+                        agent_token=bearer,
                         agent_instance_id=sess.agent_instance_id,
                         forwarder=forwarder,
                         supervisor_mgr=supervisor_mgr,
@@ -329,15 +283,26 @@ async def run_edge_chat_sse_loop(
                         registry.mark_sse_connected(False)
                 backoff = 2.0
         except CloudAuthError:
-            try:
-                new_access = await auth_client.refresh(refresh_token=creds.refresh_token)
-            except CloudAuthError as exc:
-                _log.warning("chat_sse_token_refresh_failed", error=str(exc))
-                session_storage.clear()
-                await sleep_until(stop, 10.0)
-                continue
-            creds_storage.update_access_token(access_token=new_access)
+            _log.warning("chat_sse_unauthorized_clearing_local_auth")
+            creds_storage.clear()
+            session_storage.clear()
+            await sleep_until(stop, 10.0)
             backoff = 2.0
+            continue
+        except CloudAgentSuspendedError as exc:
+            _log.warning("chat_sse_agent_suspended_backing_off", error=str(exc))
+            await sleep_until(stop, ping_interval_when_suspended())
+            backoff = 2.0
+            continue
+        except CloudConnectionError as exc:
+            if str(exc) == "chat_sse_forbidden":
+                _log.warning("chat_sse_forbidden_backing_off")
+                await sleep_until(stop, ping_interval_when_suspended())
+                backoff = 2.0
+                continue
+            _log.warning("chat_sse_stopped", error=str(exc))
+            await sleep_until(stop, backoff)
+            backoff = sse_interval_after_error(backoff)
             continue
         except asyncio.CancelledError:
             raise

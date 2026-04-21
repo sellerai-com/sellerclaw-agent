@@ -53,22 +53,16 @@ def _build_telegram_groups(*, group_ids: list[str]) -> dict[str, dict[str, bool]
 
 def _build_control_ui_config(
     *,
-    extra_allowed_origins: tuple[str, ...] = (),
+    allowed_origins: tuple[str, ...],
 ) -> dict[str, object]:
-    origins: list[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
-    origins.extend(item.strip().rstrip("/") for item in extra_allowed_origins if item.strip())
-
     seen: set[str] = set()
     unique: list[str] = []
-    for item in origins:
-        if item not in seen:
-            unique.append(item)
-            seen.add(item)
+    for item in allowed_origins:
+        normalized = item.strip().rstrip("/")
+        if not normalized or normalized in seen:
+            continue
+        unique.append(normalized)
+        seen.add(normalized)
     return {
         "allowedOrigins": unique,
         "dangerouslyAllowHostHeaderOriginFallback": False,
@@ -92,7 +86,7 @@ def generate_openclaw_config(
     gateway_token: str,
     hooks_token: str,
     user_id: UUID,
-    webhook_api_base_url: str,
+    sellerclaw_api_url: str,
     litellm_base_url: str,
     litellm_api_key: str,
     model_complex: ModelSpec,
@@ -102,7 +96,7 @@ def generate_openclaw_config(
     telegram_bot_token: str,
     telegram_allowed_user_ids: tuple[str, ...],
     telegram_allowed_group_ids: tuple[str, ...],
-    extra_allowed_origins: tuple[str, ...] = (),
+    allowed_origins: tuple[str, ...] = (),
     browser_enabled: bool = True,
     web_search_enabled: bool = False,
     web_search_provider: str | None = None,
@@ -169,7 +163,7 @@ def generate_openclaw_config(
         agents_list.append(payload)
 
     sellerclaw_ui_plugin_config: dict[str, object] = {
-        "apiBaseUrl": webhook_api_base_url.strip().rstrip("/"),
+        "apiBaseUrl": sellerclaw_api_url.strip().rstrip("/"),
         "userId": str(user_id),
         "internalWebhookSecret": hooks_token,
         "primaryChannel": primary_channel,
@@ -187,7 +181,7 @@ def generate_openclaw_config(
             "auth": {"mode": "token", "token": gateway_token},
             "trustedProxies": ["127.0.0.0/8", "172.16.0.0/12"],
             "controlUi": _build_control_ui_config(
-                extra_allowed_origins=extra_allowed_origins,
+                allowed_origins=allowed_origins,
             ),
             "http": {
                 "endpoints": {

@@ -49,11 +49,15 @@ docker compose up -d admin-ui
 
 The UI calls the agent over CORS using the base URL from `VITE_AGENT_BASE_URL` (see [`admin-ui/.env.development`](../../admin-ui/.env.development), defaults to `http://localhost:8001`). All requests share a single axios instance defined in [`src/api/client.ts`](../../admin-ui/src/api/client.ts).
 
+### Local API key bootstrap
+
+Before mounting the Vue app, [`main.ts`](../../admin-ui/src/main.ts) calls `initApiClient()`, which performs `GET /auth/local-bootstrap` (unauthenticated) and sets `Authorization: Bearer <local_api_key>` on the shared axios instance. All other agent routes used by the UI (including `/auth/status`, `/auth/connect`, `/manifest`, …) require that Bearer. The bootstrap endpoint responds **200 only for loopback clients** (`127.0.0.1`, `::1`, other `127.*`, IPv4-mapped `::ffff:127.*`); from other hosts it returns **403**. If you open the dev UI from a remote machine without proxying through localhost, bootstrap fails and authenticated routes return **401**. Do not terminate TLS or proxy in a way that makes the agent see a non-loopback `client.host` for bootstrap unless you accept the risk of leaking the local key.
+
 Auth endpoints (proxied to the upstream SellerClaw API by the agent):
 
 - `GET /auth/status` → `AuthStatusResponse` — always 200; `connected: false` when no credentials are stored.
 - `POST /auth/connect` (body: `{ email, password }`) → `AuthStatusResponse` on success. Returns `401` for `CloudAuthError` (invalid credentials) and `502` for `CloudConnectionError` (upstream unreachable).
-- `POST /auth/disconnect` → `{ status: "ok" }`. Clears the cached tokens on disk regardless of whether they were valid.
+- `POST /auth/disconnect` → `{ status: "ok" }`. Calls the cloud `POST /agent/connection/disconnect` when possible, then clears local `agent_token.json` / session files regardless of whether the cloud call succeeded.
 
 Manifest endpoints (only reachable after the user is signed in through the UI, though the backend does not currently gate them):
 

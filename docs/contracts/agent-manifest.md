@@ -23,16 +23,16 @@ The archive is reproducible for a given manifest: the agent always rebuilds it f
 
 ## Auth
 
-Requests to `POST /manifest`, `GET /manifest`, `GET /bundle/archive`, and `POST /openclaw/*` are protected by a bearer token:
+Requests to `POST /manifest`, `GET /manifest`, `GET /bundle/archive`, `GET /commands/history`, `POST /openclaw/*`, and the control-plane auth routes (`POST /auth/connect`, `GET /auth/status`, `POST /auth/disconnect`, `POST /auth/device/start`, `GET /auth/device/poll`) are protected by a **local control-plane** bearer token (not the cloud agent token):
 
 ```http
-Authorization: Bearer <AGENT_API_KEY>
+Authorization: Bearer <SELLERCLAW_LOCAL_API_KEY>
 ```
 
-- **Self-hosted.** Set `AGENT_API_KEY` in the agent environment (see the `.env*` files). The orchestrator must send the same value.
-- **Managed (SellerClaw cloud).** The cloud stores a per-user token and passes it as the `Authorization` header when it provisions or pulls the bundle. The value is opaque from the agent's point of view.
+- **Meaning.** `SELLERCLAW_LOCAL_API_KEY` (or the auto-generated file `local_api_key` under `SELLERCLAW_DATA_DIR`) is the **incoming** secret for HTTP callers of the agent API on port `8001`. In development, keep this in `secrets.env` (not in `.env.*` profile files). The Admin UI bootstraps it via `GET /auth/local-bootstrap` (loopback only).
+- **`AGENT_API_KEY` / `agent_token.json`.** These identify the agent to the **SellerClaw cloud** (`sca_…`). They are used for outbound `Authorization` on `/agent/connection/*`, chat SSE, etc. They are **not** accepted as the control-plane manifest key unless you deliberately set the same value in both places (not recommended).
 
-Public routes that never require the header: `/health`, `/auth/*`, `/commands/history`, and the admin UI static mount when it is enabled.
+Public routes that never require the local header: `GET /health`, `GET /auth/local-bootstrap` (loopback only), and the admin UI static mount when it is enabled. Do not place a reverse proxy in front of `/auth/local-bootstrap` without preserving the real client address as loopback; otherwise bootstrap may leak the local key to non-local callers.
 
 ## JSON Schema
 
@@ -51,25 +51,29 @@ Required top-level fields:
 - `hooks_token` — token the gateway accepts on `/hooks/...` endpoints.
 - `litellm_base_url`, `litellm_api_key` — LLM gateway URL and the virtual key to use.
 - `models` — at minimum a `complex` and a `simple` model spec (id, name, context window, max tokens; optionally `reasoning` and `input`).
-- `webhook_api_base_url` — base URL the agent hits for outbound webhooks.
 
 Optional but common fields:
 
+- `template_variables` — string map substituted into prompt templates. Use `api_base_path` (e.g. `/agent`) instead of a full URL; the agent prepends `SELLERCLAW_API_URL` to produce the `api_base_url` that prompts reference.
 - `enabled_modules[]`, `connected_integrations[]` — control which OpenClaw agents and integrations are activated in the generated bundle.
 - `global_browser_enabled`, `per_module_browser` — browser capability toggles.
 - `telegram`, `web_search` — integration-specific settings.
 - `primary_channel`, `proxy_url` — delivery and networking options.
-- `model_name_prefix`, `extra_allowed_origins` — advanced overrides for the rendered OpenClaw config (model namespacing and CORS).
+- `model_name_prefix` — advanced override: namespaces model IDs in the rendered OpenClaw config (e.g. `u:<prefix>/complex`).
+
+Deployment-specific values that are **not** part of the manifest any more:
+
+- The sellerclaw API base URL is read by the agent from `SELLERCLAW_API_URL` (used both as the OpenClaw plugin `apiBaseUrl` and to expand `api_base_path` into the prompt-level `api_base_url`).
+- Allowed CORS origins for the OpenClaw gateway UI come from `SELLERCLAW_WEB_URL` and `ADMIN_URL`.
 
 ## Versioning
 
 - **Additive changes** — adding new optional top-level fields or properties (with `additionalProperties: true` at the root) is backward compatible. Agents that don't know a new field ignore it.
 - **Breaking changes** — renaming or removing fields, narrowing an enum, or changing the type of an existing field is breaking. It requires a new major version of the contract with a fresh `$id`, and coordinated updates on every client.
 
-Two fields are specifically part of the contract and must be preserved end-to-end:
+One field is specifically part of the contract and must be preserved end-to-end:
 
 - `model_name_prefix` — the agent must pass it to `BundleBuilder` so the OpenClaw config namespaces model IDs correctly.
-- `extra_allowed_origins` — the agent must thread these origins into the OpenClaw gateway CORS list.
 
 ## Control plane vs OpenClaw gateway
 

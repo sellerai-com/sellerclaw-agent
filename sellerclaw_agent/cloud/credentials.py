@@ -8,19 +8,20 @@ from uuid import UUID
 
 
 @dataclass(frozen=True)
-class StoredCredentials:
+class StoredAgentCredentials:
+    """Persisted edge agent cloud auth (``sca_…`` token only, no user JWT)."""
+
     user_id: UUID
     user_email: str
     user_name: str
-    access_token: str
-    refresh_token: str
+    agent_token: str
     connected_at: str
 
 
 class CredentialsStorage:
-    """Persist cloud auth credentials JSON under ``data_dir``."""
+    """Persist agent cloud credentials as JSON under ``data_dir`` (``agent_token.json``)."""
 
-    _FILENAME = "credentials.json"
+    _FILENAME = "agent_token.json"
 
     def __init__(self, data_dir: Path) -> None:
         self._data_dir = data_dir
@@ -35,8 +36,7 @@ class CredentialsStorage:
         user_id: UUID,
         user_email: str,
         user_name: str,
-        access_token: str,
-        refresh_token: str,
+        agent_token: str,
         connected_at: str,
     ) -> Path:
         """Write credentials as indented JSON (atomic via tmp + rename)."""
@@ -45,8 +45,7 @@ class CredentialsStorage:
             "user_id": str(user_id),
             "user_email": user_email,
             "user_name": user_name,
-            "access_token": access_token,
-            "refresh_token": refresh_token,
+            "agent_token": agent_token,
             "connected_at": connected_at,
         }
         pretty = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
@@ -56,21 +55,20 @@ class CredentialsStorage:
         os.replace(tmp_path, path)
         return path
 
-    def load(self) -> StoredCredentials | None:
+    def load(self) -> StoredAgentCredentials | None:
         path = self.credentials_path
         if not path.is_file():
             return None
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
-            raise ValueError("credentials.json root must be an object")
+            raise ValueError("agent_token.json root must be an object")
         data = {str(k): v for k, v in raw.items()}
         try:
-            return StoredCredentials(
+            return StoredAgentCredentials(
                 user_id=UUID(str(data["user_id"])),
                 user_email=str(data["user_email"]),
                 user_name=str(data["user_name"]),
-                access_token=str(data["access_token"]),
-                refresh_token=str(data["refresh_token"]),
+                agent_token=str(data["agent_token"]),
                 connected_at=str(data["connected_at"]),
             )
         except (KeyError, TypeError, ValueError):
@@ -80,17 +78,3 @@ class CredentialsStorage:
         path = self.credentials_path
         if path.is_file():
             path.unlink()
-
-    def update_access_token(self, *, access_token: str) -> None:
-        """Replace access token in stored credentials (after refresh)."""
-        path = self.credentials_path
-        if not path.is_file():
-            raise FileNotFoundError(str(path))
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            raise ValueError("credentials.json root must be an object")
-        raw["access_token"] = access_token
-        pretty = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
-        tmp_path = path.with_suffix(".json.tmp")
-        tmp_path.write_text(pretty, encoding="utf-8")
-        os.replace(tmp_path, path)

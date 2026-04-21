@@ -69,7 +69,6 @@ class BundleManifest:
     litellm_api_key: str
     model_complex: ModelSpec
     model_simple: ModelSpec
-    webhook_api_base_url: str
     template_variables: dict[str, str]
     enabled_module_ids: tuple[str, ...] = ()
     connected_integrations: frozenset[IntegrationKind] = field(default_factory=frozenset)
@@ -80,7 +79,6 @@ class BundleManifest:
     primary_channel: str = "sellerclaw-ui"
     proxy_url: str = ""
     model_name_prefix: str = ""
-    extra_allowed_origins: tuple[str, ...] = ()
 
     def resolved_enabled_modules(self) -> list[AgentModuleId]:
         out: list[AgentModuleId] = []
@@ -115,7 +113,6 @@ class BundleManifest:
                 "complex": _spec(self.model_complex),
                 "simple": _spec(self.model_simple),
             },
-            "webhook_api_base_url": self.webhook_api_base_url,
             "template_variables": dict(self.template_variables),
             "enabled_modules": list(self.enabled_module_ids),
             "connected_integrations": sorted(k.value for k in self.connected_integrations),
@@ -135,7 +132,6 @@ class BundleManifest:
             "primary_channel": self.primary_channel,
             "proxy_url": self.proxy_url,
             "model_name_prefix": self.model_name_prefix,
-            "extra_allowed_origins": list(self.extra_allowed_origins),
         }
 
     @staticmethod
@@ -230,13 +226,6 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
         raise TypeError("template_variables must be a mapping")
     template_variables = {str(k): str(v) for k, v in tv.items()}
 
-    eao_raw = data.get("extra_allowed_origins") or []
-    if not isinstance(eao_raw, (list, tuple)):
-        raise TypeError("extra_allowed_origins must be a list")
-    extra_allowed_origins = tuple(
-        str(x).strip().rstrip("/") for x in eao_raw if str(x).strip()
-    )
-
     return BundleManifest(
         user_id=UUID(str(data["user_id"])),
         gateway_token=str(data["gateway_token"]),
@@ -245,7 +234,6 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
         litellm_api_key=str(data["litellm_api_key"]),
         model_complex=model_complex,
         model_simple=model_simple,
-        webhook_api_base_url=str(data["webhook_api_base_url"]),
         template_variables=template_variables,
         enabled_module_ids=enabled_ids,
         connected_integrations=connected,
@@ -256,5 +244,4 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
         primary_channel=str(data.get("primary_channel", "sellerclaw-ui")),
         proxy_url=str(data.get("proxy_url") or "").strip(),
         model_name_prefix=str(data.get("model_name_prefix") or "").strip(),
-        extra_allowed_origins=extra_allowed_origins,
     )

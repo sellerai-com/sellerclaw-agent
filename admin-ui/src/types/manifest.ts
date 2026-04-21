@@ -57,7 +57,6 @@ export interface SaveManifestRequest {
   litellm_base_url: string
   litellm_api_key: string
   models: ManifestModels
-  webhook_api_base_url: string
   template_variables?: Record<string, string>
   enabled_modules?: AgentModuleId[] | string[]
   connected_integrations?: IntegrationKind[] | string[]

@@ -38,7 +38,6 @@ async def test_ping_loop_suspended_uses_long_sleep_and_keeps_session(
     session_storage.clear = MagicMock()
     creds_storage = MagicMock()
     creds_storage.load = MagicMock(return_value=object())
-    creds_storage.update_access_token = MagicMock()
 
     mock_client = MagicMock()
     mock_client.connect = AsyncMock(
@@ -92,4 +91,3 @@ async def test_ping_loop_suspended_uses_long_sleep_and_keeps_session(
     assert 180.0 <= sleep_calls[0] <= 210.0
     session_storage.clear.assert_not_called()
     creds_storage.load.assert_called()
-    creds_storage.update_access_token.assert_not_called()

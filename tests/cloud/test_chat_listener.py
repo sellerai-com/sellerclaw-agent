@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
-import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,22 +11,43 @@ import httpx
 import pytest
 
 from sellerclaw_agent.cloud import chat_listener as cl
+from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
+from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.exceptions import CloudAgentSuspendedError, CloudConnectionError
 from sellerclaw_agent.cloud.openclaw_forwarder import LocalOpenClawForwarder
 
 pytestmark = pytest.mark.unit
 
 
-def test_jwt_expires_at_epoch_decodes() -> None:
-    exp = int(time.time()) + 3600
-    payload = json.dumps({"exp": exp}).encode("utf-8")
-    b64 = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
-    token = f"eyJhbGciOiJub25lIn0.{b64}.e30"
-    assert cl._jwt_expires_at_epoch(token) == float(exp)
+def test_resolve_agent_bearer_prefers_file_over_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_API_KEY", "sca_from_env")
+    CredentialsStorage(tmp_path).save(
+        user_id=UUID("35922ddf-4020-5179-b163-3d90bcb86b00"),
+        user_email="a@b.c",
+        user_name="A",
+        agent_token="sca_from_file",
+        connected_at="t",
+    )
+    assert resolve_agent_bearer_token(CredentialsStorage(tmp_path)) == "sca_from_file"
 
 
-def test_jwt_expires_at_epoch_invalid_returns_none() -> None:
-    assert cl._jwt_expires_at_epoch("not-a-jwt") is None
-    assert cl._jwt_expires_at_epoch("") is None
+def test_resolve_agent_bearer_env_when_no_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_API_KEY", "sca_from_env")
+    assert resolve_agent_bearer_token(CredentialsStorage(tmp_path)) == "sca_from_env"
+
+
+def test_resolve_agent_bearer_none_without_file_or_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
+    assert resolve_agent_bearer_token(CredentialsStorage(tmp_path)) is None
 
 
 @dataclass
@@ -57,6 +77,16 @@ def _chat_sse_transport(body: bytes) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/agent/chat/stream"
         return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    return httpx.MockTransport(handler)
+
+
+def _chat_sse_transport_status(status_code: int, json_body: dict[str, Any] | None = None) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/agent/chat/stream"
+        if json_body is not None:
+            return httpx.Response(status_code, json=json_body)
+        return httpx.Response(status_code)
 
     return httpx.MockTransport(handler)
 
@@ -107,7 +137,7 @@ async def _run_consume(
         )
         stop = asyncio.Event()
         await cl._consume_chat_sse(
-            access_token="access",
+            agent_token="sca_access",
             agent_instance_id=agent_instance_id,
             forwarder=forwarder,
             supervisor_mgr=supervisor,  # type: ignore[arg-type]
@@ -205,6 +235,63 @@ async def test_user_message_forwarded_on_running_then_recorded(
     assert len(inbound.calls) == 1
     assert inbound.calls[0]["text"] == "hi"
     assert dedup.already_forwarded(mid) is True, "must record on successful POST"
+
+
+@pytest.mark.asyncio
+async def test_consume_chat_sse_403_agent_suspended_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SELLERCLAW_API_URL", "http://cloud.test")
+    transport = _chat_sse_transport_status(
+        403,
+        {"detail": {"code": "agent_suspended", "message": "paused"}},
+    )
+    orig_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return orig_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(cl.httpx, "AsyncClient", patched_async_client)
+    stop = asyncio.Event()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(202))) as oc_http:
+        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", http_client=oc_http)
+        with pytest.raises(CloudAgentSuspendedError):
+            await cl._consume_chat_sse(
+                agent_token="sca_access",
+                agent_instance_id=uuid4(),
+                forwarder=forwarder,
+                supervisor_mgr=_FakeSupervisor(status="running"),  # type: ignore[arg-type]
+                dedup=cl._MessageIdDedup(),
+                stop=stop,
+            )
+
+
+@pytest.mark.asyncio
+async def test_consume_chat_sse_403_forbidden_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SELLERCLAW_API_URL", "http://cloud.test")
+    transport = _chat_sse_transport_status(403, {"detail": "nope"})
+    orig_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return orig_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(cl.httpx, "AsyncClient", patched_async_client)
+    stop = asyncio.Event()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(202))) as oc_http:
+        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", http_client=oc_http)
+        with pytest.raises(CloudConnectionError, match="chat_sse_forbidden"):
+            await cl._consume_chat_sse(
+                agent_token="sca_access",
+                agent_instance_id=uuid4(),
+                forwarder=forwarder,
+                supervisor_mgr=_FakeSupervisor(status="running"),  # type: ignore[arg-type]
+                dedup=cl._MessageIdDedup(),
+                stop=stop,
+            )
 
 
 @pytest.mark.asyncio

@@ -11,21 +11,24 @@ from sellerclaw_agent.cloud.exceptions import CloudAuthError, CloudConnectionErr
 pytestmark = pytest.mark.unit
 
 
+def json_bytes(request: httpx.Request) -> dict:
+    return json.loads(request.content.decode("utf-8"))
+
+
 @pytest.mark.asyncio
 async def test_login_success() -> None:
     uid = "35922ddf-4020-5179-b163-3d90bcb86b00"
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert request.url.path == "/auth/login"
+        assert request.url.path == "/agent/auth/token"
         body = json_bytes(request)
         assert body["email"] == "u@example.com"
         assert body["password"] == "secret"
         return httpx.Response(
             200,
             json={
-                "access_token": "access",
-                "refresh_token": "refresh",
+                "agent_token": "sca_test_plaintext",
                 "user": {"id": uid, "email": "u@example.com", "name": "User"},
             },
         )
@@ -35,8 +38,7 @@ async def test_login_success() -> None:
         transport=httpx.MockTransport(handler),
     )
     result = await client.login(email="u@example.com", password="secret")
-    assert result.access_token == "access"
-    assert result.refresh_token == "refresh"
+    assert result.agent_token == "sca_test_plaintext"
     assert result.user_id == UUID(uid)
     assert result.user_email == "u@example.com"
     assert result.user_name == "User"
@@ -46,8 +48,8 @@ async def test_login_success() -> None:
 async def test_login_invalid_credentials() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            400,
-            json={"error_code": "authentication_failed", "detail": "Invalid credentials"},
+            401,
+            json={"detail": {"code": "invalid_credentials", "message": "Invalid credentials"}},
         )
 
     client = SellerClawAuthClient(
@@ -72,43 +74,10 @@ async def test_login_server_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_refresh_success() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/auth/refresh"
-        body = json_bytes(request)
-        assert body["refresh_token"] == "old-refresh"
-        return httpx.Response(200, json={"access_token": "new-access"})
-
-    client = SellerClawAuthClient(
-        base_url="http://example",
-        transport=httpx.MockTransport(handler),
-    )
-    token = await client.refresh(refresh_token="old-refresh")
-    assert token == "new-access"
-
-
-@pytest.mark.asyncio
-async def test_refresh_invalid() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, json={"detail": "Not a refresh token"})
-
-    client = SellerClawAuthClient(
-        base_url="http://example",
-        transport=httpx.MockTransport(handler),
-    )
-    with pytest.raises(CloudAuthError, match="Not a refresh token"):
-        await client.refresh(refresh_token="bad")
-
-
-def json_bytes(request: httpx.Request) -> dict:
-    return json.loads(request.content.decode("utf-8"))
-
-
-@pytest.mark.asyncio
 async def test_request_device_code_success() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert request.url.path == "/auth/device/code"
+        assert request.url.path == "/agent/auth/device/code"
         return httpx.Response(
             200,
             json={
@@ -136,7 +105,7 @@ async def test_poll_device_token_pending_and_success() -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/auth/device/token"
+        assert request.url.path == "/agent/auth/device/token"
         body = json_bytes(request)
         calls.append(body["device_code"])
         if len(calls) == 1:
@@ -144,8 +113,7 @@ async def test_poll_device_token_pending_and_success() -> None:
         return httpx.Response(
             200,
             json={
-                "access_token": "a",
-                "refresh_token": "r",
+                "agent_token": "sca_from_device",
                 "user": {"id": uid, "email": "u@e.com", "name": "U"},
             },
         )
@@ -155,11 +123,11 @@ async def test_poll_device_token_pending_and_success() -> None:
         transport=httpx.MockTransport(handler),
     )
     p1 = await client.poll_device_token(device_code="dc")
-    assert p1 == DeviceTokenPollResult(pending=True, error=None, login=None)
+    assert p1 == DeviceTokenPollResult(pending=True, error=None, auth=None)
     p2 = await client.poll_device_token(device_code="dc")
     assert p2.pending is False
-    assert p2.login is not None
-    assert p2.login.access_token == "a"
+    assert p2.auth is not None
+    assert p2.auth.agent_token == "sca_from_device"
 
 
 @pytest.mark.asyncio
@@ -173,4 +141,4 @@ async def test_poll_device_token_authorization_invalid() -> None:
         transport=httpx.MockTransport(handler),
     )
     out = await client.poll_device_token(device_code="dc")
-    assert out == DeviceTokenPollResult(pending=False, error="authorization_invalid", login=None)
+    assert out == DeviceTokenPollResult(pending=False, error="authorization_invalid", auth=None)

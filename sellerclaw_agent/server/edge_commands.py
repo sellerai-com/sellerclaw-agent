@@ -13,7 +13,6 @@ import structlog
 
 from sellerclaw_agent import __version__
 from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
-from sellerclaw_agent.cloud.auth_client import SellerClawAuthClient
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.supervisor_manager import SupervisorContainerManager, create_supervisor_manager
@@ -136,10 +135,7 @@ async def run_edge_command_executor_loop(
     data_dir = Path(os.environ.get("SELLERCLAW_DATA_DIR", "/data"))
     creds_storage = CredentialsStorage(data_dir)
     history_storage = CommandHistoryStorage(data_dir)
-    client = SellerClawConnectionClient(
-        credentials_storage=creds_storage,
-        auth_client=SellerClawAuthClient(),
-    )
+    client = SellerClawConnectionClient(credentials_storage=creds_storage)
     container_mgr = create_supervisor_manager()
     loop = asyncio.get_running_loop()
 

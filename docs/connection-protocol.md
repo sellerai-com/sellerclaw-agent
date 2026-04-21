@@ -17,23 +17,19 @@ The agent stores two files in `SELLERCLAW_DATA_DIR` (default `/data`):
 
 ```text
 SELLERCLAW_DATA_DIR/
-├── credentials.json    — JWT pair and user metadata
+├── agent_token.json    — long-lived agent token (`sca_…`) and user metadata
 └── edge_session.json   — agent_instance_id for the current session
 ```
 
-`credentials.json` is written atomically (temp file + rename) and holds `access_token`, `refresh_token`, and the signed-in user. `edge_session.json` is cleared whenever the server rejects the session (HTTP 401 `agent_session_invalidated`) so the next iteration reconnects from scratch.
+`agent_token.json` is written atomically (temp file + rename) and holds `agent_token`, `user_id`, `user_email`, `user_name`, and `connected_at`. There is **no** user JWT and **no** refresh token on the agent. `edge_session.json` is cleared whenever the server rejects the session (HTTP 401 `agent_session_invalidated`) so the next iteration reconnects from scratch.
 
-## Authenticating the agent
+## Agent authentication
 
-The agent sends `Authorization: Bearer <access_token>` on every cloud request. On a 401 response, `SellerClawConnectionClient` automatically:
+Sign-in (CLI, admin UI, or device flow) exchanges user proof for an **agent-scoped** token via cloud routes under `POST /agent/auth/*`. The agent persists that token in `agent_token.json` (or uses `AGENT_API_KEY` from the environment as an override for the same value).
 
-1. Calls `POST /auth/refresh` with the stored `refresh_token`.
-2. Rewrites `credentials.json` atomically with the new access token.
-3. Retries the original request once.
+The agent sends `Authorization: Bearer <agent_token>` on every cloud request. There is **no** token refresh path: on **401** the client treats auth as invalid, clears local `agent_token.json` (and related session state where applicable), and waits until the user signs in again.
 
-If the refresh itself fails (token revoked, account removed), the agent clears `credentials.json`, stops pinging, and waits for the user to re-authenticate through the CLI (`sellerclaw-agent login`) or the admin UI.
-
-The server also accepts a long-lived agent token (`sca_...`) instead of a user JWT. The agent treats both the same way — the token is opaque to it.
+**Server-side invalidation:** calling `POST /agent/connection/disconnect` (or admin suspend) revokes active agent tokens for that user in the cloud, so a copied `agent_token.json` stops working even if the file still exists locally.
 
 ## Session lifecycle
 
@@ -62,7 +58,7 @@ Reconnecting after a restart is automatic: the server invalidates the previous s
 
 `run_edge_ping_loop` runs in the agent's FastAPI lifespan. Every ~10 seconds it:
 
-1. Ensures `credentials.json` exists — otherwise sleeps.
+1. Ensures an agent token is available (`agent_token.json` or `AGENT_API_KEY`) — otherwise sleeps.
 2. Probes the local OpenClaw program via `supervisorctl status` (→ `running` / `stopped` / `starting` / `error`).
 3. Creates a session with `POST /connect` if `edge_session.json` is missing.
 4. Sends `POST /agent/connection/ping` with the current status and `command_result: null`.
@@ -91,7 +87,7 @@ The server considers the agent **offline** when it has not pinged for longer tha
 - **Graceful.** Agent calls `POST /agent/connection/disconnect`. The server marks the session as `disconnected` with reason `graceful`.
 - **Timeout.** Agent simply stops pinging. The server virtually marks it `disconnected` with reason `timeout` on the next status read.
 - **Replaced.** A fresh `connect` from another instance supersedes the current one with reason `replaced`.
-- **Suspended by user.** The user can pause the agent through the cloud (`POST /user/agent/connection/disconnect`). The next `connect` / `ping` returns **403 `agent_suspended`** until the user resumes. The agent does **not** clear `credentials.json` — it logs the state and retries on a long interval (~3 minutes).
+- **Suspended by user.** The user can pause the agent through the cloud (`POST /user/agent/connection/disconnect`). The next `connect` / `ping` returns **403 `agent_suspended`** until the user resumes. The agent does **not** clear `agent_token.json` — it logs the state and retries on a long interval (~3 minutes).
 
 ## Commands
 
@@ -164,7 +160,7 @@ The server dropped the session (replaced by another instance or expired). The ag
 
 The user paused the agent from the cloud. Behaviour:
 
-1. The agent does **not** clear credentials or the session file.
+1. The agent does **not** clear `agent_token.json` or the session file.
 2. It logs a warning and backs off to a long interval (`ping_interval_when_suspended`, ~3–3.5 minutes).
 3. When the user resumes, the next `connect` succeeds.
 

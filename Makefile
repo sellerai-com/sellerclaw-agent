@@ -7,6 +7,9 @@ LINT_PATHS = sellerclaw_agent tests
 DOCKER_COMPOSE ?= docker compose
 OPENCLAW_MEASURE_INTERVAL ?= 1
 OPENCLAW_MEASURE_SAMPLES ?= 120
+# Optional second env file (gitignored); omit if you rely on auto-generated local API key only.
+SECRETS_ENV_FILE := $(wildcard secrets.env)
+COMPOSE_SECRETS := $(if $(SECRETS_ENV_FILE),--env-file secrets.env,)
 
 install:
 	$(UV) sync --extra server --extra cli
@@ -15,13 +18,13 @@ setup:
 	$(UV) run sellerclaw-agent setup
 
 up:
-	$(DOCKER_COMPOSE) --env-file .env.production up server --build
+	$(DOCKER_COMPOSE) --env-file .env.production $(COMPOSE_SECRETS) up server --build
 
 up-stage:
-	$(DOCKER_COMPOSE) --env-file .env.staging up server --build
+	$(DOCKER_COMPOSE) --env-file .env.staging $(COMPOSE_SECRETS) up server --build
 
 up-dev:
-	$(DOCKER_COMPOSE) --env-file .env up --build
+	$(DOCKER_COMPOSE) --env-file .env.local $(COMPOSE_SECRETS) up --build
 
 down:
 	$(DOCKER_COMPOSE) down --remove-orphans

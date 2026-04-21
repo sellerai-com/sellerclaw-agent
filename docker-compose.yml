@@ -5,7 +5,7 @@ services:
       dockerfile: sellerclaw-agent/runtime/Dockerfile
       target: staging
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
       - "${OPENCLAW_PORT_GATEWAY:-7788}:7788"
       - "${OPENCLAW_PORT_VNC:-6080}:6080"
     volumes:
@@ -17,6 +17,7 @@ services:
       SELLERCLAW_WEB_URL: "${SELLERCLAW_WEB_URL:-http://localhost:5173}"
       ADMIN_URL: "${ADMIN_URL:-http://localhost:5174}"
       AGENT_API_KEY: "${AGENT_API_KEY:-}"
+      SELLERCLAW_LOCAL_API_KEY: "${SELLERCLAW_LOCAL_API_KEY:-}"
       SELLERCLAW_EDGE_PING: "${SELLERCLAW_EDGE_PING:-1}"
       OPENCLAW_BUNDLE_VOLUME_PATH: /opt/config-bundle
       OPENCLAW_GATEWAY_HTTP_BASE: "${OPENCLAW_GATEWAY_HTTP_BASE:-http://127.0.0.1:7789}"

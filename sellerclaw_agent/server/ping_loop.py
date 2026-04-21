@@ -17,7 +17,6 @@ from sellerclaw_agent.async_backoff import (
     ping_interval_when_suspended,
     sleep_until,
 )
-from sellerclaw_agent.cloud.auth_client import SellerClawAuthClient
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
@@ -48,10 +47,7 @@ async def run_edge_ping_loop(
     data_dir = Path(os.environ.get("SELLERCLAW_DATA_DIR", "/data"))
     creds_storage = CredentialsStorage(data_dir)
     session_storage = EdgeSessionStorage(data_dir)
-    client = SellerClawConnectionClient(
-        credentials_storage=creds_storage,
-        auth_client=SellerClawAuthClient(),
-    )
+    client = SellerClawConnectionClient(credentials_storage=creds_storage)
     container_mgr = create_supervisor_manager()
     loop = asyncio.get_running_loop()
     openclaw_status = os.environ.get("SELLERCLAW_REPORTED_OPENCLAW_STATUS", "stopped")
@@ -73,6 +69,7 @@ async def run_edge_ping_loop(
             ok = await _flush_command_ack(
                 pending_ack=pending_ack,
                 client=client,
+                credentials_storage=creds_storage,
                 session_storage=session_storage,
                 container_mgr=container_mgr,
                 loop=loop,
@@ -140,6 +137,7 @@ async def run_edge_ping_loop(
         except CloudAuthError as exc:
             if getattr(exc, "status_code", None) == 401:
                 _log.warning("edge_session_unauthorized_clearing_local_session")
+                creds_storage.clear()
                 session_storage.clear()
             consecutive_errors += 1
             registry.mark_ping_error(str(exc))
@@ -201,6 +199,7 @@ async def _flush_command_ack(
     *,
     pending_ack: CompletedRemoteCommand,
     client: SellerClawConnectionClient,
+    credentials_storage: CredentialsStorage,
     session_storage: EdgeSessionStorage,
     container_mgr: SupervisorContainerManager,
     loop: asyncio.AbstractEventLoop,
@@ -241,6 +240,7 @@ async def _flush_command_ack(
         return False
     except CloudAuthError as exc:
         if getattr(exc, "status_code", None) == 401:
+            credentials_storage.clear()
             session_storage.clear()
         _log.warning("edge_ping_ack_auth_error", error=str(exc))
         registry.mark_ping_error(str(exc))

@@ -132,7 +132,6 @@ class SaveManifestRequest(BaseModel):
     litellm_base_url: str
     litellm_api_key: str
     models: ManifestModels
-    webhook_api_base_url: str
     template_variables: dict[str, str] = Field(default_factory=dict)
     enabled_modules: list[str] = Field(default_factory=list)
     connected_integrations: list[str] = Field(default_factory=list)
@@ -143,7 +142,6 @@ class SaveManifestRequest(BaseModel):
     primary_channel: str = "sellerclaw-ui"
     proxy_url: str = ""
     model_name_prefix: str = ""
-    extra_allowed_origins: list[str] = Field(default_factory=list)
 
     def _model_spec_mapping(self, spec: ManifestModelSpec) -> dict[str, Any]:
         inp: list[str] | str
@@ -172,7 +170,6 @@ class SaveManifestRequest(BaseModel):
                 "complex": self._model_spec_mapping(self.models.complex),
                 "simple": self._model_spec_mapping(self.models.simple),
             },
-            "webhook_api_base_url": self.webhook_api_base_url,
             "template_variables": dict(self.template_variables),
             "enabled_modules": list(self.enabled_modules),
             "connected_integrations": list(self.connected_integrations),
@@ -192,5 +189,4 @@ class SaveManifestRequest(BaseModel):
             "primary_channel": self.primary_channel,
             "proxy_url": self.proxy_url,
             "model_name_prefix": self.model_name_prefix,
-            "extra_allowed_origins": list(self.extra_allowed_origins),
         }

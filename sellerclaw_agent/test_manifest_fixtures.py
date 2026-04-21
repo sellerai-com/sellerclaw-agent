@@ -18,7 +18,7 @@ from sellerclaw_agent.bundle.manifest import (
 from sellerclaw_agent.models import IntegrationKind, ModelTier
 
 _DEFAULT_TEMPLATE_VARIABLES: dict[str, str] = {
-    "api_base_url": "http://api.local/agent",
+    "api_base_path": "/agent",
     "user_name": "Test",
     "config_generated_at": "2026-01-01 00:00 UTC",
     "available_supplier_providers": "",
@@ -72,7 +72,6 @@ def make_manifest(
         litellm_api_key: str = "key",
         model_complex: ModelSpec | None = None,
         model_simple: ModelSpec | None = None,
-        webhook_api_base_url: str = "http://api.local",
         template_variables: dict[str, str] | None = None,
         enabled_module_ids: tuple[str, ...] = (),
         connected_integrations: frozenset[IntegrationKind] | None = None,
@@ -83,7 +82,6 @@ def make_manifest(
         primary_channel: str = "sellerclaw-ui",
         proxy_url: str = "",
         model_name_prefix: str = "",
-        extra_allowed_origins: tuple[str, ...] = (),
     ) -> BundleManifest:
         mc = model_complex or make_model_spec()
         ms = model_simple or make_model_spec(
@@ -106,7 +104,6 @@ def make_manifest(
             litellm_api_key=litellm_api_key,
             model_complex=mc,
             model_simple=ms,
-            webhook_api_base_url=webhook_api_base_url,
             template_variables=tv,
             enabled_module_ids=enabled_module_ids,
             connected_integrations=conn,
@@ -117,7 +114,6 @@ def make_manifest(
             primary_channel=primary_channel,
             proxy_url=proxy_url,
             model_name_prefix=model_name_prefix,
-            extra_allowed_origins=extra_allowed_origins,
         )
 
     return _build

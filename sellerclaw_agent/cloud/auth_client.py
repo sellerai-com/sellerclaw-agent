@@ -13,9 +13,10 @@ _DEFAULT_TIMEOUT = httpx.Timeout(10.0)
 
 
 @dataclass(frozen=True)
-class LoginResult:
-    access_token: str
-    refresh_token: str
+class AgentAuthResult:
+    """Successful agent login (password, device poll, etc.): opaque ``sca_`` token + user."""
+
+    agent_token: str
     user_id: UUID
     user_email: str
     user_name: str
@@ -32,15 +33,15 @@ class DeviceCodeResult:
 
 @dataclass(frozen=True)
 class DeviceTokenPollResult:
-    """Parsed /auth/device/token response."""
+    """Parsed ``/agent/auth/device/token`` response."""
 
     pending: bool
     error: str | None
-    login: LoginResult | None
+    auth: AgentAuthResult | None
 
 
 class SellerClawAuthClient:
-    """HTTP client for SellerClaw public auth endpoints."""
+    """HTTP client for SellerClaw **agent** auth endpoints (``/agent/auth/*``)."""
 
     def __init__(
         self,
@@ -58,6 +59,10 @@ class SellerClawAuthClient:
             detail = payload.get("detail")
             if isinstance(detail, str):
                 return detail
+            if isinstance(detail, dict):
+                msg = detail.get("message")
+                if isinstance(msg, str):
+                    return msg
             if isinstance(detail, list):
                 parts: list[str] = []
                 for item in detail:
@@ -68,8 +73,30 @@ class SellerClawAuthClient:
                 return "; ".join(parts) if parts else "Authentication failed"
         return "Authentication failed"
 
-    async def login(self, *, email: str, password: str) -> LoginResult:
-        url = f"{self._base_url}/auth/login"
+    def _agent_auth_from_payload(self, data: dict[str, Any]) -> AgentAuthResult:
+        token = data.get("agent_token")
+        user_raw = data.get("user")
+        if not isinstance(token, str) or not token.strip():
+            raise CloudConnectionError("Auth response missing agent_token")
+        if not isinstance(user_raw, dict):
+            raise CloudConnectionError("Auth response missing user")
+
+        user_id_raw = user_raw.get("id")
+        email_raw = user_raw.get("email")
+        name_raw = user_raw.get("name")
+        if user_id_raw is None or not isinstance(email_raw, str):
+            raise CloudConnectionError("Auth response missing user id or email")
+
+        user_name = str(name_raw) if name_raw is not None else ""
+        return AgentAuthResult(
+            agent_token=token.strip(),
+            user_id=UUID(str(user_id_raw)),
+            user_email=email_raw,
+            user_name=user_name,
+        )
+
+    async def login(self, *, email: str, password: str) -> AgentAuthResult:
+        url = f"{self._base_url}/agent/auth/token"
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout,
@@ -103,56 +130,10 @@ class SellerClawAuthClient:
             raise CloudConnectionError("Invalid JSON in login response") from exc
         if not isinstance(data, dict):
             raise CloudConnectionError("Login response must be a JSON object")
-
-        access = data.get("access_token")
-        refresh = data.get("refresh_token")
-        user_raw = data.get("user")
-        if not isinstance(access, str) or not isinstance(refresh, str):
-            raise CloudConnectionError("Login response missing tokens")
-        if not isinstance(user_raw, dict):
-            raise CloudConnectionError("Login response missing user")
-
-        user_id_raw = user_raw.get("id")
-        email_raw = user_raw.get("email")
-        name_raw = user_raw.get("name")
-        if user_id_raw is None or not isinstance(email_raw, str):
-            raise CloudConnectionError("Login response missing user id or email")
-
-        user_name = str(name_raw) if name_raw is not None else ""
-        return LoginResult(
-            access_token=access,
-            refresh_token=refresh,
-            user_id=UUID(str(user_id_raw)),
-            user_email=email_raw,
-            user_name=user_name,
-        )
-
-    def _login_result_from_auth_payload(self, data: dict[str, Any]) -> LoginResult:
-        access = data.get("access_token")
-        refresh = data.get("refresh_token")
-        user_raw = data.get("user")
-        if not isinstance(access, str) or not isinstance(refresh, str):
-            raise CloudConnectionError("Device token response missing tokens")
-        if not isinstance(user_raw, dict):
-            raise CloudConnectionError("Device token response missing user")
-
-        user_id_raw = user_raw.get("id")
-        email_raw = user_raw.get("email")
-        name_raw = user_raw.get("name")
-        if user_id_raw is None or not isinstance(email_raw, str):
-            raise CloudConnectionError("Device token response missing user id or email")
-
-        user_name = str(name_raw) if name_raw is not None else ""
-        return LoginResult(
-            access_token=access,
-            refresh_token=refresh,
-            user_id=UUID(str(user_id_raw)),
-            user_email=email_raw,
-            user_name=user_name,
-        )
+        return self._agent_auth_from_payload(data)
 
     async def request_device_code(self) -> DeviceCodeResult:
-        url = f"{self._base_url}/auth/device/code"
+        url = f"{self._base_url}/agent/auth/device/code"
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout,
@@ -205,7 +186,7 @@ class SellerClawAuthClient:
         )
 
     async def poll_device_token(self, *, device_code: str) -> DeviceTokenPollResult:
-        url = f"{self._base_url}/auth/device/token"
+        url = f"{self._base_url}/agent/auth/device/token"
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout,
@@ -242,55 +223,15 @@ class SellerClawAuthClient:
 
         err = data.get("error")
         if err == "authorization_pending":
-            return DeviceTokenPollResult(pending=True, error=None, login=None)
+            return DeviceTokenPollResult(pending=True, error=None, auth=None)
         if isinstance(err, str) and err:
-            return DeviceTokenPollResult(pending=False, error=err, login=None)
+            return DeviceTokenPollResult(pending=False, error=err, auth=None)
 
-        if "access_token" in data and "refresh_token" in data:
+        if "agent_token" in data and "user" in data:
             return DeviceTokenPollResult(
                 pending=False,
                 error=None,
-                login=self._login_result_from_auth_payload(data),
+                auth=self._agent_auth_from_payload(data),
             )
 
-        return DeviceTokenPollResult(pending=False, error="invalid_device_code", login=None)
-
-    async def refresh(self, *, refresh_token: str) -> str:
-        url = f"{self._base_url}/auth/refresh"
-        try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout,
-                transport=self._transport,
-            ) as client:
-                response = await client.post(
-                    url,
-                    json={"refresh_token": refresh_token},
-                    headers={"Content-Type": "application/json"},
-                )
-        except httpx.RequestError as exc:
-            raise CloudConnectionError(str(exc)) from exc
-
-        if response.status_code >= 500:
-            raise CloudConnectionError(
-                f"SellerClaw server error: HTTP {response.status_code}",
-            )
-        if response.status_code >= 400:
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = None
-            raise CloudAuthError(
-                self._auth_error_message(payload),
-                status_code=response.status_code,
-            )
-
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise CloudConnectionError("Invalid JSON in refresh response") from exc
-        if not isinstance(data, dict):
-            raise CloudConnectionError("Refresh response must be a JSON object")
-        access = data.get("access_token")
-        if not isinstance(access, str):
-            raise CloudConnectionError("Refresh response missing access_token")
-        return access
+        return DeviceTokenPollResult(pending=False, error="invalid_device_code", auth=None)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -8,9 +7,14 @@ from uuid import UUID
 
 import httpx
 
-from sellerclaw_agent.cloud.auth_client import SellerClawAuthClient
+from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
-from sellerclaw_agent.cloud.exceptions import CloudAgentSuspendedError, CloudAuthError, CloudConnectionError
+from sellerclaw_agent.cloud.exceptions import (
+    CloudAgentSuspendedError,
+    CloudAuthError,
+    CloudConnectionError,
+    is_agent_suspended_api_payload,
+)
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
 
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0)
@@ -35,19 +39,17 @@ class PingResponse:
 
 
 class SellerClawConnectionClient:
-    """HTTP client for ``/agent/connection/*`` (JWT or agent token)."""
+    """HTTP client for ``/agent/connection/*`` (``sca_`` agent token only)."""
 
     def __init__(
         self,
         *,
         credentials_storage: CredentialsStorage,
-        auth_client: SellerClawAuthClient | None = None,
         base_url: str | None = None,
         timeout: httpx.Timeout | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._creds = credentials_storage
-        self._auth = auth_client or SellerClawAuthClient()
         self._base = (base_url if base_url is not None else get_sellerclaw_api_url()).rstrip("/")
         self._timeout = timeout or _DEFAULT_TIMEOUT
         self._transport = transport
@@ -63,24 +65,11 @@ class SellerClawConnectionClient:
                 return detail
         return "Request failed"
 
-    @staticmethod
-    def _is_agent_suspended_payload(payload: Any) -> bool:
-        if not isinstance(payload, dict):
-            return False
-        detail = payload.get("detail")
-        if isinstance(detail, dict):
-            return detail.get("code") == "agent_suspended"
-        return False
-
-    def _resolve_bearer_token(self) -> tuple[str, bool]:
-        """Return (token, supports_jwt_refresh). Agent API key has no refresh."""
-        stored = self._creds.load()
-        if stored is not None:
-            return stored.access_token, True
-        agent_key = (os.environ.get("AGENT_API_KEY") or "").strip()
-        if agent_key:
-            return agent_key, False
-        raise CloudConnectionError("Not authenticated: missing credentials and AGENT_API_KEY")
+    def _resolve_bearer_token(self) -> str:
+        token = resolve_agent_bearer_token(self._creds)
+        if not token:
+            raise CloudConnectionError("Not authenticated: missing agent_token.json and AGENT_API_KEY")
+        return token
 
     async def _request_json(
         self,
@@ -89,41 +78,31 @@ class SellerClawConnectionClient:
         *,
         json_body: dict[str, Any] | None = None,
     ) -> tuple[int, Any]:
-        access, supports_refresh = self._resolve_bearer_token()
+        bearer = self._resolve_bearer_token()
 
-        async def _call(bearer: str) -> httpx.Response:
+        async def _call(token: str) -> httpx.Response:
             url = f"{self._base}{path}"
             async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
                 return await client.request(
                     method,
                     url,
                     headers={
-                        "Authorization": f"Bearer {bearer}",
+                        "Authorization": f"Bearer {token}",
                         "Content-Type": "application/json",
                     },
                     json=json_body,
                 )
 
-        response = await _call(access)
+        try:
+            response = await _call(bearer)
+        except httpx.RequestError as exc:
+            raise CloudConnectionError(str(exc)) from exc
         if response.status_code == 401:
-            if not supports_refresh:
-                try:
-                    data = response.json()
-                except ValueError:
-                    data = {}
-                raise CloudAuthError(self._detail_message(data), status_code=401)
-            stored = self._creds.load()
-            if stored is None:
-                raise CloudConnectionError("Credentials missing for refresh")
             try:
-                new_access = await self._auth.refresh(refresh_token=stored.refresh_token)
-            except CloudAuthError as exc:
-                raise CloudConnectionError(str(exc)) from exc
-            self._creds.update_access_token(access_token=new_access)
-            reloaded = self._creds.load()
-            if reloaded is None:
-                raise CloudConnectionError("Credentials missing after refresh")
-            response = await _call(reloaded.access_token)
+                data = response.json()
+            except ValueError:
+                data = {}
+            raise CloudAuthError(self._detail_message(data), status_code=401)
 
         if response.status_code >= 500:
             raise CloudConnectionError(f"SellerClaw server error: HTTP {response.status_code}")
@@ -131,7 +110,7 @@ class SellerClawConnectionClient:
             data = response.json()
         except ValueError as exc:
             raise CloudConnectionError("Invalid JSON response") from exc
-        if response.status_code == 403 and self._is_agent_suspended_payload(data):
+        if response.status_code == 403 and is_agent_suspended_api_payload(data):
             raise CloudAgentSuspendedError(self._detail_message(data))
         return response.status_code, data
 
@@ -144,38 +123,27 @@ class SellerClawConnectionClient:
         content_type: str | None = None,
         timeout: httpx.Timeout | None = None,
     ) -> httpx.Response:
-        access, supports_refresh = self._resolve_bearer_token()
-
+        bearer = self._resolve_bearer_token()
         effective_timeout = timeout or self._timeout
 
-        async def _call(bearer: str) -> httpx.Response:
+        async def _call(token: str) -> httpx.Response:
             url = f"{self._base}{path}"
-            headers: dict[str, str] = {"Authorization": f"Bearer {bearer}"}
+            headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
             if body is not None:
                 headers["Content-Type"] = content_type or "application/octet-stream"
             async with httpx.AsyncClient(timeout=effective_timeout, transport=self._transport) as client:
                 return await client.request(method, url, headers=headers, content=body)
 
-        response = await _call(access)
+        try:
+            response = await _call(bearer)
+        except httpx.RequestError as exc:
+            raise CloudConnectionError(str(exc)) from exc
         if response.status_code == 401:
-            if not supports_refresh:
-                try:
-                    payload = response.json() if response.content else {}
-                except ValueError:
-                    payload = {}
-                raise CloudAuthError(self._detail_message(payload), status_code=401)
-            stored = self._creds.load()
-            if stored is None:
-                raise CloudConnectionError("Credentials missing for refresh")
             try:
-                new_access = await self._auth.refresh(refresh_token=stored.refresh_token)
-            except CloudAuthError as exc:
-                raise CloudConnectionError(str(exc)) from exc
-            self._creds.update_access_token(access_token=new_access)
-            reloaded = self._creds.load()
-            if reloaded is None:
-                raise CloudConnectionError("Credentials missing after refresh")
-            response = await _call(reloaded.access_token)
+                payload = response.json() if response.content else {}
+            except ValueError:
+                payload = {}
+            raise CloudAuthError(self._detail_message(payload), status_code=401)
         return response
 
     async def upload_state_backup(self, archive: bytes) -> bool:

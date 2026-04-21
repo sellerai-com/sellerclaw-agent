@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import socket
+import struct
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
@@ -35,7 +37,8 @@ from sellerclaw_agent.cloud.supervisor_manager import (
     write_runtime_env,
 )
 from sellerclaw_agent.server.command_history import CommandHistoryStorage
-from sellerclaw_agent.server.deps import require_agent_api_key
+from sellerclaw_agent.server.deps import require_local_api_key
+from sellerclaw_agent.server.local_api_key import get_local_api_key
 from sellerclaw_agent.server.schemas import (
     AuthStatusResponse,
     CommandHistoryEntry,
@@ -64,6 +67,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from sellerclaw_agent.logging_setup import configure_agent_logging
 
     configure_agent_logging()
+    get_local_api_key(_get_data_dir())
 
     stop = asyncio.Event()
     background_holders: list[dict[str, Any]] = []
@@ -155,9 +159,11 @@ def get_command_history_storage() -> CommandHistoryStorage:
 
 
 def get_cloud_auth_service() -> CloudAuthService:
+    data_dir = _get_data_dir()
     return CloudAuthService(
         auth_client=SellerClawAuthClient(),
-        credentials_storage=CredentialsStorage(_get_data_dir()),
+        credentials_storage=CredentialsStorage(data_dir),
+        session_storage=EdgeSessionStorage(data_dir),
     )
 
 
@@ -185,7 +191,7 @@ def _openclaw_reject_message(code: str) -> str:
 
 
 app = FastAPI(title="SellerClaw Agent", lifespan=_app_lifespan)
-control_plane = APIRouter(dependencies=[Depends(require_agent_api_key)])
+control_plane = APIRouter(dependencies=[Depends(require_local_api_key)])
 
 
 @app.get("/health")
@@ -260,6 +266,69 @@ def _to_response(s: AuthStatus) -> AuthStatusResponse:
     )
 
 
+def _normalize_client_host(host: str) -> str:
+    """Strip zone id / IPv4-mapped prefix so comparisons match what Docker publishes."""
+    h = (host or "").strip().lower()
+    if "%" in h:
+        h = h.split("%", 1)[0]
+    if h.startswith("::ffff:"):
+        return h[7:]
+    return h
+
+
+def _client_host_is_loopback(host: str) -> bool:
+    if not host:
+        return False
+    h = _normalize_client_host(host)
+    if h in {"127.0.0.1", "::1"}:
+        return True
+    if h.startswith("127."):
+        return True
+    return False
+
+
+def _running_inside_docker() -> bool:
+    """True in normal Linux container runtimes (Docker/Podman often provide this marker)."""
+    try:
+        return Path("/.dockerenv").is_file()
+    except OSError:
+        return False
+
+
+def _default_ipv4_gateway_linux() -> str | None:
+    """Best-effort default IPv4 gateway from /proc/net/route (Linux, little-endian hex)."""
+    try:
+        with open("/proc/net/route", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        dest, gw_hex = parts[1], parts[2]
+        if dest == "00000000" and gw_hex != "00000000":
+            try:
+                gw_int = int(gw_hex, 16)
+            except ValueError:
+                return None
+            try:
+                return socket.inet_ntoa(struct.pack("<I", gw_int))
+            except (OSError, struct.error):
+                return None
+    return None
+
+
+def _client_is_docker_published_host(host: str) -> bool:
+    """Host port publish appears as the container default gateway, not loopback."""
+    if not _running_inside_docker():
+        return False
+    gw = _default_ipv4_gateway_linux()
+    if gw is None:
+        return False
+    return _normalize_client_host(host) == gw
+
+
 @control_plane.get("/manifest", response_model=GetManifestResponse)
 def get_manifest(
     storage: Annotated[ManifestStorage, Depends(get_storage)],
@@ -274,7 +343,7 @@ def get_manifest(
     return GetManifestResponse(manifest=data, version=version)
 
 
-@app.post("/auth/device/start", response_model=DeviceStartResponse)
+@control_plane.post("/auth/device/start", response_model=DeviceStartResponse)
 async def auth_device_start(
     service: Annotated[CloudAuthService, Depends(get_cloud_auth_service)],
 ) -> DeviceStartResponse:
@@ -295,7 +364,7 @@ async def auth_device_start(
     )
 
 
-@app.get("/auth/device/poll", response_model=DevicePollResponse)
+@control_plane.get("/auth/device/poll", response_model=DevicePollResponse)
 async def auth_device_poll(
     service: Annotated[CloudAuthService, Depends(get_cloud_auth_service)],
     device_code: str = Query(..., min_length=1),
@@ -313,7 +382,7 @@ async def auth_device_poll(
     return DevicePollResponse(status="completed", auth=_to_response(status))
 
 
-@app.post("/auth/connect", response_model=AuthStatusResponse)
+@control_plane.post("/auth/connect", response_model=AuthStatusResponse)
 async def auth_connect(
     body: ConnectRequest,
     service: Annotated[CloudAuthService, Depends(get_cloud_auth_service)],
@@ -327,22 +396,35 @@ async def auth_connect(
     return _to_response(status)
 
 
-@app.get("/auth/status", response_model=AuthStatusResponse)
+@control_plane.get("/auth/status", response_model=AuthStatusResponse)
 def auth_status(
     service: Annotated[CloudAuthService, Depends(get_cloud_auth_service)],
 ) -> AuthStatusResponse:
     return _to_response(service.get_status())
 
 
-@app.post("/auth/disconnect", response_model=DisconnectResponse)
-def auth_disconnect(
+@control_plane.post("/auth/disconnect", response_model=DisconnectResponse)
+async def auth_disconnect(
     service: Annotated[CloudAuthService, Depends(get_cloud_auth_service)],
 ) -> DisconnectResponse:
-    service.disconnect()
+    await service.disconnect()
     return DisconnectResponse(status="ok")
 
 
-@app.get("/commands/history", response_model=CommandHistoryResponse)
+@app.get("/auth/local-bootstrap")
+def auth_local_bootstrap(request: Request) -> dict[str, str]:
+    """Return the local control-plane API key for same-machine admin UI (loopback only)."""
+    client = request.client
+    host = (client.host if client is not None else "") or ""
+    if not (_client_host_is_loopback(host) or _client_is_docker_published_host(host)):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "local_bootstrap_forbidden", "message": "Allowed only from loopback"},
+        )
+    return {"local_api_key": get_local_api_key(_get_data_dir())}
+
+
+@control_plane.get("/commands/history", response_model=CommandHistoryResponse)
 def get_command_history(
     storage: Annotated[CommandHistoryStorage, Depends(get_command_history_storage)],
 ) -> CommandHistoryResponse:
@@ -440,7 +522,6 @@ def download_bundle_archive(
     result = builder.build(
         manifest,
         model_name_prefix=model_prefix,
-        extra_allowed_origins=manifest.extra_allowed_origins,
     )
     archive_bytes = build_gateway_archive(
         GatewayArchivePayload(

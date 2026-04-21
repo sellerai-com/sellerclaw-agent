@@ -91,7 +91,7 @@ make up-server
 
 Building or publishing a runtime image from a fork is described under [Building the runtime image](docs/cli.md#building-the-runtime-image) in [`docs/cli.md`](docs/cli.md).
 
-See [`docs/cli.md`](docs/cli.md) for environment profiles (`.env`, `.env.staging`, `.env.production`, `.env.local`) and [`docs/developer/admin-ui.md`](docs/developer/admin-ui.md) for the admin UI setup.
+See [`docs/cli.md`](docs/cli.md) for environment profiles (`.env.local`, `.env.staging`, `.env.production`, `secrets.env`) and [`docs/developer/admin-ui.md`](docs/developer/admin-ui.md) for the admin UI setup.
 
 ## Code Expectations
 
@@ -173,7 +173,7 @@ Please do not commit:
 - secrets
 - private credentials
 - JWT access or refresh tokens
-- local environment files (`.env.local`, `data/credentials.json`, `data/edge_session.json`)
+- local environment files (`.env.local`, `data/agent_token.json`, `data/local_api_key`, `data/edge_session.json`)
 - internal-only operational details that do not belong in the public repository
 
 If you discover a potential security issue, do not open a public exploit-style issue with sensitive details. See [SECURITY.md](SECURITY.md) for the preferred reporting process.

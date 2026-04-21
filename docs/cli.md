@@ -41,13 +41,16 @@ make setup
 
 ## Environments
 
-The agent supports multiple environment profiles. Each profile is a `.env.<name>` file in the repo root that controls which SellerClaw cloud the agent connects to.
+The agent supports multiple environment profiles. Each profile is a `.env.<name>` file in the repo root (committed, non-secret) that controls which SellerClaw cloud the agent connects to. **Secrets** — especially `SELLERCLAW_LOCAL_API_KEY` and `AGENT_API_KEY` — belong in `secrets.env` at the repo root (gitignored). Copy `secrets.env.example` to `secrets.env` and edit there.
 
-| File | Cloud target |
-|------|-------------|
-| `.env` | Local development (`http://host.docker.internal:8000`) |
-| `.env.staging` | Staging (`https://api.staging.sellerclaw.ai`) |
-| `.env.production` | Production (`https://api.sellerclaw.ai`) |
+`docker compose` and the CLI pass `--env-file` for the profile and, when the file exists, `--env-file secrets.env`. If `secrets.env` is missing, only the profile file is used (the local API key is then auto-generated under `data/local_api_key` unless you set the variable another way).
+
+| File | Role |
+|------|------|
+| `.env.local` | Local development — cloud URLs (`http://host.docker.internal:8000`, …) |
+| `.env.staging` | Staging cloud |
+| `.env.production` | Production cloud |
+| `secrets.env` | Local secrets (`SELLERCLAW_LOCAL_API_KEY`, `AGENT_API_KEY`, …) |
 
 ### Switching environments
 
@@ -67,7 +70,7 @@ export AGENT_ENV=staging
 uv run sellerclaw-agent status
 ```
 
-When `AGENT_ENV` is not set, `.env` (local development) is used by default.
+When `AGENT_ENV` is not set, `.env.local` is used by default (see `setup.sh`).
 
 ### Creating a custom profile
 
@@ -79,31 +82,29 @@ cp .env.staging .env.custom
 ./setup.sh --env custom
 ```
 
-### Local overrides
-
-Create `.env.local` for machine-specific settings (it is git-ignored):
+### Secrets file
 
 ```bash
-cp .env .env.local
-# tweak ports, URLs, etc.
-./setup.sh --env local
+cp secrets.env.example secrets.env
+# set SELLERCLAW_LOCAL_API_KEY and/or AGENT_API_KEY as needed
 ```
 
 ## Environment variables
 
-All variables are defined in the `.env*` files. Key settings:
+Non-secret variables live in `.env.local` / `.env.staging` / `.env.production`. Sensitive values live in `secrets.env`. Key settings:
 
-| Variable | Purpose | Default (`.env`) |
-|----------|---------|-------------------|
-| `SELLERCLAW_API_URL` | Cloud API the agent server talks to | `http://host.docker.internal:8000` |
-| `SELLERCLAW_WEB_URL` | SellerClaw website that hosts the `/auth/device` verification page | `http://localhost:5173` |
-| `ADMIN_URL` | Admin UI URL — used as the CORS origin for the agent HTTP API | `http://localhost:5174` |
-| `AGENT_API_KEY` | Bearer token for `/manifest`, `/bundle/archive`, `/openclaw/*` | *(unset; required for those routes when self-hosting)* |
-| `SELLERCLAW_DATA_DIR` | Where the agent stores credentials/session files | `/data` (inside the container) |
+| Variable | Purpose | Typical source |
+|----------|---------|----------------|
+| `SELLERCLAW_API_URL` | Cloud API the agent server talks to | Profile `.env.*` |
+| `SELLERCLAW_WEB_URL` | SellerClaw website that hosts the `/auth/device` verification page | Profile `.env.*` |
+| `ADMIN_URL` | Admin UI URL — used as the CORS origin for the agent HTTP API | Profile `.env.*` |
+| `SELLERCLAW_LOCAL_API_KEY` | **Incoming** Bearer for control-plane routes (`/manifest`, `/auth/*` except bootstrap, `/bundle/archive`, `/openclaw/*`, `/commands/history`, …) on port `8001` | `secrets.env` or unset (auto-generated under `SELLERCLAW_DATA_DIR/local_api_key`) |
+| `AGENT_API_KEY` | **Outgoing** Bearer for the SellerClaw cloud (`/agent/connection/*`, chat SSE, etc.) — same role as the token in `agent_token.json` | `secrets.env` or sign-in |
+| `SELLERCLAW_DATA_DIR` | Where the agent stores `agent_token.json`, `local_api_key`, `edge_session.json`, manifest | `/data` (inside the container) |
 | `SELLERCLAW_EDGE_PING` | Enable the background ping loop (cloud mode) | `1` |
 | `SELLERCLAW_AGENT_IMAGE` | Pin a specific runtime image tag instead of building locally | *(unset)* |
 
-The agent server always listens on port `8001` inside the container and is published on `8001` on the host (see `docker-compose.yml`); the CLI reaches it at `http://127.0.0.1:8001`.
+The agent server always listens on port `8001` inside the container. By default compose publishes it as **`127.0.0.1:8001`** on the host (loopback only); the CLI reaches it at `http://127.0.0.1:8001`.
 
 See the [cloud connection protocol](./connection-protocol.md) for how the ping loop uses `SELLERCLAW_API_URL` and `SELLERCLAW_DATA_DIR`.
 
@@ -111,7 +112,7 @@ See the [cloud connection protocol](./connection-protocol.md) for how the ping l
 
 | Command | Description |
 |---------|-------------|
-| `setup` | **Default** when no argument is given: `docker compose up -d --build`, wait for `GET /auth/status`, interactive cloud sign-in, print Admin UI URL. |
+| `setup` | **Default** when no argument is given: `docker compose up -d --build`, wait for `GET /health`, interactive cloud sign-in, print Admin UI URL. |
 | `start` | Start the stack only: `docker compose up -d --build` in the agent directory. |
 | `stop` | Stop the stack: `docker compose down`. |
 | `status` | Show whether the agent is connected to the cloud (`GET /auth/status`). |
@@ -160,7 +161,7 @@ To publish to a registry (for example GHCR), tag the result with your `ghcr.io/<
 
 ### After setup
 
-- **Timeout waiting for `/auth/status` after setup** — inspect logs with `docker compose logs` in `sellerclaw-agent/`. The most common causes are the server still booting (wait another 10–20 s and retry `sellerclaw-agent status`) or port `8001` being in use by another process.
+- **Timeout waiting for the agent after setup** (`GET /health` during `setup`) — inspect logs with `docker compose logs` in `sellerclaw-agent/`. The most common causes are the server still booting (wait another 10–20 s and retry `sellerclaw-agent status`) or port `8001` being in use by another process.
 - **Agent unreachable for `login` / `status`** — run `sellerclaw-agent start` and confirm nothing else is listening on `127.0.0.1:8001`.
 - **Wrong cloud URL after switching environments** — run `docker compose down` **before** switching profiles so the container picks up the new `SELLERCLAW_API_URL`. Containers do not re-read env vars on simple restart.
 - **Admin UI at `http://localhost:5174/admin/` does not load** — confirm the `admin-ui` service is running (`docker compose ps`). If you recently added an npm dependency, rebuild with `docker compose build admin-ui && docker compose up -d admin-ui`. See [`developer/admin-ui.md`](./developer/admin-ui.md) for details.
@@ -178,11 +179,11 @@ If you want to start completely over:
 
 ```bash
 docker compose down
-rm -rf data/credentials.json data/edge_session.json
+rm -rf data/agent_token.json data/local_api_key data/edge_session.json
 ./setup.sh
 ```
 
-This clears the stored JWT pair and the current session ID so the next `setup` registers a fresh session.
+This clears the stored cloud agent token, the auto-generated local API key, and the current session ID so the next `setup` registers a fresh session.
 
 ## See also
 

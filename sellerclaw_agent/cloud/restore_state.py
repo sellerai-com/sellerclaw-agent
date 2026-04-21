@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import httpx
 
+from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
 from sellerclaw_agent.cloud.state_backup import (
     default_openclaw_state_dir,
     restore_state_backup,
     state_dir_has_restoreable_data,
 )
+
+
+def _resolve_restore_bearer() -> str | None:
+    data_dir = Path(os.environ.get("SELLERCLAW_DATA_DIR", "/data"))
+    return resolve_agent_bearer_token_from_data_dir(data_dir)
 
 
 def run_restore_if_needed() -> None:
@@ -22,7 +29,7 @@ def run_restore_if_needed() -> None:
     state_dir = default_openclaw_state_dir()
     if state_dir_has_restoreable_data(state_dir):
         return
-    token = (os.environ.get("AGENT_API_KEY") or "").strip()
+    token = _resolve_restore_bearer()
     if not token:
         return
     base = get_sellerclaw_api_url().rstrip("/")

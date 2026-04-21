@@ -9,17 +9,19 @@ from uuid import UUID
 
 import pytest
 import sellerclaw_agent.server.app as srv_app
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
-from sellerclaw_agent.server.app import app, get_command_history_storage, get_openclaw_manager, get_storage
+from sellerclaw_agent.server.app import app, auth_local_bootstrap, get_command_history_storage, get_openclaw_manager, get_storage
 from sellerclaw_agent.server.command_history import CommandHistoryStorage
+from sellerclaw_agent.server.local_api_key import reset_local_api_key_cache
 from sellerclaw_agent.server.storage import ManifestStorage
 
 pytestmark = pytest.mark.unit
 
-_AGENT_API_KEY = "unit-test-agent-api-key"
-_AGENT_AUTH = {"Authorization": f"Bearer {_AGENT_API_KEY}"}
+_LOCAL_API_KEY = "unit-test-local-api-key"
+_CONTROL_PLANE_AUTH = {"Authorization": f"Bearer {_LOCAL_API_KEY}"}
 
 
 @pytest.fixture()
@@ -46,10 +48,11 @@ def client(
     monkeypatch,
     openclaw_manager_mock: MagicMock,
 ) -> Generator[TestClient, None, None]:
+    reset_local_api_key_cache()
     monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SELLERCLAW_EDGE_PING", "0")
     monkeypatch.setenv("OPENCLAW_BUNDLE_VOLUME_PATH", str(tmp_path / "bundle"))
-    monkeypatch.setenv("AGENT_API_KEY", _AGENT_API_KEY)
+    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", _LOCAL_API_KEY)
 
     def _storage() -> ManifestStorage:
         return ManifestStorage(tmp_path)
@@ -69,7 +72,7 @@ def test_post_manifest_persists_file(
     tmp_path,
     make_manifest_data: Callable[..., dict[str, Any]],
 ) -> None:
-    response = client.post("/manifest", headers=_AGENT_AUTH, json=make_manifest_data())
+    response = client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=make_manifest_data())
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
@@ -88,7 +91,7 @@ def test_post_manifest_writes_runtime_env_from_proxy_url(
 ) -> None:
     """POST /manifest materializes PROXY_URL into runtime.env so gost/chrome see it."""
     payload = make_manifest_data(proxy_url="http://u:p@proxy.example:3128")
-    response = client.post("/manifest", headers=_AGENT_AUTH, json=payload)
+    response = client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=payload)
     assert response.status_code == 200
     runtime_env = (tmp_path / "bundle" / "runtime.env").read_text(encoding="utf-8")
     assert "export PROXY_URL='http://u:p@proxy.example:3128'" in runtime_env
@@ -100,7 +103,7 @@ def test_post_manifest_validation_error_422(
 ) -> None:
     bad = make_manifest_data()
     del bad["gateway_token"]
-    response = client.post("/manifest", headers=_AGENT_AUTH, json=bad)
+    response = client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=bad)
     assert response.status_code == 422
 
 
@@ -109,13 +112,13 @@ def test_post_manifest_bundle_validation_400(
     make_manifest_data: Callable[..., dict[str, Any]],
 ) -> None:
     bad = make_manifest_data(connected_integrations=["not_a_valid_kind"])
-    response = client.post("/manifest", headers=_AGENT_AUTH, json=bad)
+    response = client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=bad)
     assert response.status_code == 400
     assert "not_a_valid_kind" in response.json()["detail"]
 
 
 def test_get_manifest_empty_returns_404(client: TestClient) -> None:
-    response = client.get("/manifest", headers=_AGENT_AUTH)
+    response = client.get("/manifest", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "manifest_not_found"
 
@@ -125,11 +128,11 @@ def test_get_manifest_after_save_returns_content(
     make_manifest_data: Callable[..., dict[str, Any]],
 ) -> None:
     payload = make_manifest_data()
-    post_resp = client.post("/manifest", headers=_AGENT_AUTH, json=payload)
+    post_resp = client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=payload)
     assert post_resp.status_code == 200
     post_version = post_resp.json()["version"]
 
-    get_resp = client.get("/manifest", headers=_AGENT_AUTH)
+    get_resp = client.get("/manifest", headers=_CONTROL_PLANE_AUTH)
     assert get_resp.status_code == 200
     body = get_resp.json()
     assert body["version"] == post_version
@@ -200,8 +203,7 @@ def test_get_health_degraded_when_command_executor_dead(
         user_id=uid,
         user_email="a@example.com",
         user_name="u",
-        access_token="tok",
-        refresh_token="ref",
+        agent_token="sca_unit_test_token",
         connected_at=datetime.now(tz=UTC).isoformat(),
     )
     EdgeSessionStorage(tmp_path).save(
@@ -232,7 +234,7 @@ def test_get_health_degraded_when_command_executor_dead(
 
 
 def test_get_command_history_empty(client: TestClient) -> None:
-    response = client.get("/commands/history")
+    response = client.get("/commands/history", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     assert response.json() == {"entries": []}
 
@@ -262,7 +264,7 @@ def test_get_command_history_returns_stored_entries(client: TestClient, tmp_path
         }
     )
 
-    response = client.get("/commands/history")
+    response = client.get("/commands/history", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     body = response.json()
     ids = [e["command_id"] for e in body["entries"]]
@@ -276,9 +278,9 @@ def test_get_manifest_version_stable_across_calls(
     client: TestClient,
     make_manifest_data: Callable[..., dict[str, Any]],
 ) -> None:
-    client.post("/manifest", headers=_AGENT_AUTH, json=make_manifest_data())
-    first = client.get("/manifest", headers=_AGENT_AUTH).json()["version"]
-    second = client.get("/manifest", headers=_AGENT_AUTH).json()["version"]
+    client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=make_manifest_data())
+    first = client.get("/manifest", headers=_CONTROL_PLANE_AUTH).json()["version"]
+    second = client.get("/manifest", headers=_CONTROL_PLANE_AUTH).json()["version"]
     assert first == second
 
 
@@ -286,7 +288,7 @@ def test_openclaw_status(
     client: TestClient,
     openclaw_manager_mock: MagicMock,
 ) -> None:
-    response = client.get("/openclaw/status", headers=_AGENT_AUTH)
+    response = client.get("/openclaw/status", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "stopped"
@@ -295,8 +297,67 @@ def test_openclaw_status(
     openclaw_manager_mock.get_status_detail.assert_called_once()
 
 
+def test_openclaw_status_requires_local_api_key_header(
+    tmp_path,
+    monkeypatch,
+    openclaw_manager_mock: MagicMock,
+) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_EDGE_PING", "0")
+    monkeypatch.setenv("OPENCLAW_BUNDLE_VOLUME_PATH", str(tmp_path / "bundle"))
+    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "secret-local")
+
+    def _storage() -> ManifestStorage:
+        return ManifestStorage(tmp_path)
+
+    def _history() -> CommandHistoryStorage:
+        return CommandHistoryStorage(tmp_path)
+
+    app.dependency_overrides[get_storage] = _storage
+    app.dependency_overrides[get_command_history_storage] = _history
+    app.dependency_overrides[get_openclaw_manager] = lambda: openclaw_manager_mock
+    try:
+        with TestClient(app) as bare_client:
+            response = bare_client.get("/openclaw/status")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 401
+
+
+def test_auth_status_requires_local_api_key_header(
+    tmp_path,
+    monkeypatch,
+    openclaw_manager_mock: MagicMock,
+) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_EDGE_PING", "0")
+    monkeypatch.setenv("OPENCLAW_BUNDLE_VOLUME_PATH", str(tmp_path / "bundle"))
+    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "secret-local")
+
+    def _storage() -> ManifestStorage:
+        return ManifestStorage(tmp_path)
+
+    app.dependency_overrides[get_storage] = _storage
+    app.dependency_overrides[get_openclaw_manager] = lambda: openclaw_manager_mock
+    try:
+        with TestClient(app) as bare_client:
+            response = bare_client.get("/auth/status")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 401
+
+
+def test_openclaw_status_with_wrong_bearer_returns_401(
+    client: TestClient,
+) -> None:
+    response = client.get("/openclaw/status", headers={"Authorization": "Bearer wrong"})
+    assert response.status_code == 401
+
+
 def test_openclaw_start_requires_manifest(client: TestClient) -> None:
-    response = client.post("/openclaw/start", headers=_AGENT_AUTH)
+    response = client.post("/openclaw/start", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "manifest_not_found"
 
@@ -306,8 +367,8 @@ def test_openclaw_start_ok(
     make_manifest_data: Callable[..., dict[str, Any]],
     openclaw_manager_mock: MagicMock,
 ) -> None:
-    assert client.post("/manifest", headers=_AGENT_AUTH, json=make_manifest_data()).status_code == 200
-    response = client.post("/openclaw/start", headers=_AGENT_AUTH)
+    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=make_manifest_data()).status_code == 200
+    response = client.post("/openclaw/start", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     assert response.json() == {"outcome": "completed", "error": None}
     openclaw_manager_mock.start.assert_called_once()
@@ -320,9 +381,9 @@ def test_openclaw_start_rejected(
 ) -> None:
     from sellerclaw_agent.cloud.supervisor_manager import REJECT_ALREADY_RUNNING
 
-    assert client.post("/manifest", headers=_AGENT_AUTH, json=make_manifest_data()).status_code == 200
+    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=make_manifest_data()).status_code == 200
     openclaw_manager_mock.start.return_value = ("rejected", REJECT_ALREADY_RUNNING)
-    response = client.post("/openclaw/start", headers=_AGENT_AUTH)
+    response = client.post("/openclaw/start", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert detail["code"] == REJECT_ALREADY_RUNNING
@@ -332,7 +393,7 @@ def test_openclaw_stop_idempotent(
     client: TestClient,
     openclaw_manager_mock: MagicMock,
 ) -> None:
-    response = client.post("/openclaw/stop", headers=_AGENT_AUTH)
+    response = client.post("/openclaw/stop", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     assert response.json()["outcome"] == "completed"
     openclaw_manager_mock.stop.assert_called_once()
@@ -343,8 +404,8 @@ def test_openclaw_restart_ok(
     make_manifest_data: Callable[..., dict[str, Any]],
     openclaw_manager_mock: MagicMock,
 ) -> None:
-    assert client.post("/manifest", headers=_AGENT_AUTH, json=make_manifest_data()).status_code == 200
-    response = client.post("/openclaw/restart", headers=_AGENT_AUTH)
+    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=make_manifest_data()).status_code == 200
+    response = client.post("/openclaw/restart", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     assert response.json()["outcome"] == "completed"
     openclaw_manager_mock.restart.assert_called_once()
@@ -363,7 +424,7 @@ def test_openclaw_status_running(
         "ports": {"gateway": 7788, "vnc": 6080},
         "error": None,
     }
-    response = client.get("/openclaw/status", headers=_AGENT_AUTH)
+    response = client.get("/openclaw/status", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "running"
@@ -378,9 +439,9 @@ def test_openclaw_start_failed(
     make_manifest_data: Callable[..., dict[str, Any]],
     openclaw_manager_mock: MagicMock,
 ) -> None:
-    assert client.post("/manifest", headers=_AGENT_AUTH, json=make_manifest_data()).status_code == 200
+    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=make_manifest_data()).status_code == 200
     openclaw_manager_mock.start.return_value = ("failed", "supervisor error")
-    response = client.post("/openclaw/start", headers=_AGENT_AUTH)
+    response = client.post("/openclaw/start", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     assert response.json() == {"outcome": "failed", "error": "supervisor error"}
 
@@ -390,9 +451,9 @@ def test_openclaw_start_reject_message_unknown_code(
     make_manifest_data: Callable[..., dict[str, Any]],
     openclaw_manager_mock: MagicMock,
 ) -> None:
-    assert client.post("/manifest", headers=_AGENT_AUTH, json=make_manifest_data()).status_code == 200
+    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=make_manifest_data()).status_code == 200
     openclaw_manager_mock.start.return_value = ("rejected", "custom_unknown_code")
-    response = client.post("/openclaw/start", headers=_AGENT_AUTH)
+    response = client.post("/openclaw/start", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert detail["code"] == "custom_unknown_code"
@@ -400,7 +461,7 @@ def test_openclaw_start_reject_message_unknown_code(
 
 
 def test_openclaw_restart_requires_manifest(client: TestClient) -> None:
-    response = client.post("/openclaw/restart", headers=_AGENT_AUTH)
+    response = client.post("/openclaw/restart", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "manifest_not_found"
 
@@ -412,9 +473,9 @@ def test_openclaw_restart_rejected_409(
 ) -> None:
     from sellerclaw_agent.cloud.supervisor_manager import REJECT_ALREADY_RUNNING
 
-    assert client.post("/manifest", headers=_AGENT_AUTH, json=make_manifest_data()).status_code == 200
+    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=make_manifest_data()).status_code == 200
     openclaw_manager_mock.restart.return_value = ("rejected", REJECT_ALREADY_RUNNING)
-    response = client.post("/openclaw/restart", headers=_AGENT_AUTH)
+    response = client.post("/openclaw/restart", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert detail["code"] == REJECT_ALREADY_RUNNING
@@ -426,6 +487,97 @@ def test_openclaw_stop_failed(
     openclaw_manager_mock: MagicMock,
 ) -> None:
     openclaw_manager_mock.stop.return_value = ("failed", "timeout")
-    response = client.post("/openclaw/stop", headers=_AGENT_AUTH)
+    response = client.post("/openclaw/stop", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     assert response.json() == {"outcome": "failed", "error": "timeout"}
+
+
+def test_auth_local_bootstrap_loopback_ipv4(monkeypatch, tmp_path) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "loop-key")
+    req = MagicMock()
+    req.client.host = "127.0.0.1"
+    assert auth_local_bootstrap(req) == {"local_api_key": "loop-key"}
+
+
+def test_auth_local_bootstrap_loopback_ipv6(monkeypatch, tmp_path) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "loop-key6")
+    req = MagicMock()
+    req.client.host = "::1"
+    assert auth_local_bootstrap(req) == {"local_api_key": "loop-key6"}
+
+
+def test_auth_local_bootstrap_loopback_ipv4_mapped(monkeypatch, tmp_path) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "loop-mapped")
+    req = MagicMock()
+    req.client.host = "::ffff:127.0.0.1"
+    assert auth_local_bootstrap(req) == {"local_api_key": "loop-mapped"}
+
+
+def test_auth_local_bootstrap_loopback_class_b(monkeypatch, tmp_path) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "loop-b")
+    req = MagicMock()
+    req.client.host = "127.2.3.4"
+    assert auth_local_bootstrap(req) == {"local_api_key": "loop-b"}
+
+
+def test_auth_local_bootstrap_non_loopback_forbidden(monkeypatch, tmp_path) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    req = MagicMock()
+    req.client.host = "203.0.113.1"
+    with pytest.raises(HTTPException) as exc_info:
+        auth_local_bootstrap(req)
+    assert exc_info.value.status_code == 403
+
+
+def test_auth_local_bootstrap_docker_published_host_gateway_ok(monkeypatch, tmp_path) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "gw-key")
+    monkeypatch.setattr("sellerclaw_agent.server.app._running_inside_docker", lambda: True)
+    monkeypatch.setattr(
+        "sellerclaw_agent.server.app._default_ipv4_gateway_linux",
+        lambda: "172.17.0.1",
+    )
+    req = MagicMock()
+    req.client.host = "172.17.0.1"
+    assert auth_local_bootstrap(req) == {"local_api_key": "gw-key"}
+
+
+def test_auth_local_bootstrap_docker_published_host_gateway_ipv4_mapped(
+    monkeypatch, tmp_path
+) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "gw-mapped")
+    monkeypatch.setattr("sellerclaw_agent.server.app._running_inside_docker", lambda: True)
+    monkeypatch.setattr(
+        "sellerclaw_agent.server.app._default_ipv4_gateway_linux",
+        lambda: "172.17.0.1",
+    )
+    req = MagicMock()
+    req.client.host = "::ffff:172.17.0.1"
+    assert auth_local_bootstrap(req) == {"local_api_key": "gw-mapped"}
+
+
+def test_auth_local_bootstrap_docker_sibling_container_forbidden(monkeypatch, tmp_path) -> None:
+    reset_local_api_key_cache()
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("sellerclaw_agent.server.app._running_inside_docker", lambda: True)
+    monkeypatch.setattr(
+        "sellerclaw_agent.server.app._default_ipv4_gateway_linux",
+        lambda: "172.17.0.1",
+    )
+    req = MagicMock()
+    req.client.host = "172.18.0.5"
+    with pytest.raises(HTTPException) as exc_info:
+        auth_local_bootstrap(req)
+    assert exc_info.value.status_code == 403

@@ -148,6 +148,19 @@ class SupervisorContainerManager:
             timeout=timeout,
         )
 
+    def _build_bundle(self, manifest: BundleManifest):
+        """Build OpenClaw bundle honoring manifest-side model prefix.
+
+        ``model_name_prefix`` is part of the manifest contract and must be threaded
+        into ``BundleBuilder.build`` so the rendered ``openclaw.json`` namespaces
+        model IDs (``u:<prefix>/complex``/``simple``). Dropping it would produce
+        bare model IDs that get rejected by LiteLLM with 401
+        ``key not allowed to access model``.
+        """
+        prefix_raw = (manifest.model_name_prefix or "").strip()
+        model_prefix = prefix_raw if prefix_raw else None
+        return self.bundle_builder.build(manifest, model_name_prefix=model_prefix)
+
     def _status_line_raw(self) -> tuple[str, subprocess.CompletedProcess[str]]:
         result = self._run_ctl("status", self.program_name, timeout=5.0)
         line = _first_status_line(result.stdout)
@@ -257,7 +270,7 @@ class SupervisorContainerManager:
             return "rejected", REJECT_ALREADY_RUNNING
 
         try:
-            built = self.bundle_builder.build(manifest)
+            built = self._build_bundle(manifest)
             write_bundle_to_disk(
                 self.bundle_volume_path,
                 openclaw_config=built.openclaw_config,
@@ -282,7 +295,7 @@ class SupervisorContainerManager:
 
     def restart(self, manifest: BundleManifest) -> tuple[str, str | None]:
         try:
-            built = self.bundle_builder.build(manifest)
+            built = self._build_bundle(manifest)
             write_bundle_to_disk(
                 self.bundle_volume_path,
                 openclaw_config=built.openclaw_config,

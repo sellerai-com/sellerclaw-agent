@@ -162,7 +162,6 @@ function loadIntoForm(data: Record<string, unknown>): void {
   form.hooks_token = raw.hooks_token ?? ''
   form.litellm_base_url = raw.litellm_base_url ?? tpl.litellm_base_url
   form.litellm_api_key = raw.litellm_api_key ?? ''
-  form.webhook_api_base_url = raw.webhook_api_base_url ?? tpl.webhook_api_base_url
   form.primary_channel = raw.primary_channel ?? tpl.primary_channel
   form.global_browser_enabled = raw.global_browser_enabled ?? true
 
@@ -277,7 +276,6 @@ function buildPayload(): SaveManifestRequest {
     hooks_token: form.hooks_token,
     litellm_base_url: form.litellm_base_url,
     litellm_api_key: form.litellm_api_key,
-    webhook_api_base_url: form.webhook_api_base_url,
     primary_channel: form.primary_channel,
     global_browser_enabled: form.global_browser_enabled,
     models: {
@@ -443,20 +441,12 @@ onMounted(refresh)
       </fieldset>
 
       <fieldset class="space-y-3 rounded-lg border border-slate-800 bg-slate-900/60 p-5">
-        <legend class="px-2 text-sm font-medium text-slate-200">LiteLLM &amp; webhook</legend>
+        <legend class="px-2 text-sm font-medium text-slate-200">LiteLLM</legend>
         <div class="grid gap-3 md:grid-cols-2">
           <label class="block text-xs">
             <span class="mb-1 block text-slate-400">LiteLLM base URL</span>
             <input
               v-model="form.litellm_base_url"
-              type="text"
-              class="w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none focus:border-emerald-600"
-            />
-          </label>
-          <label class="block text-xs">
-            <span class="mb-1 block text-slate-400">Webhook API base URL</span>
-            <input
-              v-model="form.webhook_api_base_url"
               type="text"
               class="w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none focus:border-emerald-600"
             />

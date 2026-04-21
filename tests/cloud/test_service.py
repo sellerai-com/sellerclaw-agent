@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
-from sellerclaw_agent.cloud.auth_client import DeviceCodeResult, DeviceTokenPollResult, LoginResult
+from sellerclaw_agent.cloud.auth_client import AgentAuthResult, DeviceCodeResult, DeviceTokenPollResult
+from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.exceptions import CloudAuthError, CloudDevicePollTerminalError
 from sellerclaw_agent.cloud.service import CloudAuthService
@@ -12,26 +14,22 @@ from sellerclaw_agent.cloud.service import CloudAuthService
 pytestmark = pytest.mark.unit
 
 _UID = UUID("35922ddf-4020-5179-b163-3d90bcb86b00")
+_INST = UUID("22222222-2222-4222-8222-222222222222")
 
 
 class _FakeAuthClient:
     def __init__(self, *, fail: bool = False) -> None:
         self._fail = fail
 
-    async def login(self, *, email: str, password: str) -> LoginResult:
+    async def login(self, *, email: str, password: str) -> AgentAuthResult:
         if self._fail:
             raise CloudAuthError("Invalid credentials", status_code=400)
-        return LoginResult(
-            access_token="at",
-            refresh_token="rt",
+        return AgentAuthResult(
+            agent_token="sca_fake",
             user_id=_UID,
             user_email=email,
             user_name="Alice",
         )
-
-    async def refresh(self, *, refresh_token: str) -> str:
-        _ = refresh_token
-        return "new-at"
 
     async def request_device_code(self) -> DeviceCodeResult:
         return DeviceCodeResult(
@@ -44,14 +42,16 @@ class _FakeAuthClient:
 
     async def poll_device_token(self, *, device_code: str) -> DeviceTokenPollResult:
         _ = device_code
-        return DeviceTokenPollResult(pending=True, error=None, login=None)
+        return DeviceTokenPollResult(pending=True, error=None, auth=None)
 
 
 @pytest.mark.asyncio
 async def test_connect_persists_and_returns_status(tmp_path: Path) -> None:
+    session = EdgeSessionStorage(tmp_path)
     svc = CloudAuthService(
         auth_client=_FakeAuthClient(),
         credentials_storage=CredentialsStorage(tmp_path),
+        session_storage=session,
     )
     status = await svc.connect(email="a@b.c", password="p")
     assert status.connected is True
@@ -61,8 +61,7 @@ async def test_connect_persists_and_returns_status(tmp_path: Path) -> None:
 
     stored = svc.credentials_storage.load()
     assert stored is not None
-    assert stored.access_token == "at"
-    assert stored.refresh_token == "rt"
+    assert stored.agent_token == "sca_fake"
 
 
 @pytest.mark.asyncio
@@ -70,6 +69,7 @@ async def test_connect_raises_on_auth_failure(tmp_path: Path) -> None:
     svc = CloudAuthService(
         auth_client=_FakeAuthClient(fail=True),
         credentials_storage=CredentialsStorage(tmp_path),
+        session_storage=EdgeSessionStorage(tmp_path),
     )
     with pytest.raises(CloudAuthError, match="Invalid credentials"):
         await svc.connect(email="a@b.c", password="wrong")
@@ -79,6 +79,7 @@ def test_get_status_disconnected(tmp_path: Path) -> None:
     svc = CloudAuthService(
         auth_client=_FakeAuthClient(),
         credentials_storage=CredentialsStorage(tmp_path),
+        session_storage=EdgeSessionStorage(tmp_path),
     )
     assert svc.get_status().connected is False
 
@@ -90,23 +91,36 @@ async def test_poll_device_flow_raises_terminal_when_cloud_returns_authorization
     class _Terminal(_FakeAuthClient):
         async def poll_device_token(self, *, device_code: str) -> DeviceTokenPollResult:
             _ = device_code
-            return DeviceTokenPollResult(pending=False, error="authorization_invalid", login=None)
+            return DeviceTokenPollResult(pending=False, error="authorization_invalid", auth=None)
 
     svc = CloudAuthService(
         auth_client=_Terminal(),
         credentials_storage=CredentialsStorage(tmp_path),
+        session_storage=EdgeSessionStorage(tmp_path),
     )
     with pytest.raises(CloudDevicePollTerminalError, match="authorization_invalid"):
         await svc.poll_device_flow(device_code="dc")
 
 
 @pytest.mark.asyncio
-async def test_disconnect_clears_credentials(tmp_path: Path) -> None:
+async def test_disconnect_calls_cloud_and_clears_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_instance = MagicMock()
+    mock_instance.disconnect = AsyncMock()
+    mock_cls = MagicMock(return_value=mock_instance)
+    monkeypatch.setattr("sellerclaw_agent.cloud.service.SellerClawConnectionClient", mock_cls)
+
+    session = EdgeSessionStorage(tmp_path)
+    session.save(agent_instance_id=_INST, protocol_version=1)
     svc = CloudAuthService(
         auth_client=_FakeAuthClient(),
         credentials_storage=CredentialsStorage(tmp_path),
+        session_storage=session,
     )
     await svc.connect(email="a@b.c", password="p")
     assert svc.get_status().connected is True
-    svc.disconnect()
+    assert session.load() is not None
+
+    await svc.disconnect()
     assert svc.get_status().connected is False
+    assert session.load() is None
+    mock_instance.disconnect.assert_awaited_once()

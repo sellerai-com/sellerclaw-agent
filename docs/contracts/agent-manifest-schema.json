@@ -11,8 +11,7 @@
     "hooks_token",
     "litellm_base_url",
     "litellm_api_key",
-    "models",
-    "webhook_api_base_url"
+    "models"
   ],
   "properties": {
     "user_id": { "type": "string", "format": "uuid" },
@@ -28,10 +27,10 @@
         "simple": { "$ref": "#/$defs/modelSpec" }
       }
     },
-    "webhook_api_base_url": { "type": "string" },
     "template_variables": {
       "type": "object",
-      "additionalProperties": { "type": "string" }
+      "additionalProperties": { "type": "string" },
+      "description": "Wire-level prompt template variables; use `api_base_path` (e.g. `/agent`) instead of full URLs — the agent prepends SELLERCLAW_API_URL to produce `api_base_url` consumed by prompts."
     },
     "enabled_modules": {
       "type": "array",
@@ -88,11 +87,7 @@
     },
     "primary_channel": { "type": "string" },
     "proxy_url": { "type": "string" },
-    "model_name_prefix": { "type": "string" },
-    "extra_allowed_origins": {
-      "type": "array",
-      "items": { "type": "string" }
-    }
+    "model_name_prefix": { "type": "string" }
   },
   "$defs": {
     "modelSpec": {

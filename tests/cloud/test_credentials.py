@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from sellerclaw_agent.cloud.credentials import CredentialsStorage, StoredCredentials
+from sellerclaw_agent.cloud.credentials import CredentialsStorage, StoredAgentCredentials
 
 pytestmark = pytest.mark.unit
 
@@ -17,18 +17,16 @@ def test_save_load_roundtrip(tmp_path: Path) -> None:
         user_id=uid,
         user_email="a@b.c",
         user_name="Alice",
-        access_token="at",
-        refresh_token="rt",
+        agent_token="sca_test",
         connected_at="2026-04-14T12:00:00Z",
     )
-    assert path == tmp_path / "credentials.json"
+    assert path == tmp_path / "agent_token.json"
     loaded = storage.load()
-    assert loaded == StoredCredentials(
+    assert loaded == StoredAgentCredentials(
         user_id=uid,
         user_email="a@b.c",
         user_name="Alice",
-        access_token="at",
-        refresh_token="rt",
+        agent_token="sca_test",
         connected_at="2026-04-14T12:00:00Z",
     )
 
@@ -44,8 +42,7 @@ def test_clear_removes_file(tmp_path: Path) -> None:
         user_id=UUID("35922ddf-4020-5179-b163-3d90bcb86b00"),
         user_email="x@y.z",
         user_name="",
-        access_token="a",
-        refresh_token="r",
+        agent_token="sca_x",
         connected_at="t",
     )
     assert storage.credentials_path.is_file()
@@ -64,7 +61,7 @@ def test_load_invalid_json_raises(tmp_path: Path) -> None:
 def test_load_not_object_raises(tmp_path: Path) -> None:
     storage = CredentialsStorage(tmp_path)
     storage.credentials_path.write_text("[1]", encoding="utf-8")
-    with pytest.raises(ValueError, match="root must be an object"):
+    with pytest.raises(ValueError, match="agent_token.json root must be an object"):
         storage.load()
 
 
@@ -81,7 +78,7 @@ def test_load_invalid_user_id_returns_none(tmp_path: Path) -> None:
     storage = CredentialsStorage(tmp_path)
     storage.credentials_path.write_text(
         '{"user_id": "not-a-uuid", "user_email": "a@b.c", "user_name": "", '
-        '"access_token": "a", "refresh_token": "r", "connected_at": "t"}',
+        '"agent_token": "sca_x", "connected_at": "t"}',
         encoding="utf-8",
     )
     assert storage.load() is None

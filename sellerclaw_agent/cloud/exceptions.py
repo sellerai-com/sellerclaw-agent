@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+from typing import Any
+
+
+def is_agent_suspended_api_payload(payload: Any) -> bool:
+    """True when SellerClaw error body marks the edge agent as suspended (403)."""
+    if not isinstance(payload, dict):
+        return False
+    detail = payload.get("detail")
+    if isinstance(detail, dict):
+        return detail.get("code") == "agent_suspended"
+    return False
+
 
 class CloudAuthError(Exception):
     """SellerClaw rejected credentials or returned an auth-related client error."""
