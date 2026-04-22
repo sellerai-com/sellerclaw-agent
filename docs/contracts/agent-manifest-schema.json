@@ -13,14 +13,6 @@
   ],
   "properties": {
     "user_id": { "type": "string", "format": "uuid" },
-    "gateway_token": {
-      "type": "string",
-      "description": "Deprecated: ignored on POST /manifest; use SELLERCLAW_DATA_DIR/secrets.json or SELLERCLAW_GATEWAY_TOKEN."
-    },
-    "hooks_token": {
-      "type": "string",
-      "description": "Deprecated: ignored on POST /manifest; use secrets.json or SELLERCLAW_HOOKS_TOKEN."
-    },
     "litellm_base_url": { "type": "string" },
     "litellm_api_key": { "type": "string" },
     "models": {

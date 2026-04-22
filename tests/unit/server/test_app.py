@@ -102,28 +102,6 @@ def test_post_manifest_writes_runtime_env_from_proxy_url(
     assert "export PROXY_URL='http://u:p@proxy.example:3128'" in runtime_env
 
 
-def test_post_manifest_legacy_tokens_warn_once_per_process(
-    client: TestClient,
-    tmp_path,
-    caplog: pytest.LogCaptureFixture,
-    make_manifest_data: Callable[..., dict[str, Any]],
-) -> None:
-    import logging
-
-    from sellerclaw_agent.server import manifest_deprecation as md
-
-    md.reset_manifest_deprecation_warnings()
-    caplog.set_level(logging.WARNING)
-    payload = make_manifest_data(gateway_token="gw-legacy", hooks_token="hk-legacy")
-    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=payload).status_code == 200
-    warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert sum("gateway_token" in m for m in warns) == 1
-    assert sum("hooks_token" in m for m in warns) == 1
-    caplog.clear()
-    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=payload).status_code == 200
-    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-
-
 def test_post_manifest_accepts_without_legacy_gateway_hooks(
     client: TestClient,
     tmp_path,
@@ -248,68 +226,6 @@ def test_post_manifest_validation_422_when_required_field_missing(
     payload = make_manifest_data()
     del payload["litellm_base_url"]
     assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=payload).status_code == 422
-
-
-def test_post_manifest_deprecated_tokens_warn_once_each_for_separate_fields(
-    client: TestClient,
-    tmp_path,
-    caplog: pytest.LogCaptureFixture,
-    make_manifest_data: Callable[..., dict[str, Any]],
-) -> None:
-    import logging
-
-    from sellerclaw_agent.server import manifest_deprecation as md
-
-    md.reset_manifest_deprecation_warnings()
-    caplog.set_level(logging.WARNING)
-    only_gw = make_manifest_data(gateway_token="g-only")
-    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=only_gw).status_code == 200
-    warns_a = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert sum("gateway_token" in m for m in warns_a) == 1
-    assert sum("hooks_token" in m for m in warns_a) == 0
-    caplog.clear()
-    only_hk = make_manifest_data(hooks_token="h-only")
-    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=only_hk).status_code == 200
-    warns_b = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert sum("hooks_token" in m for m in warns_b) == 1
-    assert sum("gateway_token" in m for m in warns_b) == 0
-
-
-def test_lifespan_migrates_manifest_tokens_off_disk(
-    tmp_path,
-    monkeypatch,
-    openclaw_manager_mock: MagicMock,
-    make_manifest_data: Callable[..., dict[str, Any]],
-) -> None:
-    reset_local_api_key_cache()
-    reset_secrets_cache()
-    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SELLERCLAW_EDGE_PING", "0")
-    monkeypatch.setenv("OPENCLAW_BUNDLE_VOLUME_PATH", str(tmp_path / "bundle"))
-    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", _LOCAL_API_KEY)
-
-    seeded = make_manifest_data()
-    seeded["gateway_token"] = "from-manifest-gw"
-    seeded["hooks_token"] = "from-manifest-hk"
-    (tmp_path / "manifest.json").write_text(json.dumps(seeded), encoding="utf-8")
-
-    app.dependency_overrides[get_storage] = lambda: ManifestStorage(tmp_path)
-    app.dependency_overrides[get_command_history_storage] = lambda: CommandHistoryStorage(tmp_path)
-    app.dependency_overrides[get_openclaw_manager] = lambda: openclaw_manager_mock
-    try:
-        with TestClient(app) as client:
-            on_disk = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
-            assert "gateway_token" not in on_disk
-            assert "hooks_token" not in on_disk
-            secrets = json.loads((tmp_path / "secrets.json").read_text(encoding="utf-8"))
-            assert secrets["gateway_token"] == "from-manifest-gw"
-            assert secrets["hooks_token"] == "from-manifest-hk"
-            got = client.get("/manifest", headers=_CONTROL_PLANE_AUTH)
-            assert got.status_code == 200
-            assert "gateway_token" not in got.json()["manifest"]
-            assert "hooks_token" not in got.json()["manifest"]
-    finally:
-        app.dependency_overrides.clear()
 
 
 def test_get_health_edge_ping_disabled(

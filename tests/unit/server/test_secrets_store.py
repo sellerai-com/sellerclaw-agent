@@ -5,11 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sellerclaw_agent.server.secrets_store import (
-    load_or_create_secrets,
-    migrate_legacy_manifest_tokens_into_secrets,
-    reset_secrets_cache,
-)
+from sellerclaw_agent.server.secrets_store import load_or_create_secrets, reset_secrets_cache
 
 pytestmark = pytest.mark.unit
 
@@ -97,21 +93,3 @@ def test_regenerates_missing_hooks_when_empty_string_in_file(
     assert len(sec.hooks_token) > 20
 
 
-def test_migrate_legacy_manifest_tokens_into_secrets_writes_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    reset_secrets_cache()
-    monkeypatch.delenv("SELLERCLAW_LOCAL_API_KEY", raising=False)
-    monkeypatch.delenv("SELLERCLAW_GATEWAY_TOKEN", raising=False)
-    monkeypatch.delenv("SELLERCLAW_HOOKS_TOKEN", raising=False)
-    manifest = {
-        "user_id": "u1",
-        "gateway_token": "mgw",
-        "hooks_token": "mhk",
-    }
-    cleaned = migrate_legacy_manifest_tokens_into_secrets(tmp_path, manifest)
-    assert cleaned == {"user_id": "u1"}
-    raw = json.loads((tmp_path / "secrets.json").read_text(encoding="utf-8"))
-    assert raw["gateway_token"] == "mgw"
-    assert raw["hooks_token"] == "mhk"
-    assert len(raw["local_api_key"]) > 20

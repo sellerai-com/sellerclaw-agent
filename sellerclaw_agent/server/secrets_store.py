@@ -8,7 +8,6 @@ import os
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 _SECRETS_FILENAME = "secrets.json"
 _LEGACY_LOCAL_KEY_FILE = "local_api_key"
@@ -67,7 +66,7 @@ def _atomic_write_json(path: Path, payload: dict[str, str]) -> None:
     fd = os.open(str(tmp_path), flags, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, sort_keys=True) + "\n")
+            fh.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
     except BaseException:
@@ -75,48 +74,6 @@ def _atomic_write_json(path: Path, payload: dict[str, str]) -> None:
             tmp_path.unlink()
         raise
     os.replace(tmp_path, path)
-
-
-def migrate_legacy_manifest_tokens_into_secrets(
-    data_dir: Path, manifest: dict[str, Any]
-) -> dict[str, Any] | None:
-    """Copy ``gateway_token`` / ``hooks_token`` from an on-disk manifest into ``secrets.json`` when missing.
-
-    Returns a manifest dict with those keys removed (for rewriting ``manifest.json``), or ``None`` when the
-    manifest had no such keys.
-    """
-    if "gateway_token" not in manifest and "hooks_token" not in manifest:
-        return None
-
-    path = data_dir / _SECRETS_FILENAME
-    file_map = _read_secrets_file(path)
-    updates: dict[str, str] = {}
-    for key in ("gateway_token", "hooks_token"):
-        raw = manifest.get(key)
-        val = raw.strip() if isinstance(raw, str) else ""
-        if not val or _env_for(key):
-            continue
-        if key not in file_map:
-            updates[key] = val
-
-    if updates:
-        merged = {**file_map, **updates}
-        for key in _KEY_ORDER:
-            if key in merged:
-                continue
-            if key == "local_api_key":
-                legacy = data_dir / _LEGACY_LOCAL_KEY_FILE
-                if legacy.is_file():
-                    leg = legacy.read_text(encoding="utf-8").strip()
-                    if leg:
-                        merged[key] = leg
-                        continue
-            merged[key] = secrets.token_urlsafe(32)
-        write_map = {k: merged[k] for k in _KEY_ORDER if not _env_for(k)}
-        if write_map:
-            _atomic_write_json(path, write_map)
-
-    return {k: v for k, v in manifest.items() if k not in ("gateway_token", "hooks_token")}
 
 
 def load_or_create_secrets(data_dir: Path) -> LocalSecrets:

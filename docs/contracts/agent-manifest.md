@@ -50,7 +50,7 @@ Required top-level fields:
 - `litellm_base_url`, `litellm_api_key` — LLM gateway URL and the virtual key to use.
 - `models` — at minimum a `complex` and a `simple` model spec (id, name, context window, max tokens; optionally `reasoning` and `input`).
 
-**Local OpenClaw tokens** (`gateway_token`, `hooks_token` for the gateway HTTP API and `/hooks/...`) are **not** part of the manifest. They are generated once under `SELLERCLAW_DATA_DIR/secrets.json` (mode `0600`) or overridden per key via `SELLERCLAW_GATEWAY_TOKEN` / `SELLERCLAW_HOOKS_TOKEN`. Legacy `POST /manifest` bodies may still include `gateway_token` / `hooks_token`; they are ignored and not persisted.
+**Local OpenClaw tokens** (`gateway_token`, `hooks_token` for the gateway HTTP API and `/hooks/...`) are **not** part of the manifest or the `POST /manifest` JSON schema. They are generated once under `SELLERCLAW_DATA_DIR/secrets.json` (mode `0600`) or overridden per key via `SELLERCLAW_GATEWAY_TOKEN` / `SELLERCLAW_HOOKS_TOKEN`. If an old `manifest.json` on disk still contains these keys, `GET /manifest` strips them from the response; rewrite the file on the next `POST /manifest` from the control plane to drop them from disk.
 
 Optional but common fields:
 

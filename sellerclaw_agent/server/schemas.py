@@ -129,14 +129,6 @@ class SaveManifestRequest(BaseModel):
     """Request body mirroring `bundle_manifest_from_mapping` input."""
 
     user_id: UUID
-    gateway_token: str | None = Field(
-        default=None,
-        description="Ignored on save; use secrets.json or SELLERCLAW_GATEWAY_TOKEN.",
-    )
-    hooks_token: str | None = Field(
-        default=None,
-        description="Ignored on save; use secrets.json or SELLERCLAW_HOOKS_TOKEN.",
-    )
     litellm_base_url: str
     litellm_api_key: str
     models: ManifestModels
