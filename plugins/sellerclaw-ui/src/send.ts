@@ -1,7 +1,9 @@
 export type ScwUiAccount = {
   apiBaseUrl: string;
   userId: string;
-  /** Per-user delivery Bearer (same as hooks token: HMAC from agent API key on the server). */
+  /** Outbound calls to sellerclaw cloud (same value as the agent's AGENT_API_KEY). */
+  agentApiKey: string;
+  /** Local OpenClaw hooks / sellerclaw-ui inbound: matches sellerclaw-agent ``hooks_token``. */
   internalWebhookSecret: string;
   /** Local sellerclaw-agent base URL inside the container (for media upload proxy). */
   localAgentBaseUrl: string;
@@ -87,8 +89,8 @@ export function resolveOutboundExtId(p: Record<string, unknown>): string {
  * Upload a local container file path to the sellerclaw-agent's media proxy, which in turn
  * pushes it to cloud File Storage and returns a public HTTPS `download_url`.
  *
- * Bearer auth reuses the per-user `internalWebhookSecret` (= hooks_token); the agent
- * handles the separate AGENT_API_KEY internally when proxying to the cloud.
+ * Bearer auth uses the local `internalWebhookSecret` (= hooks_token); the agent
+ * handles the cloud AGENT_API_KEY internally when proxying to the cloud.
  */
 export async function uploadLocalMedia(
   account: ScwUiAccount,
@@ -131,7 +133,7 @@ export async function postWebhookMessage(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${account.internalWebhookSecret}`,
+      Authorization: `Bearer ${account.agentApiKey}`,
     },
     body: JSON.stringify({
       user_id: account.userId,

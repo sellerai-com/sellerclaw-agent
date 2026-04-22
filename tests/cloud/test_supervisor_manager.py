@@ -20,6 +20,12 @@ from sellerclaw_agent.cloud.supervisor_manager import (
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture
+def with_agent_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``BundleBuilder`` requires an agent API key for ``sellerclaw-ui`` (webhook + plugin config)."""
+    monkeypatch.setenv("AGENT_API_KEY", "sca_test_supervisor_bundle_key")
+
+
 def _mgr(
     tmp_path: Path,
     agent_resources_root: Path,
@@ -132,6 +138,7 @@ def test_start_writes_bundle_and_supervisorctl_start(
     tmp_path: Path,
     agent_resources_root: Path,
     make_manifest: Callable[..., BundleManifest],
+    with_agent_api_key: None,
 ) -> None:
     mgr = _mgr(tmp_path, agent_resources_root)
     manifest = make_manifest()
@@ -198,6 +205,7 @@ def test_start_maps_already_started_to_rejected(
     tmp_path: Path,
     agent_resources_root: Path,
     make_manifest: Callable[..., BundleManifest],
+    with_agent_api_key: None,
 ) -> None:
     mgr = _mgr(tmp_path, agent_resources_root)
 
@@ -224,6 +232,7 @@ def test_start_supervisorctl_failure(
     tmp_path: Path,
     agent_resources_root: Path,
     make_manifest: Callable[..., BundleManifest],
+    with_agent_api_key: None,
 ) -> None:
     mgr = _mgr(tmp_path, agent_resources_root)
 
@@ -275,6 +284,7 @@ def test_restart_writes_bundle_and_calls_restart(
     tmp_path: Path,
     agent_resources_root: Path,
     make_manifest: Callable[..., BundleManifest],
+    with_agent_api_key: None,
 ) -> None:
     mgr = _mgr(tmp_path, agent_resources_root)
     manifest = make_manifest()
@@ -298,6 +308,7 @@ def test_restart_supervisorctl_failure(
     tmp_path: Path,
     agent_resources_root: Path,
     make_manifest: Callable[..., BundleManifest],
+    with_agent_api_key: None,
 ) -> None:
     mgr = _mgr(tmp_path, agent_resources_root)
 

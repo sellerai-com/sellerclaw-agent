@@ -35,6 +35,7 @@ export function resolveSellerclawUiAccount(
   const section = readSellerclawUiSection(cfg);
   const apiBaseUrl = typeof section?.apiBaseUrl === "string" ? section.apiBaseUrl.trim() : "";
   const userId = typeof section?.userId === "string" ? section.userId.trim() : "";
+  const agentApiKey = typeof section?.agentApiKey === "string" ? section.agentApiKey.trim() : "";
   const internalWebhookSecret =
     typeof section?.internalWebhookSecret === "string"
       ? section.internalWebhookSecret.trim()
@@ -49,10 +50,13 @@ export function resolveSellerclawUiAccount(
   if (!userId) {
     throw new Error("sellerclaw-ui: userId is required");
   }
+  if (!agentApiKey) {
+    throw new Error("sellerclaw-ui: agentApiKey is required");
+  }
   if (!internalWebhookSecret) {
     throw new Error("sellerclaw-ui: internalWebhookSecret is required");
   }
-  return { apiBaseUrl, userId, internalWebhookSecret, localAgentBaseUrl };
+  return { apiBaseUrl, userId, agentApiKey, internalWebhookSecret, localAgentBaseUrl };
 }
 
 /**

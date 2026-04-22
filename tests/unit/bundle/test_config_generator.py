@@ -23,6 +23,7 @@ from sellerclaw_agent.models import ModelTier
 pytestmark = pytest.mark.unit
 
 _USER_ID = UUID("11111111-1111-4111-8111-111111111111")
+_AGENT_API_KEY = "test-sca-agent-key"
 
 
 def _base_specs() -> tuple[ModelSpec, ModelSpec]:
@@ -58,6 +59,7 @@ def test_generate_openclaw_config_has_gateway_and_models(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api/",
         litellm_base_url="http://litellm",
@@ -89,6 +91,12 @@ def test_generate_openclaw_config_has_gateway_and_models(
         payload["plugins"]["entries"]["sellerclaw-ui"]["config"]["localAgentBaseUrl"]
         == OPENCLAW_LOCAL_AGENT_BASE_URL
     )
+    assert (
+        payload["plugins"]["entries"]["sellerclaw-ui"]["config"]["agentApiKey"] == _AGENT_API_KEY
+    )
+    assert (
+        payload["plugins"]["entries"]["sellerclaw-ui"]["config"]["internalWebhookSecret"] == "h"
+    )
 
 
 def test_generate_openclaw_config_telegram_channel_and_bindings(
@@ -99,6 +107,7 @@ def test_generate_openclaw_config_telegram_channel_and_bindings(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
@@ -128,6 +137,7 @@ def test_generate_openclaw_config_web_search_enabled_wires_sellerclaw_plugin(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api/",
         sellerclaw_agent_api_base_url="http://api/agent",
@@ -167,6 +177,7 @@ def test_generate_openclaw_config_web_search_baseurl_falls_back_to_sellerclaw_ap
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api/",
         litellm_base_url="http://litellm",
@@ -193,6 +204,7 @@ def test_generate_openclaw_config_web_search_disabled_has_no_plugin_or_provider(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
@@ -219,6 +231,7 @@ def test_generate_openclaw_config_browser_disabled(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
@@ -242,6 +255,7 @@ def test_generate_openclaw_config_allowed_origins_in_control_ui(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
@@ -272,6 +286,7 @@ def test_generate_openclaw_config_model_name_prefix_on_litellm_groups(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
@@ -333,6 +348,7 @@ def test_generate_openclaw_config_agent_model_maps_tier(
         assembled_agents=assembled,
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
@@ -357,6 +373,7 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
         hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
         user_id=_USER_ID,
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
@@ -382,6 +399,7 @@ def test_generate_openclaw_config_web_search_enabled_requires_auth_token(
             assembled_agents=_supervisor_only(make_assembled_agent),
             gateway_token="g",
             hooks_token="h",
+            agent_api_key=_AGENT_API_KEY,
             user_id=_USER_ID,
             sellerclaw_api_url="http://api/",
             litellm_base_url="http://litellm",
@@ -406,6 +424,7 @@ def test_generate_openclaw_config_web_search_enabled_requires_api_base_url(
             assembled_agents=_supervisor_only(make_assembled_agent),
             gateway_token="g",
             hooks_token="h",
+            agent_api_key=_AGENT_API_KEY,
             user_id=_USER_ID,
             sellerclaw_api_url="   ",
             litellm_base_url="http://litellm",

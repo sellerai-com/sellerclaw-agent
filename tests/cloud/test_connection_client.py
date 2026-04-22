@@ -123,7 +123,10 @@ async def test_fetch_edge_manifest_success(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/agent/connection/edge-manifest"
         assert request.headers.get("authorization") == "Bearer access-1"
-        return httpx.Response(200, json={"user_id": "11111111-1111-4111-8111-111111111111", "gateway_token": "g"})
+        return httpx.Response(
+            200,
+            json={"user_id": "11111111-1111-4111-8111-111111111111", "model_name_prefix": "u:pref/"},
+        )
 
     storage = _write_creds(tmp_path)
     client = SellerClawConnectionClient(
@@ -132,7 +135,7 @@ async def test_fetch_edge_manifest_success(tmp_path: Path) -> None:
         transport=httpx.MockTransport(handler),
     )
     data = await client.fetch_edge_manifest()
-    assert data["gateway_token"] == "g"
+    assert data["model_name_prefix"] == "u:pref/"
 
 
 @pytest.mark.asyncio

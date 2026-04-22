@@ -44,6 +44,7 @@ describe("registerInboundRoute", () => {
           "sellerclaw-ui": {
             apiBaseUrl: "https://api.example",
             userId: "user-1",
+            agentApiKey: "sca",
             internalWebhookSecret: "secret",
           },
         },
@@ -73,6 +74,7 @@ describe("registerInboundRoute", () => {
           "sellerclaw-ui": {
             apiBaseUrl: "https://api.example",
             userId: "user-1",
+            agentApiKey: "sca",
             internalWebhookSecret: "secret",
           },
         },
@@ -113,6 +115,7 @@ describe("registerInboundRoute", () => {
           "sellerclaw-ui": {
             apiBaseUrl: "https://api.example",
             userId: "user-1",
+            agentApiKey: "sca",
             internalWebhookSecret: "secret",
           },
         },
@@ -157,6 +160,7 @@ describe("registerInboundRoute", () => {
           "sellerclaw-ui": {
             apiBaseUrl: "https://api.example",
             userId: "user-1",
+            agentApiKey: "sca",
             internalWebhookSecret: "secret",
           },
         },
@@ -195,7 +199,7 @@ describe("registerInboundRoute", () => {
     expect(init).toMatchObject({
       method: "POST",
       headers: expect.objectContaining({
-        Authorization: "Bearer secret",
+        Authorization: "Bearer sca",
         "Content-Type": "application/json",
       }),
     });
@@ -233,6 +237,7 @@ describe("registerInboundRoute", () => {
           "sellerclaw-ui": {
             apiBaseUrl: "https://api.example",
             userId: "user-1",
+            agentApiKey: "sca",
             internalWebhookSecret: "secret",
           },
         },

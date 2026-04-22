@@ -42,12 +42,14 @@ describe("resolveSellerclawUiAccount", () => {
       cfg({
         apiBaseUrl: "https://api.example.com",
         userId: "550e8400-e29b-41d4-a716-446655440000",
+        agentApiKey: "sca_test_key",
         internalWebhookSecret: "hooks-token",
       }),
     );
     expect(result).toEqual({
       apiBaseUrl: "https://api.example.com",
       userId: "550e8400-e29b-41d4-a716-446655440000",
+      agentApiKey: "sca_test_key",
       internalWebhookSecret: "hooks-token",
       localAgentBaseUrl: "http://127.0.0.1:8001",
     });
@@ -58,6 +60,7 @@ describe("resolveSellerclawUiAccount", () => {
       cfg({
         apiBaseUrl: "https://api.example.com",
         userId: "550e8400-e29b-41d4-a716-446655440000",
+        agentApiKey: "k",
         internalWebhookSecret: "hooks-token",
         localAgentBaseUrl: "http://127.0.0.1:9999",
       }),
@@ -70,6 +73,7 @@ describe("resolveSellerclawUiAccount", () => {
       cfg({
         apiBaseUrl: "https://x.com",
         userId: "550e8400-e29b-41d4-a716-446655440000",
+        agentApiKey: "k",
         internalWebhookSecret: "s",
         extra: 1,
       } as Record<string, unknown>),
@@ -82,6 +86,7 @@ describe("resolveSellerclawUiAccount", () => {
       resolveSellerclawUiAccount(
         cfg({
           userId: "550e8400-e29b-41d4-a716-446655440000",
+          agentApiKey: "k",
           internalWebhookSecret: "s",
         }),
       ),
@@ -93,10 +98,24 @@ describe("resolveSellerclawUiAccount", () => {
       resolveSellerclawUiAccount(
         cfg({
           apiBaseUrl: "https://x.com",
+          agentApiKey: "k",
           internalWebhookSecret: "s",
         }),
       ),
     ).toThrow("sellerclaw-ui: userId is required");
+  });
+
+  it("throws when agentApiKey missing or empty", () => {
+    expect(() =>
+      resolveSellerclawUiAccount(
+        cfg({
+          apiBaseUrl: "https://x.com",
+          userId: "550e8400-e29b-41d4-a716-446655440000",
+          agentApiKey: "",
+          internalWebhookSecret: "s",
+        }),
+      ),
+    ).toThrow("sellerclaw-ui: agentApiKey is required");
   });
 
   it("throws when internalWebhookSecret missing or empty", () => {
@@ -105,6 +124,7 @@ describe("resolveSellerclawUiAccount", () => {
         cfg({
           apiBaseUrl: "https://x.com",
           userId: "550e8400-e29b-41d4-a716-446655440000",
+          agentApiKey: "k",
           internalWebhookSecret: "",
         }),
       ),
@@ -117,6 +137,7 @@ describe("resolveSellerclawUiAccount", () => {
         cfg({
           apiBaseUrl: "   ",
           userId: "550e8400-e29b-41d4-a716-446655440000",
+          agentApiKey: "k",
           internalWebhookSecret: "s",
         }),
       ),
@@ -129,6 +150,7 @@ describe("resolveSellerclawUiAccount", () => {
         cfg({
           apiBaseUrl: "https://x.com",
           userId: "",
+          agentApiKey: "k",
           internalWebhookSecret: "s",
         }),
       ),
@@ -150,6 +172,7 @@ describe("inspectAccount", () => {
       cfg({
         apiBaseUrl: "https://x.com",
         userId: "550e8400-e29b-41d4-a716-446655440000",
+        agentApiKey: "k",
         internalWebhookSecret: "s",
       }),
       null,
@@ -166,6 +189,7 @@ describe("inspectAccount", () => {
       cfg({
         apiBaseUrl: "",
         userId: "550e8400-e29b-41d4-a716-446655440000",
+        agentApiKey: "k",
         internalWebhookSecret: "s",
       }),
       null,
@@ -192,6 +216,7 @@ describe("status", () => {
       cfg({
         apiBaseUrl: "https://x.com",
         userId: "550e8400-e29b-41d4-a716-446655440000",
+        agentApiKey: "k",
         internalWebhookSecret: "s",
       }),
     );

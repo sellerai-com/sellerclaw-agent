@@ -21,6 +21,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 const account: ScwUiAccount = {
   apiBaseUrl: "https://api.example.com/",
   userId: "550e8400-e29b-41d4-a716-446655440000",
+  agentApiKey: "sca-agent-key",
   internalWebhookSecret: "hooks-delivery-token",
   localAgentBaseUrl: "http://127.0.0.1:8001",
 };
@@ -97,7 +98,7 @@ describe("postOpenclawWebhook / postWebhookMessage", () => {
     expect(init.method).toBe("POST");
     expect(init.headers).toMatchObject({
       "Content-Type": "application/json",
-      Authorization: "Bearer hooks-delivery-token",
+      Authorization: "Bearer sca-agent-key",
     });
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body).toMatchObject({
@@ -108,7 +109,7 @@ describe("postOpenclawWebhook / postWebhookMessage", () => {
     });
   });
 
-  it("sends Bearer internalWebhookSecret", async () => {
+  it("sends Bearer agentApiKey for cloud webhook", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ message: { id: "x" } }, 200),
     );
@@ -117,7 +118,8 @@ describe("postOpenclawWebhook / postWebhookMessage", () => {
     const acc: ScwUiAccount = {
       apiBaseUrl: "https://api.example.com",
       userId: "550e8400-e29b-41d4-a716-446655440000",
-      internalWebhookSecret: "my-bearer",
+      agentApiKey: "my-agent-key",
+      internalWebhookSecret: "hooks-only-local",
       localAgentBaseUrl: "http://127.0.0.1:8001",
     };
     const promise = postWebhookMessage(acc, "sk", { text: "t", message_id: "m" });
@@ -125,7 +127,7 @@ describe("postOpenclawWebhook / postWebhookMessage", () => {
     await promise;
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(init.headers).toMatchObject({ Authorization: "Bearer my-bearer" });
+    expect(init.headers).toMatchObject({ Authorization: "Bearer my-agent-key" });
   });
 
   it("strips trailing slash from apiBaseUrl", async () => {
@@ -278,6 +280,7 @@ describe("sendText resolves account from stored plugin config", () => {
         "sellerclaw-ui": {
           apiBaseUrl: "https://api.example.com",
           userId: account.userId,
+          agentApiKey: account.agentApiKey,
           internalWebhookSecret: account.internalWebhookSecret,
         },
       },

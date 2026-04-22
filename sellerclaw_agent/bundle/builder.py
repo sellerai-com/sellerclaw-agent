@@ -118,23 +118,24 @@ class BundleBuilder:
             per_module_browser=manifest.resolved_per_module_browser(),
         )
         workspaces = build_workspaces_from_assembled(assembled)
-        web_search_auth_token = ""
-        if manifest.web_search.enabled:
-            if data_dir is not None:
-                bearer = resolve_agent_bearer_token_from_data_dir(data_dir)
-            else:
-                bearer = (os.environ.get("AGENT_API_KEY") or "").strip() or None
-            if not bearer:
-                raise ValueError(
-                    "Web search is enabled in the manifest but no agent bearer token is available. "
-                    "Sign in to SellerClaw (agent_token.json under SELLERCLAW_DATA_DIR) or set "
-                    "AGENT_API_KEY before building the bundle."
-                )
-            web_search_auth_token = bearer
+        if data_dir is not None:
+            agent_api_key = resolve_agent_bearer_token_from_data_dir(data_dir)
+        else:
+            agent_api_key = (os.environ.get("AGENT_API_KEY") or "").strip() or None
+        # The agent API key is now mandatory for every bundle: it authenticates the
+        # sellerclaw-ui plugin's outbound calls to the cloud and (when enabled)
+        # OpenClaw's web-search tool. Fail fast with a single actionable message.
+        if not agent_api_key:
+            raise ValueError(
+                "An agent API key is required in openclaw config (sellerclaw-ui). "
+                "Sign in to SellerClaw (agent_token.json under SELLERCLAW_DATA_DIR) or set AGENT_API_KEY."
+            )
+        web_search_auth_token = agent_api_key if manifest.web_search.enabled else ""
         openclaw_config = generate_openclaw_config(
             assembled_agents=assembled,
             gateway_token=gateway_token,
             hooks_token=hooks_token,
+            agent_api_key=agent_api_key,
             user_id=manifest.user_id,
             sellerclaw_api_url=sellerclaw_api_url,
             sellerclaw_agent_api_base_url=agent_api_base_url,

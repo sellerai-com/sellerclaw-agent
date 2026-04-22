@@ -50,7 +50,7 @@ async function postStreamDeltaBestEffort(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${account.internalWebhookSecret}`,
+        Authorization: `Bearer ${account.agentApiKey}`,
       },
       body: JSON.stringify({
         user_id: account.userId,
@@ -75,7 +75,7 @@ async function postStreamEndBestEffort(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${account.internalWebhookSecret}`,
+        Authorization: `Bearer ${account.agentApiKey}`,
       },
       body: JSON.stringify({
         user_id: account.userId,

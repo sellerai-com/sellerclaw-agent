@@ -95,6 +95,7 @@ def generate_openclaw_config(
     assembled_agents: Sequence[AssembledAgentLike],
     gateway_token: str,
     hooks_token: str,
+    agent_api_key: str,
     user_id: UUID,
     sellerclaw_api_url: str,
     sellerclaw_agent_api_base_url: str | None = None,
@@ -217,6 +218,7 @@ def generate_openclaw_config(
     sellerclaw_ui_plugin_config: dict[str, object] = {
         "apiBaseUrl": sellerclaw_api_url.strip().rstrip("/"),
         "userId": str(user_id),
+        "agentApiKey": (agent_api_key or "").strip(),
         "internalWebhookSecret": hooks_token,
         "primaryChannel": primary_channel,
         "localAgentBaseUrl": OPENCLAW_LOCAL_AGENT_BASE_URL,

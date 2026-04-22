@@ -17,10 +17,15 @@
         "minLength": 1,
         "description": "SellerClaw user UUID for outbound messages."
       },
+      "agentApiKey": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The agent's AGENT_API_KEY (outbound API auth to sellerclaw cloud)."
+      },
       "internalWebhookSecret": {
         "type": "string",
         "minLength": 1,
-        "description": "Per-user delivery token (same value as OpenClaw hooks token: HMAC from agent API key)."
+        "description": "Local OpenClaw hooks / inbound secret (sellerclaw-agent hooks_token, not used for cloud API)."
       },
       "primaryChannel": {
         "type": "string",
@@ -28,6 +33,6 @@
         "description": "Preferred channel for owner-facing notifications (matches SellerClaw agent config)."
       }
     },
-    "required": ["apiBaseUrl", "userId", "internalWebhookSecret"]
+    "required": ["apiBaseUrl", "userId", "agentApiKey", "internalWebhookSecret"]
   }
 }
