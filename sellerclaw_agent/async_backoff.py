@@ -18,19 +18,19 @@ def ping_interval_success() -> float:
 
 
 def ping_interval_after_error(consecutive_errors: int) -> float:
-    """Exponential backoff capped at 300s + small jitter after failures."""
+    """Exponential backoff capped at 30s + small jitter after failures."""
     if consecutive_errors <= 0:
         return ping_interval_success()
-    exp = min(10.0 * (2 ** (consecutive_errors - 1)), 300.0)
-    return exp + random.uniform(0.0, 3.0)
+    exp = min(10.0 * (2 ** (consecutive_errors - 1)), 30.0)
+    return min(30.0, exp + random.uniform(0.0, 0.5))
 
 
 def ping_interval_when_suspended() -> float:
     """Long sleep while server reports agent_suspended (403); avoid hammering API."""
-    return 180.0 + random.uniform(0.0, 30.0)
+    return 28.0 + random.uniform(0.0, 2.0)
 
 
 def sse_interval_after_error(previous_backoff: float, *, max_seconds: float = 30.0) -> float:
     """Double previous SSE error backoff up to ``max_seconds``, with jitter."""
     nxt = min(max_seconds, max(2.0, previous_backoff * 2.0))
-    return nxt + random.uniform(0.0, 0.5)
+    return min(max_seconds, nxt + random.uniform(0.0, 0.5))

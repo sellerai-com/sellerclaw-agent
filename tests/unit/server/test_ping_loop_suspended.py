@@ -88,6 +88,6 @@ async def test_ping_loop_suspended_uses_long_sleep_and_keeps_session(
     executor.shutdown(wait=False, cancel_futures=True)
 
     assert sleep_calls, "expected suspended backoff sleep"
-    assert 180.0 <= sleep_calls[0] <= 210.0
+    assert 28.0 <= sleep_calls[0] <= 30.0
     session_storage.clear.assert_not_called()
     creds_storage.load.assert_called()

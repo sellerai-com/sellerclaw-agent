@@ -44,7 +44,10 @@ from sellerclaw_agent.server.storage import ManifestStorage
 
 _log = structlog.get_logger(__name__)
 
-_SSE_TIMEOUT = httpx.Timeout(connect=30.0, read=3600.0, write=30.0, pool=30.0)
+# Cloud heartbeats every 15s (see ``iter_agent_edge_chat_sse`` on the server). A tight
+# read timeout (~4× heartbeat) lets us detect silently-dead TCP (proxy NAT drop,
+# container pause) promptly and reconnect, instead of sitting idle for up to an hour.
+_SSE_TIMEOUT = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=30.0)
 
 # Throttle supervisord probes while draining SSE (each probe is a ``supervisorctl`` subprocess).
 _OPENCLAW_PROBE_TTL_SEC = 5.0

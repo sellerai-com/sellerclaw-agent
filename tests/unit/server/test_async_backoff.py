@@ -20,16 +20,16 @@ def test_ping_interval_success_in_expected_range() -> None:
 def test_ping_interval_when_suspended_in_expected_range() -> None:
     for _ in range(50):
         s = ping_interval_when_suspended()
-        assert 180.0 <= s <= 210.0
+        assert 28.0 <= s <= 30.0
 
 
 @pytest.mark.parametrize(
     ("errors", "min_expected", "max_expected"),
     [
-        pytest.param(1, 10.0, 13.0, id="first-error"),
-        pytest.param(2, 20.0, 23.0, id="second-error"),
-        pytest.param(5, 160.0, 163.0, id="fifth-error"),
-        pytest.param(10, 300.0, 303.0, id="capped-at-300"),
+        pytest.param(1, 10.0, 10.5, id="first-error"),
+        pytest.param(2, 20.0, 20.5, id="second-error"),
+        pytest.param(5, 30.0, 30.0, id="capped-at-30"),
+        pytest.param(10, 30.0, 30.0, id="capped-at-30-long-run"),
     ],
 )
 def test_ping_interval_after_error_grows_and_caps(errors: int, min_expected: float, max_expected: float) -> None:
@@ -38,5 +38,5 @@ def test_ping_interval_after_error_grows_and_caps(errors: int, min_expected: flo
 
 
 def test_sse_interval_after_error_doubles_with_cap() -> None:
-    assert 4.0 <= sse_interval_after_error(2.0) <= 30.5
-    assert sse_interval_after_error(20.0) <= 30.5
+    assert 4.0 <= sse_interval_after_error(2.0) <= 30.0
+    assert sse_interval_after_error(20.0) <= 30.0
