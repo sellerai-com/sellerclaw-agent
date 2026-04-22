@@ -20,7 +20,12 @@ from sellerclaw_agent.async_backoff import (
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
-from sellerclaw_agent.cloud.exceptions import CloudAgentSuspendedError, CloudAuthError, CloudConnectionError
+from sellerclaw_agent.cloud.exceptions import (
+    CloudAgentSuspendedError,
+    CloudAuthError,
+    CloudConnectionError,
+    CloudSessionInvalidatedError,
+)
 from sellerclaw_agent.cloud.supervisor_manager import (
     BrowserStatusProbe,
     SupervisorContainerManager,
@@ -157,6 +162,12 @@ async def run_edge_ping_loop(
             _log.warning("edge_agent_suspended_waiting_resume")
             await sleep_until(stop, ping_interval_when_suspended())
             continue
+        except CloudSessionInvalidatedError as exc:
+            _log.warning("edge_session_invalidated_clearing_session", error=str(exc))
+            session_storage.clear()
+            registry.mark_ping_error(str(exc))
+            await sleep_until(stop, 2.0)
+            continue
         except CloudAuthError as exc:
             if getattr(exc, "status_code", None) == 401:
                 _log.warning("edge_session_unauthorized_clearing_local_session")
@@ -266,6 +277,11 @@ async def _flush_command_ack(
     except CloudAgentSuspendedError:
         _log.warning("edge_ping_ack_suspended")
         registry.mark_ping_error("agent_suspended")
+        return False
+    except CloudSessionInvalidatedError as exc:
+        _log.warning("edge_ping_ack_session_invalidated", error=str(exc))
+        session_storage.clear()
+        registry.mark_ping_error(str(exc))
         return False
     except CloudAuthError as exc:
         if getattr(exc, "status_code", None) == 401:

@@ -13,7 +13,7 @@ readonly APP_SKILLS_ROOT="/app/skills"
 readonly OPENCLAW_APP_SKILLS_COPIES="${OPENCLAW_APP_SKILLS_COPIES:-0}"
 # Legacy symlink mode — disabled; kept for reference.
 readonly OPENCLAW_APP_SKILLS_ALIASES="${OPENCLAW_APP_SKILLS_ALIASES:-0}"
-readonly EXTENDED_DIAG="${OPENCLAW_EXTENDED_DIAGNOSTICS:-1}"
+readonly EXTENDED_DIAG="${OPENCLAW_EXTENDED_DIAGNOSTICS:-0}"
 AGENT_IDS=()
 
 openclaw_diagnostics_enabled() {
@@ -88,7 +88,7 @@ configure_node_runtime() {
 
 monitor_gateway_process_memory() {
     local openclaw_pid="$1"
-    local interval_seconds="${OPENCLAW_PROCESS_MEMORY_LOG_INTERVAL_SECONDS:-10}"
+    local interval_seconds="${OPENCLAW_PROCESS_MEMORY_LOG_INTERVAL_SECONDS:-20}"
 
     python -m openclaw_diagnostics monitor-memory \
         --pid "${openclaw_pid}" \

@@ -13,7 +13,12 @@ import pytest
 from sellerclaw_agent.cloud import chat_listener as cl
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
-from sellerclaw_agent.cloud.exceptions import CloudAgentSuspendedError, CloudConnectionError
+from sellerclaw_agent.cloud.exceptions import (
+    CloudAgentSuspendedError,
+    CloudConnectionError,
+    CloudConnectionInactiveError,
+    CloudSessionInvalidatedError,
+)
 from sellerclaw_agent.cloud.openclaw_forwarder import LocalOpenClawForwarder
 
 pytestmark = pytest.mark.unit
@@ -284,6 +289,58 @@ async def test_consume_chat_sse_403_forbidden_raises(
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(202))) as oc_http:
         forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", http_client=oc_http)
         with pytest.raises(CloudConnectionError, match="chat_sse_forbidden"):
+            await cl._consume_chat_sse(
+                agent_token="sca_access",
+                agent_instance_id=uuid4(),
+                forwarder=forwarder,
+                supervisor_mgr=_FakeSupervisor(status="running"),  # type: ignore[arg-type]
+                dedup=cl._MessageIdDedup(),
+                stop=stop,
+            )
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_exc"),
+    [
+        pytest.param(
+            "agent_session_invalidated",
+            CloudSessionInvalidatedError,
+            id="session-invalidated",
+        ),
+        pytest.param(
+            "agent_connection_inactive",
+            CloudConnectionInactiveError,
+            id="connection-inactive",
+        ),
+        pytest.param(
+            "agent_connection_not_found",
+            CloudConnectionInactiveError,
+            id="connection-not-found",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_consume_chat_sse_403_session_codes_raise_specific_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    expected_exc: type[BaseException],
+) -> None:
+    monkeypatch.setenv("SELLERCLAW_API_URL", "http://cloud.test")
+    transport = _chat_sse_transport_status(
+        403,
+        {"detail": {"code": code, "message": "stale session"}},
+    )
+    orig_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return orig_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(cl.httpx, "AsyncClient", patched_async_client)
+    stop = asyncio.Event()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(202))) as oc_http:
+        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", http_client=oc_http)
+        with pytest.raises(expected_exc):
             await cl._consume_chat_sse(
                 agent_token="sca_access",
                 agent_instance_id=uuid4(),

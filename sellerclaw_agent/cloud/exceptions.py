@@ -3,14 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 
-def is_agent_suspended_api_payload(payload: Any) -> bool:
-    """True when SellerClaw error body marks the edge agent as suspended (403)."""
+def agent_api_error_code(payload: Any) -> str | None:
+    """Extract ``detail.code`` from a SellerClaw error body, if present."""
     if not isinstance(payload, dict):
-        return False
+        return None
     detail = payload.get("detail")
     if isinstance(detail, dict):
-        return detail.get("code") == "agent_suspended"
-    return False
+        code = detail.get("code")
+        if isinstance(code, str):
+            return code
+    return None
+
+
+def is_agent_suspended_api_payload(payload: Any) -> bool:
+    """True when SellerClaw error body marks the edge agent as suspended (403)."""
+    return agent_api_error_code(payload) == "agent_suspended"
 
 
 class CloudAuthError(Exception):
@@ -27,6 +34,19 @@ class CloudConnectionError(Exception):
 
 class CloudAgentSuspendedError(CloudConnectionError):
     """Server returned 403 agent_suspended; wait for user resume before connecting."""
+
+
+class CloudSessionInvalidatedError(CloudAuthError):
+    """Server rejected the request because the local ``agent_instance_id`` is stale.
+
+    Recovery is session-scoped: clear ``edge_session.json`` only and let the ping
+    loop ``connect()`` a fresh session. Do NOT wipe the ``sca_`` agent token —
+    it is still valid, only the session id is no longer recognised by cloud.
+    """
+
+
+class CloudConnectionInactiveError(CloudConnectionError):
+    """Server has no CONNECTED edge session for this user (ping loop will restore it)."""
 
 
 class CloudDevicePollTerminalError(CloudConnectionError):

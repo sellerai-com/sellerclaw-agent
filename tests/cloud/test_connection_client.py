@@ -78,6 +78,47 @@ async def test_ping_401_raises_cloud_auth_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ping_401_with_session_invalidated_code_raises_session_error(
+    tmp_path: Path,
+) -> None:
+    from sellerclaw_agent.cloud.exceptions import (
+        CloudAuthError,
+        CloudSessionInvalidatedError,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/connection/ping":
+            return httpx.Response(
+                401,
+                json={
+                    "detail": {
+                        "code": "agent_session_invalidated",
+                        "message": "stale",
+                    }
+                },
+            )
+        return httpx.Response(404)
+
+    storage = _write_creds(tmp_path)
+    client = SellerClawConnectionClient(
+        credentials_storage=storage,
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(CloudSessionInvalidatedError) as excinfo:
+        await client.ping(
+            agent_instance_id=UUID("44444444-4444-4444-8444-444444444444"),
+            agent_version="1",
+            protocol_version=1,
+            openclaw_status="stopped",
+            openclaw_error=None,
+            command_result=None,
+        )
+    assert isinstance(excinfo.value, CloudAuthError)
+    assert excinfo.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_fetch_edge_manifest_success(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/agent/connection/edge-manifest"

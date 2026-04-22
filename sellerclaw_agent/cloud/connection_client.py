@@ -13,6 +13,8 @@ from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
     CloudAuthError,
     CloudConnectionError,
+    CloudSessionInvalidatedError,
+    agent_api_error_code,
     is_agent_suspended_api_payload,
 )
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
@@ -102,6 +104,8 @@ class SellerClawConnectionClient:
                 data = response.json()
             except ValueError:
                 data = {}
+            if agent_api_error_code(data) == "agent_session_invalidated":
+                raise CloudSessionInvalidatedError(self._detail_message(data), status_code=401)
             raise CloudAuthError(self._detail_message(data), status_code=401)
 
         if response.status_code >= 500:

@@ -40,4 +40,42 @@ describe('initApiClient', () => {
     const { initApiClient } = await import('../client')
     await expect(initApiClient()).rejects.toThrow('local_bootstrap_invalid')
   })
+
+  it('interceptor awaits bootstrap before outbound request (no 401 race)', async () => {
+    const order: string[] = []
+    let resolveBootstrap: (v: { data: { local_api_key: string } }) => void = () => {}
+    const bootstrapPromise = new Promise<{ data: { local_api_key: string } }>((resolve) => {
+      resolveBootstrap = resolve
+    })
+    vi.spyOn(axios, 'get').mockImplementation(async (url: string) => {
+      if (url.endsWith('/auth/local-bootstrap')) {
+        order.push('bootstrap_called')
+        const v = await bootstrapPromise
+        order.push('bootstrap_resolved')
+        return v
+      }
+      throw new Error(`unexpected axios.get ${url}`)
+    })
+
+    const { apiClient } = await import('../client')
+    apiClient.defaults.adapter = async (config) => {
+      order.push('adapter_invoked')
+      return {
+        data: { ok: true },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      } as never
+    }
+
+    const requestPromise = apiClient.get('/openclaw/status')
+    // Let the interceptor register bootstrap first, then resolve.
+    await Promise.resolve()
+    resolveBootstrap({ data: { local_api_key: 'late-key' } })
+    await requestPromise
+
+    expect(order).toEqual(['bootstrap_called', 'bootstrap_resolved', 'adapter_invoked'])
+    expect(apiClient.defaults.headers.common.Authorization).toBe('Bearer late-key')
+  })
 })
