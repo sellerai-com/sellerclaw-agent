@@ -51,8 +51,6 @@ export interface ManifestWebSearch {
 
 export interface SaveManifestRequest {
   user_id: string
-  gateway_token: string
-  hooks_token: string
   litellm_base_url: string
   litellm_api_key: string
   models: ManifestModels

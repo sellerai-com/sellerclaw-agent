@@ -13,7 +13,7 @@ It covers security issues related to areas such as:
 - the CLI (`sellerclaw-agent setup` / `login` / `logout`, device flow)
 - the local FastAPI control-plane server (`/manifest`, `/auth/*`, `/openclaw/*`)
 - authentication and session handling against a SellerClaw (or compatible) cloud
-- credential storage on disk (`agent_token.json`, `local_api_key`, `edge_session.json`)
+- credential storage on disk (`agent_token.json`, `secrets.json`, legacy `local_api_key`, `edge_session.json`)
 - the admin UI (Vue 3 SPA under `admin-ui/`)
 - the bundle renderer and the manifest wire contract
 - the combined OpenClaw + agent Docker image defined in `runtime/Dockerfile`
@@ -108,7 +108,7 @@ If your report touches both this repository and a broader product concern, pleas
 `sellerclaw-agent` is designed to run as a local self-hosted stack on a user's own machine. Even so, operators and contributors should follow basic security practices such as:
 
 - keeping `AGENT_API_KEY` and cloud tokens out of git
-- never committing `data/agent_token.json`, `data/local_api_key`, or `data/edge_session.json`
+- never committing `data/agent_token.json`, `data/secrets.json`, `data/local_api_key`, or `data/edge_session.json`
 - using strong local credentials for cloud accounts
 - avoiding exposing the agent's control-plane port (`8001` by default) to the public network (compose binds it to `127.0.0.1` by default)
 - understanding that `/auth/local-bootstrap` is intentionally loopback-only (`127.0.0.1`, `::1`, other `127.*`, and IPv4-mapped `::ffff:127.*`): anyone who can open `8001` from non-loopback addresses could otherwise obtain the local API key; do not put this path behind a reverse proxy that hides the real client address

@@ -36,8 +36,6 @@ def make_manifest_data() -> Callable[..., dict[str, Any]]:
     def _factory(**overrides: Any) -> dict[str, Any]:
         data: dict[str, Any] = {
             "user_id": "11111111-1111-4111-8111-111111111111",
-            "gateway_token": "g",
-            "hooks_token": "h",
             "litellm_base_url": "http://litellm",
             "litellm_api_key": "k",
             "models": {
@@ -62,8 +60,6 @@ def make_save_manifest_request() -> Callable[..., SaveManifestRequest]:
     def _factory(**overrides: Any) -> SaveManifestRequest:
         defaults: dict[str, Any] = {
             "user_id": UUID("11111111-1111-4111-8111-111111111111"),
-            "gateway_token": "g",
-            "hooks_token": "h",
             "litellm_base_url": "http://litellm",
             "litellm_api_key": "k",
             "models": ManifestModels(

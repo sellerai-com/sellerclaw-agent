@@ -61,8 +61,6 @@ const templateVarsRows = ref<KVRow[]>([])
 const browserRows = ref<BrowserRow[]>([])
 const telegramUserIdsText = ref('')
 const telegramGroupIdsText = ref('')
-const showGatewayToken = ref(false)
-const showHooksToken = ref(false)
 const showLitellmKey = ref(false)
 const showTelegramToken = ref(false)
 
@@ -153,8 +151,6 @@ function loadIntoForm(data: Record<string, unknown>): void {
   const raw = data as Partial<SaveManifestRequest>
 
   form.user_id = typeof raw.user_id === 'string' ? raw.user_id : tpl.user_id
-  form.gateway_token = raw.gateway_token ?? ''
-  form.hooks_token = raw.hooks_token ?? ''
   form.litellm_base_url = raw.litellm_base_url ?? tpl.litellm_base_url
   form.litellm_api_key = raw.litellm_api_key ?? ''
   form.primary_channel = raw.primary_channel ?? tpl.primary_channel
@@ -271,8 +267,6 @@ function buildPayload(): SaveManifestRequest {
   const simple = form.models.simple
   return {
     user_id: form.user_id.trim(),
-    gateway_token: form.gateway_token,
-    hooks_token: form.hooks_token,
     litellm_base_url: form.litellm_base_url,
     litellm_api_key: form.litellm_api_key,
     primary_channel: form.primary_channel,
@@ -380,7 +374,12 @@ onMounted(refresh)
 
     <form class="space-y-6" @submit.prevent="submit">
       <fieldset class="space-y-3 rounded-lg border border-slate-800 bg-slate-900/60 p-5">
-        <legend class="px-2 text-sm font-medium text-slate-200">Identity &amp; tokens</legend>
+        <legend class="px-2 text-sm font-medium text-slate-200">Identity</legend>
+        <p class="text-xs text-slate-500">
+          OpenClaw gateway and hooks tokens live in
+          <code class="text-slate-400">SELLERCLAW_DATA_DIR/secrets.json</code>
+          on the agent host (not in the manifest).
+        </p>
         <div class="grid gap-3 md:grid-cols-2">
           <label class="block text-xs">
             <span class="mb-1 block text-slate-400">User ID</span>
@@ -415,40 +414,6 @@ onMounted(refresh)
               placeholder="/agent"
               class="w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 font-mono text-sm text-slate-100 outline-none focus:border-emerald-600"
             />
-          </label>
-          <label class="block text-xs">
-            <span class="mb-1 block text-slate-400">Gateway token</span>
-            <div class="flex gap-2">
-              <input
-                v-model="form.gateway_token"
-                :type="showGatewayToken ? 'text' : 'password'"
-                class="w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none focus:border-emerald-600"
-              />
-              <button
-                type="button"
-                class="rounded bg-slate-800 px-2 text-xs hover:bg-slate-700"
-                @click="showGatewayToken = !showGatewayToken"
-              >
-                {{ showGatewayToken ? 'Hide' : 'Show' }}
-              </button>
-            </div>
-          </label>
-          <label class="block text-xs">
-            <span class="mb-1 block text-slate-400">Hooks token</span>
-            <div class="flex gap-2">
-              <input
-                v-model="form.hooks_token"
-                :type="showHooksToken ? 'text' : 'password'"
-                class="w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none focus:border-emerald-600"
-              />
-              <button
-                type="button"
-                class="rounded bg-slate-800 px-2 text-xs hover:bg-slate-700"
-                @click="showHooksToken = !showHooksToken"
-              >
-                {{ showHooksToken ? 'Hide' : 'Show' }}
-              </button>
-            </div>
           </label>
         </div>
       </fieldset>

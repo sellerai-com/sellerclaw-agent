@@ -43,7 +43,7 @@ make setup
 
 The agent supports multiple environment profiles. Each profile is a `.env.<name>` file in the repo root (committed, non-secret) that controls which SellerClaw cloud the agent connects to. **Secrets** — especially `SELLERCLAW_LOCAL_API_KEY` and `AGENT_API_KEY` — belong in `secrets.env` at the repo root (gitignored). Copy `secrets.env.example` to `secrets.env` and edit there.
 
-`docker compose` and the CLI pass `--env-file` for the profile and, when the file exists, `--env-file secrets.env`. If `secrets.env` is missing, only the profile file is used (the local API key is then auto-generated under `data/local_api_key` unless you set the variable another way).
+`docker compose` and the CLI pass `--env-file` for the profile and, when the file exists, `--env-file secrets.env`. If `secrets.env` is missing, only the profile file is used (the local API key and OpenClaw gateway/hooks tokens are then auto-generated under `data/secrets.json`, with a one-time migration from legacy `data/local_api_key` when present, unless you override them via env vars).
 
 | File | Role |
 |------|------|
@@ -98,9 +98,9 @@ Non-secret variables live in `.env.local` / `.env.staging` / `.env.production`. 
 | `SELLERCLAW_API_URL` | Cloud API the agent server talks to | Profile `.env.*` |
 | `SELLERCLAW_WEB_URL` | SellerClaw website that hosts the `/auth/device` verification page | Profile `.env.*` |
 | `ADMIN_URL` | Admin UI URL — used as the CORS origin for the agent HTTP API | Profile `.env.*` |
-| `SELLERCLAW_LOCAL_API_KEY` | **Incoming** Bearer for control-plane routes (`/manifest`, `/auth/*` except bootstrap, `/bundle/archive`, `/openclaw/*`, `/commands/history`, …) on port `8001` | `secrets.env` or unset (auto-generated under `SELLERCLAW_DATA_DIR/local_api_key`) |
+| `SELLERCLAW_LOCAL_API_KEY` | **Incoming** Bearer for control-plane routes (`/manifest`, `/auth/*` except bootstrap, `/bundle/archive`, `/openclaw/*`, `/commands/history`, …) on port `8001` | `secrets.env` or unset (stored in `SELLERCLAW_DATA_DIR/secrets.json`; legacy `local_api_key` file is migrated once) |
 | `AGENT_API_KEY` | **Outgoing** Bearer for the SellerClaw cloud (`/agent/connection/*`, chat SSE, etc.) — same role as the token in `agent_token.json` | `secrets.env` or sign-in |
-| `SELLERCLAW_DATA_DIR` | Where the agent stores `agent_token.json`, `local_api_key`, `edge_session.json`, manifest | `/data` (inside the container) |
+| `SELLERCLAW_DATA_DIR` | Where the agent stores `agent_token.json`, `secrets.json`, `edge_session.json`, manifest (and legacy `local_api_key` until migrated) | `/data` (inside the container) |
 | `SELLERCLAW_EDGE_PING` | Enable the background ping loop (cloud mode) | `1` |
 | `SELLERCLAW_AGENT_IMAGE` | Pin a specific runtime image tag instead of building locally | *(unset)* |
 
@@ -179,7 +179,7 @@ If you want to start completely over:
 
 ```bash
 docker compose down
-rm -rf data/agent_token.json data/local_api_key data/edge_session.json
+rm -rf data/agent_token.json data/secrets.json data/local_api_key data/edge_session.json
 ./setup.sh
 ```
 

@@ -29,7 +29,7 @@ Requests to `POST /manifest`, `GET /manifest`, `GET /bundle/archive`, `GET /comm
 Authorization: Bearer <SELLERCLAW_LOCAL_API_KEY>
 ```
 
-- **Meaning.** `SELLERCLAW_LOCAL_API_KEY` (or the auto-generated file `local_api_key` under `SELLERCLAW_DATA_DIR`) is the **incoming** secret for HTTP callers of the agent API on port `8001`. In development, keep this in `secrets.env` (not in `.env.*` profile files). The Admin UI bootstraps it via `GET /auth/local-bootstrap` (loopback only).
+- **Meaning.** `SELLERCLAW_LOCAL_API_KEY` (or the auto-generated entry in `secrets.json` under `SELLERCLAW_DATA_DIR`, after one-time migration from legacy `local_api_key`) is the **incoming** secret for HTTP callers of the agent API on port `8001`. In development, keep this in `secrets.env` (not in `.env.*` profile files). The Admin UI bootstraps it via `GET /auth/local-bootstrap` (loopback only).
 - **`AGENT_API_KEY` / `agent_token.json`.** These identify the agent to the **SellerClaw cloud** (`sca_…`). They are used for outbound `Authorization` on `/agent/connection/*`, chat SSE, etc. They are **not** accepted as the control-plane manifest key unless you deliberately set the same value in both places (not recommended).
 
 Public routes that never require the local header: `GET /health`, `GET /auth/local-bootstrap` (loopback only), and the admin UI static mount when it is enabled. Do not place a reverse proxy in front of `/auth/local-bootstrap` without preserving the real client address as loopback; otherwise bootstrap may leak the local key to non-local callers.
@@ -47,10 +47,10 @@ See [`agent-manifest.example.json`](./agent-manifest.example.json) for a minimal
 Required top-level fields:
 
 - `user_id` — UUID of the user the manifest belongs to (used to namespace OpenClaw state).
-- `gateway_token` — token the OpenClaw gateway accepts for its own HTTP API.
-- `hooks_token` — token the gateway accepts on `/hooks/...` endpoints.
 - `litellm_base_url`, `litellm_api_key` — LLM gateway URL and the virtual key to use.
 - `models` — at minimum a `complex` and a `simple` model spec (id, name, context window, max tokens; optionally `reasoning` and `input`).
+
+**Local OpenClaw tokens** (`gateway_token`, `hooks_token` for the gateway HTTP API and `/hooks/...`) are **not** part of the manifest. They are generated once under `SELLERCLAW_DATA_DIR/secrets.json` (mode `0600`) or overridden per key via `SELLERCLAW_GATEWAY_TOKEN` / `SELLERCLAW_HOOKS_TOKEN`. Legacy `POST /manifest` bodies may still include `gateway_token` / `hooks_token`; they are ignored and not persisted.
 
 Optional but common fields:
 

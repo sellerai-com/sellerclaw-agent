@@ -23,7 +23,9 @@ from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
     CloudAuthError,
     CloudConnectionError,
-    is_agent_suspended_api_payload,
+    CloudConnectionInactiveError,
+    CloudSessionInvalidatedError,
+    agent_api_error_code,
 )
 from sellerclaw_agent.cloud.openclaw_forwarder import (
     INBOUND_FORWARD_TIMEOUT,
@@ -36,6 +38,7 @@ from sellerclaw_agent.cloud.supervisor_manager import (
     SupervisorContainerManager,
     create_supervisor_manager,
 )
+from sellerclaw_agent.server.secrets_store import get_secrets
 from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 from sellerclaw_agent.server.storage import ManifestStorage
 
@@ -145,8 +148,18 @@ async def _consume_chat_sse(
                 raise CloudAuthError("chat_sse_unauthorized", status_code=401)
             if response.status_code == 403:
                 err_body = await _error_response_json(response)
-                if is_agent_suspended_api_payload(err_body):
+                code = agent_api_error_code(err_body)
+                if code == "agent_suspended":
                     raise CloudAgentSuspendedError(_api_detail_message(err_body))
+                if code == "agent_session_invalidated":
+                    raise CloudSessionInvalidatedError(
+                        _api_detail_message(err_body) or "chat_sse_session_invalidated",
+                        status_code=403,
+                    )
+                if code in ("agent_connection_inactive", "agent_connection_not_found"):
+                    raise CloudConnectionInactiveError(
+                        _api_detail_message(err_body) or "chat_sse_connection_inactive"
+                    )
                 raise CloudConnectionError("chat_sse_forbidden")
             response.raise_for_status()
             async for event_name, data in iter_sse_events(response):
@@ -253,7 +266,7 @@ async def run_edge_chat_sse_loop(
             await sleep_until(stop, 10.0)
             continue
         try:
-            manifest = bundle_manifest_from_mapping(mapping)
+            bundle_manifest_from_mapping(mapping)
         except (TypeError, ValueError) as exc:
             _log.warning("chat_sse_manifest_invalid", error=str(exc))
             await sleep_until(stop, 10.0)
@@ -263,7 +276,7 @@ async def run_edge_chat_sse_loop(
             async with httpx.AsyncClient(timeout=INBOUND_FORWARD_TIMEOUT) as oc_http:
                 forwarder = LocalOpenClawForwarder(
                     base_url=openclaw_gateway_base_url(),
-                    hooks_token=manifest.hooks_token,
+                    hooks_token=get_secrets(data_dir).hooks_token,
                     http_client=oc_http,
                 )
 
@@ -282,6 +295,12 @@ async def run_edge_chat_sse_loop(
                     if registry is not None:
                         registry.mark_sse_connected(False)
                 backoff = 2.0
+        except CloudSessionInvalidatedError as exc:
+            _log.warning("chat_sse_session_invalidated_clearing_session", error=str(exc))
+            session_storage.clear()
+            await sleep_until(stop, 2.0)
+            backoff = 2.0
+            continue
         except CloudAuthError:
             _log.warning("chat_sse_unauthorized_clearing_local_auth")
             creds_storage.clear()
@@ -292,6 +311,11 @@ async def run_edge_chat_sse_loop(
         except CloudAgentSuspendedError as exc:
             _log.warning("chat_sse_agent_suspended_backing_off", error=str(exc))
             await sleep_until(stop, ping_interval_when_suspended())
+            backoff = 2.0
+            continue
+        except CloudConnectionInactiveError as exc:
+            _log.info("chat_sse_connection_inactive_retrying", error=str(exc))
+            await sleep_until(stop, 5.0)
             backoff = 2.0
             continue
         except CloudConnectionError as exc:

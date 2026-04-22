@@ -41,7 +41,7 @@ from sellerclaw_agent.server.deps import require_local_api_key
 from sellerclaw_agent.server.local_api_key import get_local_api_key
 from sellerclaw_agent.server.manifest_deprecation import warn_deprecated_manifest_fields
 from sellerclaw_agent.server import media_upload
-from sellerclaw_agent.server.secrets_store import get_secrets
+from sellerclaw_agent.server.secrets_store import get_secrets, migrate_legacy_manifest_tokens_into_secrets
 from sellerclaw_agent.server.schemas import (
     AuthStatusResponse,
     CommandHistoryEntry,
@@ -70,7 +70,14 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from sellerclaw_agent.logging_setup import configure_agent_logging
 
     configure_agent_logging()
-    get_local_api_key(_get_data_dir())
+    data_dir = _get_data_dir()
+    storage = ManifestStorage(data_dir)
+    loaded = storage.load()
+    if loaded:
+        cleaned = migrate_legacy_manifest_tokens_into_secrets(data_dir, loaded)
+        if cleaned is not None:
+            storage.save(cleaned)
+    get_local_api_key(data_dir)
 
     stop = asyncio.Event()
     background_holders: list[dict[str, Any]] = []

@@ -7,7 +7,8 @@ screenshots and other artifacts in outbound messages without the agent having to
 separate ``curl`` step.
 
 Auth: ``Bearer {hooks_token}`` — the same token the plugin already uses for its
-internal webhook calls. The token is read from the saved bundle manifest.
+internal webhook calls. The token is read from ``SELLERCLAW_DATA_DIR/secrets.json`` (or
+``SELLERCLAW_HOOKS_TOKEN``).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
+from sellerclaw_agent.server.secrets_store import get_secrets
 from sellerclaw_agent.server.storage import ManifestStorage
 
 
@@ -57,14 +59,13 @@ def _extract_bearer(authorization: str | None) -> str:
 def require_hooks_token(
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
-    """Match ``Bearer …`` against ``manifest.hooks_token`` (fail-closed)."""
+    """Match ``Bearer …`` against the locally stored hooks token (fail-closed)."""
     token = _extract_bearer(authorization)
     storage = ManifestStorage(_data_dir())
-    data = storage.load()
-    if data is None:
+    if storage.load() is None:
         raise HTTPException(status_code=503, detail="manifest_not_saved")
-    expected = data.get("hooks_token")
-    if not isinstance(expected, str) or not expected:
+    expected = get_secrets(_data_dir()).hooks_token
+    if not expected:
         raise HTTPException(status_code=503, detail="hooks_token_missing")
     if not secrets.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="unauthorized")

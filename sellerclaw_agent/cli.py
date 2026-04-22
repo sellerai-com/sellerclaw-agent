@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets as _secrets
 import shutil
 import subprocess
 import sys
@@ -21,6 +20,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.theme import Theme
+
+from sellerclaw_agent.cli_watch import run_status_watch
 
 try:
     import questionary
@@ -84,35 +85,16 @@ def _compose_env_file_args(agent_dir: Path) -> list[str]:
     return ["--env-file", str(_compose_profile_env_file(agent_dir))]
 
 
-def _local_api_key_path(agent_dir: Path) -> Path:
-    """Host-side path to the local control-plane API key (same volume as container)."""
-    return agent_dir / "data" / "local_api_key"
-
-
 def _ensure_local_api_key(agent_dir: Path) -> str:
-    """Read (or create once) the local API key file shared with the container.
+    """Return the local control-plane API key (same rules as the agent ``secrets.json`` flow).
 
-    Precedence: env override ``SELLERCLAW_LOCAL_API_KEY`` > file in ``./data`` > new random token.
-    The file is owned by the host user so later reads never require Docker.
+    Delegates to ``load_or_create_secrets`` under ``<agent_dir>/data`` so host and container
+    share ``secrets.json`` (and migrate legacy ``local_api_key`` once).
     """
-    env_key = (os.environ.get("SELLERCLAW_LOCAL_API_KEY") or "").strip()
-    if env_key:
-        return env_key
-    path = _local_api_key_path(agent_dir)
-    if path.is_file():
-        raw = path.read_text(encoding="utf-8").strip()
-        if raw:
-            return raw
-    path.parent.mkdir(parents=True, exist_ok=True)
-    token = _secrets.token_urlsafe(32)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(token + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-    return token
+    from sellerclaw_agent.server.secrets_store import load_or_create_secrets
+
+    data_dir = agent_dir / "data"
+    return load_or_create_secrets(data_dir).local_api_key
 
 
 def _local_control_plane_auth_headers(base_url: str) -> dict[str, str]:
@@ -906,49 +888,72 @@ def cmd_setup(console: Console) -> int:
         )
         return 1
 
-    if status.get("connected"):
-        console.print(
-            f"You are already signed in as [label]{escape(status.get('user_email', '?'))}[/label].",
-        )
-        if not _confirm(console, "Sign in with a different account?", default=False):
-            _print_ready(console, connected=True)
-            return 0
-        console.print()
-
-    console.print("[info]Step 3 of 3[/info]  Connect to SellerClaw")
-    if not _confirm(console, "Connect to SellerClaw now?", default=True):
-        console.print()
-        _print_ready(console, connected=False)
-        return 0
-
-    console.print()
-    _interactive_auth(console, base)
-
-    connected = False
     try:
-        st = get_auth_status(base)
-        connected = bool(st.get("connected"))
+        if status.get("connected"):
+            console.print(
+                f"You are already signed in as "
+                f"[label]{escape(status.get('user_email', '?'))}[/label].",
+            )
+            if not _confirm(console, "Sign in with a different account?", default=False):
+                return run_status_watch(
+                    base,
+                    console,
+                    get_snapshot=_get_health_snapshot,
+                )
+            console.print()
+
+        console.print("[info]Step 3 of 3[/info]  Connect to SellerClaw")
+        if not _confirm(console, "Connect to SellerClaw now?", default=True):
+            console.print()
+            _print_ready(console, connected=False)
+            return 0
+
+        console.print()
+        _interactive_auth(console, base)
+
+        connected = False
+        try:
+            st = get_auth_status(base)
+            connected = bool(st.get("connected"))
+            if connected:
+                console.print(
+                    f"\n[success]Signed in[/success] as "
+                    f"[label]{escape(st.get('user_name') or '?')}[/label] "
+                    f"({escape(st.get('user_email') or '?')})",
+                )
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[warning]Could not refresh sign-in status: {escape(str(exc))}[/warning]",
+            )
+
         if connected:
-            console.print(
-                f"\n[success]Signed in[/success] as [label]{escape(st.get('user_name') or '?')}[/label] "
-                f"({escape(st.get('user_email') or '?')})",
-            )
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[warning]Could not refresh sign-in status: {escape(str(exc))}[/warning]")
+            ok, reason, chat_ok = _wait_for_cloud_live(base, console)
+            if not ok:
+                _print_cloud_verification_failure(console, reason or "unknown error")
+                return 1
+            if not chat_ok:
+                console.print(
+                    "[warning]Live chat stream is not connected yet — "
+                    "it should come up shortly.[/warning]",
+                )
 
-    if connected:
-        ok, reason, chat_ok = _wait_for_cloud_live(base, console)
-        if not ok:
-            _print_cloud_verification_failure(console, reason or "unknown error")
-            return 1
-        if not chat_ok:
-            console.print(
-                "[warning]Live chat stream is not connected yet — it should come up shortly.[/warning]",
-            )
+        if not connected:
+            console.print()
+            _print_ready(console, connected=False)
+            return 0
 
-    console.print()
-    _print_ready(console, connected=connected)
-    return 0
+        return run_status_watch(
+            base,
+            console,
+            get_snapshot=_get_health_snapshot,
+        )
+    except KeyboardInterrupt:
+        console.print()
+        console.print(
+            "[hint]Setup interrupted. Container keeps running. "
+            "`./setup.sh status` — snapshot, `./setup.sh stop` — stop.[/hint]",
+        )
+        return 0
 
 
 def _print_ready(console: Console, *, connected: bool) -> None:

@@ -2,8 +2,6 @@ import type { SaveManifestRequest } from './types/manifest'
 
 export const manifestTemplate: SaveManifestRequest = {
   user_id: '00000000-0000-4000-8000-000000000000',
-  gateway_token: '',
-  hooks_token: '',
   litellm_base_url: 'http://litellm:4000',
   litellm_api_key: '',
   models: {

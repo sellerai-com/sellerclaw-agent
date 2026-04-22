@@ -38,6 +38,7 @@ def _mgr(
         "runtime_image_tag": "sellerclaw-openclaw-runtime:test",
         "kasm_program_name": "kasmvnc",
         "gost_program_name": "gost",
+        "credentials_data_dir": tmp_path,
     }
     defaults.update(kwargs)
     return SupervisorContainerManager(**defaults)  # type: ignore[arg-type]

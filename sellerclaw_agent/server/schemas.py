@@ -131,11 +131,11 @@ class SaveManifestRequest(BaseModel):
     user_id: UUID
     gateway_token: str | None = Field(
         default=None,
-        deprecated="Stored in SELLERCLAW_DATA_DIR/secrets.json; ignored on save",
+        description="Ignored on save; use secrets.json or SELLERCLAW_GATEWAY_TOKEN.",
     )
     hooks_token: str | None = Field(
         default=None,
-        deprecated="Stored in SELLERCLAW_DATA_DIR/secrets.json; ignored on save",
+        description="Ignored on save; use secrets.json or SELLERCLAW_HOOKS_TOKEN.",
     )
     litellm_base_url: str
     litellm_api_key: str

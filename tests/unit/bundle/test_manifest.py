@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 import yaml
@@ -19,8 +20,6 @@ pytestmark = pytest.mark.unit
 def _minimal_valid_bundle_mapping() -> dict[str, object]:
     return {
         "user_id": "11111111-1111-4111-8111-111111111111",
-        "gateway_token": "g",
-        "hooks_token": "h",
         "litellm_base_url": "http://litellm",
         "litellm_api_key": "k",
         "models": {
@@ -50,10 +49,19 @@ def test_bundle_manifest_to_save_manifest_mapping_roundtrip(make_manifest) -> No
     mapping = manifest.to_save_manifest_mapping()
     again = bundle_manifest_from_mapping(mapping)
     assert again.user_id == manifest.user_id
-    assert again.gateway_token == manifest.gateway_token
+    assert "gateway_token" not in mapping
+    assert "hooks_token" not in mapping
     assert again.model_complex.id == manifest.model_complex.id
     assert again.connected_integrations == manifest.connected_integrations
     assert again.proxy_url == manifest.proxy_url
+
+
+def test_bundle_manifest_from_mapping_ignores_legacy_gateway_hooks() -> None:
+    mapping = _minimal_valid_bundle_mapping()
+    mapping["gateway_token"] = "legacy-gw"
+    mapping["hooks_token"] = "legacy-hooks"
+    loaded = bundle_manifest_from_mapping(mapping)
+    assert loaded.user_id == UUID("11111111-1111-4111-8111-111111111111")
 
 
 def test_bundle_manifest_roundtrip_preserves_model_prefix() -> None:
@@ -142,8 +150,6 @@ def test_bundle_manifest_yaml_roundtrip(tmp_path: Path, make_manifest) -> None:
     manifest = make_manifest()
     data = {
         "user_id": str(manifest.user_id),
-        "gateway_token": manifest.gateway_token,
-        "hooks_token": manifest.hooks_token,
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": manifest.litellm_api_key,
         "models": {
@@ -179,8 +185,6 @@ def test_bundle_manifest_from_yaml_expands_env_vars(tmp_path: Path, make_manifes
     manifest = make_manifest(litellm_api_key="SHOULD_NOT_APPEAR")
     data = {
         "user_id": str(manifest.user_id),
-        "gateway_token": manifest.gateway_token,
-        "hooks_token": manifest.hooks_token,
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": "${BUNDLE_TEST_LITELLM_KEY}",
         "models": {
@@ -246,8 +250,6 @@ def test_bundle_manifest_minimal_yaml_defaults_nested_sections(tmp_path: Path, m
     manifest = make_manifest()
     data = {
         "user_id": str(manifest.user_id),
-        "gateway_token": "g",
-        "hooks_token": "h",
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": "k",
         "models": {
@@ -295,8 +297,6 @@ def test_bundle_manifest_connected_integrations_from_yaml(tmp_path: Path, make_m
     manifest = make_manifest()
     data = {
         "user_id": str(manifest.user_id),
-        "gateway_token": manifest.gateway_token,
-        "hooks_token": manifest.hooks_token,
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": manifest.litellm_api_key,
         "models": {

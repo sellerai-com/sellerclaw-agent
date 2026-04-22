@@ -67,8 +67,6 @@ def make_manifest(
     def _build(
         *,
         user_id: UUID | None = None,
-        gateway_token: str = "gw",
-        hooks_token: str = "hooks",
         litellm_base_url: str = "http://litellm:4000",
         litellm_api_key: str = "key",
         model_complex: ModelSpec | None = None,
@@ -100,8 +98,6 @@ def make_manifest(
         conn = connected_integrations if connected_integrations is not None else frozenset()
         return BundleManifest(
             user_id=user_id or UUID("11111111-1111-4111-8111-111111111111"),
-            gateway_token=gateway_token,
-            hooks_token=hooks_token,
             litellm_base_url=litellm_base_url,
             litellm_api_key=litellm_api_key,
             model_complex=mc,

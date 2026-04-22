@@ -16,7 +16,6 @@ def test_save_manifest_request_to_mapping_passes_bundle_validation(
 ) -> None:
     body = make_save_manifest_request()
     manifest = bundle_manifest_from_mapping(body.to_mapping())
-    assert manifest.gateway_token == "g"
     assert manifest.user_id == UUID("11111111-1111-4111-8111-111111111111")
 
 

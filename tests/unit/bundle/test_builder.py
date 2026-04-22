@@ -12,6 +12,9 @@ from sellerclaw_agent.registry import get_module
 
 pytestmark = pytest.mark.unit
 
+_GW = "gw"
+_HOOKS = "hooks"
+
 
 def test_bundle_builder_produces_config_and_workspaces(
     agent_resources_root: Path,
@@ -19,7 +22,7 @@ def test_bundle_builder_produces_config_and_workspaces(
 ) -> None:
     manifest = make_manifest()
     builder = BundleBuilder(resources_root=agent_resources_root)
-    result = builder.build(manifest)
+    result = builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
     assert '"gateway"' in result.openclaw_config
     assert "supervisor/AGENTS.md" in result.workspaces
     assert len(result.version) == 64
@@ -29,7 +32,7 @@ def test_bundle_builder_invalid_module_id_raises(agent_resources_root: Path, mak
     manifest = make_manifest(enabled_module_ids=("not_a_real_module",))
     builder = BundleBuilder(resources_root=agent_resources_root)
     with pytest.raises(ValueError, match="not a valid AgentModuleId"):
-        builder.build(manifest)
+        builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
 
 
 def test_bundle_builder_with_enabled_module_includes_module_workspace(
@@ -40,7 +43,7 @@ def test_bundle_builder_with_enabled_module_includes_module_workspace(
     assert shopify is not None
     manifest = make_manifest(enabled_module_ids=(str(shopify.id.value),))
     builder = BundleBuilder(resources_root=agent_resources_root)
-    result = builder.build(manifest)
+    result = builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
     assert "shopify/AGENTS.md" in result.workspaces
     assert "shopify/MEMORY.md" in result.workspaces
 
@@ -48,7 +51,12 @@ def test_bundle_builder_with_enabled_module_includes_module_workspace(
 def test_bundle_builder_created_at_override(agent_resources_root: Path, make_manifest) -> None:
     manifest = make_manifest()
     fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
-    result = BundleBuilder(resources_root=agent_resources_root).build(manifest, created_at=fixed)
+    result = BundleBuilder(resources_root=agent_resources_root).build(
+        manifest,
+        gateway_token=_GW,
+        hooks_token=_HOOKS,
+        created_at=fixed,
+    )
     assert result.created_at == fixed
 
 
@@ -62,7 +70,7 @@ def test_bundle_builder_web_search_enabled_requires_bearer(
     manifest = make_manifest(web_search=WebSearchManifest(enabled=True))
     builder = BundleBuilder(resources_root=agent_resources_root)
     with pytest.raises(ValueError, match="Web search is enabled in the manifest"):
-        builder.build(manifest, data_dir=tmp_path)
+        builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
 
 
 def test_bundle_builder_web_search_enabled_uses_agent_api_key_env(
@@ -78,7 +86,7 @@ def test_bundle_builder_web_search_enabled_uses_agent_api_key_env(
     )
     manifest = make_manifest(web_search=WebSearchManifest(enabled=True))
     builder = BundleBuilder(resources_root=agent_resources_root)
-    result = builder.build(manifest, data_dir=tmp_path)
+    result = builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
     cfg = json.loads(result.openclaw_config)
     web_search_cfg = cfg["plugins"]["entries"]["sellerclaw-web-search"]["config"]["webSearch"]
     assert web_search_cfg["authToken"] == "sca_from_env"
@@ -105,7 +113,7 @@ def test_bundle_builder_web_search_baseurl_respects_manifest_agent_api_base_path
         agent_api_base_path="/custom/agent",
     )
     builder = BundleBuilder(resources_root=agent_resources_root)
-    result = builder.build(manifest, data_dir=tmp_path)
+    result = builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
     cfg = json.loads(result.openclaw_config)
     web_search_cfg = cfg["plugins"]["entries"]["sellerclaw-web-search"]["config"]["webSearch"]
     assert web_search_cfg["baseUrl"] == "https://api.example.com/custom/agent"
@@ -185,4 +193,4 @@ def test_bundle_builder_web_search_enabled_requires_sellerclaw_api_url(
     manifest = make_manifest(web_search=WebSearchManifest(enabled=True))
     builder = BundleBuilder(resources_root=agent_resources_root)
     with pytest.raises(ValueError, match="SELLERCLAW_API_URL"):
-        builder.build(manifest, data_dir=tmp_path)
+        builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)

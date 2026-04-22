@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -10,22 +11,32 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import sellerclaw_agent.server.media_upload as media_upload
+from sellerclaw_agent.server.secrets_store import LocalSecrets, reset_secrets_cache
 from sellerclaw_agent.server.storage import ManifestStorage
 
 pytestmark = pytest.mark.unit
 
 
 def _seed_manifest(data_dir: Path, hooks_token: str = "hooks-secret") -> None:
+    reset_secrets_cache()
     ManifestStorage(data_dir).save(
-        {
-            "user_id": "11111111-1111-4111-8111-111111111111",
-            "hooks_token": hooks_token,
-        }
+        {"user_id": "11111111-1111-4111-8111-111111111111"},
+    )
+    (data_dir / "secrets.json").write_text(
+        json.dumps(
+            {
+                "local_api_key": "local-unit",
+                "gateway_token": "gw-unit",
+                "hooks_token": hooks_token,
+            }
+        ),
+        encoding="utf-8",
     )
 
 
 @pytest.fixture()
 def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    reset_secrets_cache()
     monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
     return tmp_path
 
@@ -111,8 +122,17 @@ class TestRequireHooksToken:
         assert exc.value.status_code == 503
         assert exc.value.detail == "manifest_not_saved"
 
-    def test_rejects_when_hooks_token_missing(self, data_dir: Path) -> None:
+    def test_rejects_when_hooks_token_missing(
+        self,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         ManifestStorage(data_dir).save({"user_id": "u"})
+        monkeypatch.setattr(
+            media_upload,
+            "get_secrets",
+            lambda _p: LocalSecrets("a", "b", ""),
+        )
         with pytest.raises(HTTPException) as exc:
             media_upload.require_hooks_token(authorization="Bearer any")
         assert exc.value.status_code == 503

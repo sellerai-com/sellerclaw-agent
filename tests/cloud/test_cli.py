@@ -171,36 +171,44 @@ def test_ensure_local_api_key_prefers_env_override(
     assert not (tmp_path / "data" / "local_api_key").exists()
 
 
-def test_ensure_local_api_key_reads_existing_file(
+def test_ensure_local_api_key_migrates_legacy_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("SELLERCLAW_LOCAL_API_KEY", raising=False)
+    monkeypatch.delenv("SELLERCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("SELLERCLAW_HOOKS_TOKEN", raising=False)
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     (data_dir / "local_api_key").write_text("saved-value\n", encoding="utf-8")
     assert _ensure_local_api_key(tmp_path) == "saved-value"
+    assert not (data_dir / "local_api_key").exists()
+    assert (data_dir / "secrets.json").is_file()
 
 
-def test_ensure_local_api_key_generates_file(
+def test_ensure_local_api_key_generates_secrets_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("SELLERCLAW_LOCAL_API_KEY", raising=False)
+    monkeypatch.delenv("SELLERCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("SELLERCLAW_HOOKS_TOKEN", raising=False)
     key = _ensure_local_api_key(tmp_path)
     assert key
-    path = tmp_path / "data" / "local_api_key"
+    path = tmp_path / "data" / "secrets.json"
     assert path.is_file()
-    assert path.read_text(encoding="utf-8").strip() == key
+    assert key in path.read_text(encoding="utf-8")
     # Second call is stable.
     assert _ensure_local_api_key(tmp_path) == key
 
 
-def test_local_control_plane_auth_headers_uses_file(
+def test_local_control_plane_auth_headers_uses_secrets_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("SELLERCLAW_LOCAL_API_KEY", raising=False)
+    monkeypatch.delenv("SELLERCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("SELLERCLAW_HOOKS_TOKEN", raising=False)
     _clear_local_control_plane_key_cache()
     data_dir = tmp_path / "data"
     data_dir.mkdir()
