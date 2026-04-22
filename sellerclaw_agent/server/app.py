@@ -78,6 +78,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     supervisor_executor: ThreadPoolExecutor | None = None
     if _edge_ping_enabled():
         from sellerclaw_agent.cloud.chat_listener import run_edge_chat_sse_loop
+        from sellerclaw_agent.cloud.hooks_listener import run_edge_hooks_sse_loop
         from sellerclaw_agent.server.edge_commands import (
             CommandResultStore,
             RemoteCommandWork,
@@ -125,6 +126,14 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
             start_watched_background(
                 lambda: run_edge_chat_sse_loop(stop, registry=registry),
                 name="chat_sse",
+                stop=stop,
+                registry=registry,
+            ),
+        )
+        background_holders.append(
+            start_watched_background(
+                lambda: run_edge_hooks_sse_loop(stop, registry=registry),
+                name="hooks_sse",
                 stop=stop,
                 registry=registry,
             ),
@@ -240,10 +249,11 @@ async def health() -> dict[str, Any]:
     ping_alive = bool(tasks.get("ping_loop", {}).get("alive", True))
     exec_alive = bool(tasks.get("command_executor", {}).get("alive", True))
     chat_alive = bool(tasks.get("chat_sse", {}).get("alive", True))
+    hooks_alive = bool(tasks.get("hooks_sse", {}).get("alive", True))
 
     if not ping_alive:
         overall = "unhealthy"
-    elif not session_payload["connected"] or not exec_alive or not chat_alive:
+    elif not session_payload["connected"] or not exec_alive or not chat_alive or not hooks_alive:
         overall = "degraded"
     else:
         overall = "healthy"

@@ -69,3 +69,28 @@ class LocalOpenClawForwarder:
                 (exc.response.text or "")[:500],
             )
             raise
+
+    async def post_hooks_agent_json(self, body: dict[str, Any]) -> None:
+        """POST ``body`` to OpenClaw ``/hooks/agent`` (cloud-originated hook delivery)."""
+        url = f"{self._base}/hooks/agent"
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+        }
+        if self._http is not None:
+            response = await self._http.post(url, headers=headers, json=body)
+        else:
+            async with httpx.AsyncClient(
+                timeout=INBOUND_FORWARD_TIMEOUT,
+                transport=self._transport,
+            ) as client:
+                response = await client.post(url, headers=headers, json=body)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _log.warning(
+                "openclaw_hooks_forward_failed status=%s body=%s",
+                exc.response.status_code,
+                (exc.response.text or "")[:500],
+            )
+            raise

@@ -39,6 +39,7 @@ class EdgeRuntimeRegistry:
             "ping_loop": TaskRuntimeState(),
             "command_executor": TaskRuntimeState(),
             "chat_sse": TaskRuntimeState(),
+            "hooks_sse": TaskRuntimeState(),
         },
     )
     _last_dispatched_command_id: UUID | None = field(default=None, repr=False)
@@ -72,6 +73,10 @@ class EdgeRuntimeRegistry:
         with self._lock:
             self._tasks["chat_sse"].sse_connected = connected
 
+    def mark_hooks_sse_connected(self, connected: bool) -> None:
+        with self._lock:
+            self._tasks["hooks_sse"].sse_connected = connected
+
     def get_last_dispatched_command_id(self) -> UUID | None:
         with self._lock:
             return self._last_dispatched_command_id
@@ -95,6 +100,8 @@ class EdgeRuntimeRegistry:
                     "last_error": st.last_error,
                     "restart_count": st.restart_count,
                     "current_command_id": st.current_command_id,
-                    "connected": st.sse_connected if key == "chat_sse" else None,
+                    "connected": st.sse_connected
+                    if key in ("chat_sse", "hooks_sse")
+                    else None,
                 }
             return out
