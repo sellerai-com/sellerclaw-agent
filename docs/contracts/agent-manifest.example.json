@@ -22,8 +22,8 @@
       "max_tokens": 4096
     }
   },
+  "agent_api_base_path": "/agent",
   "template_variables": {
-    "api_base_path": "/agent",
     "user_name": "Ada"
   },
   "enabled_modules": ["shopify_store_manager"],
@@ -37,9 +37,7 @@
     "allowed_group_ids": []
   },
   "web_search": {
-    "enabled": false,
-    "provider": null,
-    "api_key": ""
+    "enabled": false
   },
   "primary_channel": "sellerclaw-ui",
   "proxy_url": "",

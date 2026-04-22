@@ -27,10 +27,14 @@
         "simple": { "$ref": "#/$defs/modelSpec" }
       }
     },
+    "agent_api_base_path": {
+      "type": "string",
+      "description": "Path segment appended to `SELLERCLAW_API_URL` to form the agent API base URL (e.g. `/agent`). The agent derives `SELLERCLAW_AGENT_API_BASE_URL = SELLERCLAW_API_URL + agent_api_base_path` and uses it both as the `{{api_base_url}}` prompt template variable and as the `baseUrl` for the `sellerclaw-web-search` OpenClaw plugin."
+    },
     "template_variables": {
       "type": "object",
       "additionalProperties": { "type": "string" },
-      "description": "Wire-level prompt template variables; use `api_base_path` (e.g. `/agent`) instead of full URLs — the agent prepends SELLERCLAW_API_URL to produce `api_base_url` consumed by prompts."
+      "description": "Wire-level prompt template variables. The `api_base_url` variable is **not** shipped here — the agent injects it automatically from `SELLERCLAW_API_URL + agent_api_base_path`."
     },
     "enabled_modules": {
       "type": "array",
@@ -79,10 +83,9 @@
     },
     "web_search": {
       "type": "object",
+      "description": "Only `enabled` is honored; extra keys (legacy provider/api_key) are ignored by the agent but may appear during monolith migration.",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "provider": { "type": ["string", "null"] },
-        "api_key": { "type": "string" }
+        "enabled": { "type": "boolean" }
       }
     },
     "primary_channel": { "type": "string" },

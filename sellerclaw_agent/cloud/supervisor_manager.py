@@ -17,6 +17,7 @@ import structlog
 from sellerclaw_agent.bundle.builder import BundleBuilder
 from sellerclaw_agent.bundle.manifest import BundleManifest
 from sellerclaw_agent.paths import get_agent_resources_root
+from sellerclaw_agent.server.secrets_store import get_secrets
 
 _log = structlog.get_logger(__name__)
 
@@ -161,6 +162,7 @@ class SupervisorContainerManager:
     runtime_image_tag: str | None = None
     kasm_program_name: str = "kasmvnc"
     gost_program_name: str = "gost"
+    credentials_data_dir: Path | None = None
 
     def _run_ctl(self, *args: str, timeout: float) -> subprocess.CompletedProcess[str]:
         cmd = ["supervisorctl", "-c", self.supervisord_config, *args]
@@ -180,9 +182,18 @@ class SupervisorContainerManager:
         bare model IDs that get rejected by LiteLLM with 401
         ``key not allowed to access model``.
         """
+        if self.credentials_data_dir is None:
+            raise ValueError("credentials_data_dir is required to build OpenClaw bundles")
+        sec = get_secrets(self.credentials_data_dir)
         prefix_raw = (manifest.model_name_prefix or "").strip()
         model_prefix = prefix_raw if prefix_raw else None
-        return self.bundle_builder.build(manifest, model_name_prefix=model_prefix)
+        return self.bundle_builder.build(
+            manifest,
+            gateway_token=sec.gateway_token,
+            hooks_token=sec.hooks_token,
+            model_name_prefix=model_prefix,
+            data_dir=self.credentials_data_dir,
+        )
 
     def _status_line_raw(self) -> tuple[str, subprocess.CompletedProcess[str]]:
         result = self._run_ctl("status", self.program_name, timeout=5.0)
@@ -552,6 +563,7 @@ def create_supervisor_manager(
     """Build manager from environment (used by FastAPI deps and ping loop)."""
     bb = bundle_builder or BundleBuilder(resources_root=get_agent_resources_root())
     raw_image = (os.environ.get("OPENCLAW_RUNTIME_IMAGE") or "").strip()
+    data_dir = Path(os.environ.get("SELLERCLAW_DATA_DIR", "/data"))
     return SupervisorContainerManager(
         bundle_builder=bb,
         bundle_volume_path=Path(os.environ.get("OPENCLAW_BUNDLE_VOLUME_PATH", "/opt/config-bundle")),
@@ -563,4 +575,5 @@ def create_supervisor_manager(
         runtime_image_tag=raw_image or None,
         kasm_program_name=os.environ.get("OPENCLAW_SUPERVISOR_KASM_PROGRAM", "kasmvnc"),
         gost_program_name=os.environ.get("OPENCLAW_SUPERVISOR_GOST_PROGRAM", "gost"),
+        credentials_data_dir=data_dir,
     )

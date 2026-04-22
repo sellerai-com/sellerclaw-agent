@@ -45,3 +45,23 @@ def test_to_mapping_rejected_by_bundle_for_unknown_integration(
     mapping = {**mapping, "connected_integrations": ["unknown_integration_xyz"]}
     with pytest.raises(ValueError, match="unknown_integration_xyz"):
         bundle_manifest_from_mapping(mapping)
+
+
+def test_save_manifest_request_web_search_ignores_legacy_wire_fields(
+    make_save_manifest_request: Callable[..., SaveManifestRequest],
+) -> None:
+    body = make_save_manifest_request()
+    raw = body.model_dump(mode="json")
+    raw["web_search"] = {
+        "enabled": True,
+        "provider": "brave",
+        "api_key": "must-not-round-trip",
+        "base_url": "https://legacy.example",
+    }
+    parsed = SaveManifestRequest.model_validate(raw)
+    assert parsed.web_search.enabled is True
+    again = bundle_manifest_from_mapping(parsed.to_mapping())
+    assert again.web_search.enabled is True
+    ws = parsed.to_mapping()["web_search"]
+    assert isinstance(ws, dict)
+    assert ws == {"enabled": True}

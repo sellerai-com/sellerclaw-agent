@@ -24,7 +24,8 @@ export const manifestTemplate: SaveManifestRequest = {
       max_tokens: 4096,
     },
   },
-  template_variables: { api_base_path: '/agent' },
+  agent_api_base_path: '/agent',
+  template_variables: {},
   enabled_modules: [],
   connected_integrations: [],
   global_browser_enabled: true,
@@ -37,8 +38,6 @@ export const manifestTemplate: SaveManifestRequest = {
   },
   web_search: {
     enabled: false,
-    provider: null,
-    api_key: '',
   },
   primary_channel: 'sellerclaw-ui',
 }

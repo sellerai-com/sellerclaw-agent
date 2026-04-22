@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import gzip
+import io
 import json
+import tarfile
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime
 from typing import Any
@@ -105,6 +108,57 @@ def test_post_manifest_validation_error_422(
     del bad["gateway_token"]
     response = client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=bad)
     assert response.status_code == 422
+
+
+def test_post_manifest_strips_legacy_web_search_fields(
+    client: TestClient,
+    tmp_path,
+    make_manifest_data: Callable[..., dict[str, Any]],
+) -> None:
+    payload = make_manifest_data(
+        web_search={
+            "enabled": True,
+            "provider": "brave",
+            "api_key": "must-not-persist",
+            "base_url": "https://ignored.example",
+        }
+    )
+    response = client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=payload)
+    assert response.status_code == 200
+    written = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert written["web_search"] == {"enabled": True}
+
+
+def test_get_bundle_archive_includes_sellerclaw_web_search_plugin_config(
+    client: TestClient,
+    tmp_path,
+    monkeypatch,
+    make_manifest_data: Callable[..., dict[str, Any]],
+) -> None:
+    monkeypatch.setenv("SELLERCLAW_API_URL", "https://api.example")
+    creds = CredentialsStorage(tmp_path)
+    creds.save(
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        user_email="t@example.com",
+        user_name="T",
+        agent_token="sca_unit_archive_token",
+        connected_at="2026-01-01T00:00:00Z",
+    )
+    payload = make_manifest_data(web_search={"enabled": True})
+    assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=payload).status_code == 200
+    response = client.get("/bundle/archive", headers=_CONTROL_PLANE_AUTH)
+    assert response.status_code == 200
+    buf = io.BytesIO(response.content)
+    with gzip.GzipFile(fileobj=buf, mode="rb") as gz:
+        with tarfile.open(fileobj=gz, mode="r") as archive:
+            oc_raw = archive.extractfile("openclaw/openclaw.json")
+            assert oc_raw is not None
+            oc = json.loads(oc_raw.read().decode("utf-8"))
+    entry = oc["plugins"]["entries"]["sellerclaw-web-search"]
+    # Derived SELLERCLAW_AGENT_API_BASE_URL = SELLERCLAW_API_URL + agent_api_base_path
+    # (``/agent`` is the default path supplied by the manifest fixture).
+    assert entry["config"]["webSearch"]["baseUrl"] == "https://api.example/agent"
+    assert entry["config"]["webSearch"]["authToken"] == "sca_unit_archive_token"
 
 
 def test_post_manifest_bundle_validation_400(

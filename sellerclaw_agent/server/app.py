@@ -39,7 +39,9 @@ from sellerclaw_agent.cloud.supervisor_manager import (
 from sellerclaw_agent.server.command_history import CommandHistoryStorage
 from sellerclaw_agent.server.deps import require_local_api_key
 from sellerclaw_agent.server.local_api_key import get_local_api_key
+from sellerclaw_agent.server.manifest_deprecation import warn_deprecated_manifest_fields
 from sellerclaw_agent.server import media_upload
+from sellerclaw_agent.server.secrets_store import get_secrets
 from sellerclaw_agent.server.schemas import (
     AuthStatusResponse,
     CommandHistoryEntry,
@@ -153,6 +155,13 @@ def _get_data_dir() -> Path:
 
 def get_storage() -> ManifestStorage:
     return ManifestStorage(_get_data_dir())
+
+
+def _strip_local_secrets_from_manifest_view(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+    out.pop("gateway_token", None)
+    out.pop("hooks_token", None)
+    return out
 
 
 def get_command_history_storage() -> CommandHistoryStorage:
@@ -341,7 +350,7 @@ def get_manifest(
             detail={"code": "manifest_not_found", "message": "manifest not saved yet"},
         )
     data, version = loaded
-    return GetManifestResponse(manifest=data, version=version)
+    return GetManifestResponse(manifest=_strip_local_secrets_from_manifest_view(data), version=version)
 
 
 @control_plane.post("/auth/device/start", response_model=DeviceStartResponse)
@@ -491,6 +500,10 @@ def save_manifest(
     body: SaveManifestRequest,
     storage: Annotated[ManifestStorage, Depends(get_storage)],
 ) -> SaveManifestResponse:
+    warn_deprecated_manifest_fields(
+        gateway_token_set="gateway_token" in body.model_fields_set,
+        hooks_token_set="hooks_token" in body.model_fields_set,
+    )
     mapping = body.to_mapping()
     try:
         manifest = bundle_manifest_from_mapping(mapping)
@@ -518,11 +531,15 @@ def download_bundle_archive(
     """
     manifest = _load_saved_bundle_manifest(storage)
     builder = BundleBuilder(resources_root=get_agent_resources_root())
+    sec = get_secrets(_get_data_dir())
     prefix_raw = (manifest.model_name_prefix or "").strip()
     model_prefix = prefix_raw if prefix_raw else None
     result = builder.build(
         manifest,
+        gateway_token=sec.gateway_token,
+        hooks_token=sec.hooks_token,
         model_name_prefix=model_prefix,
+        data_dir=_get_data_dir(),
     )
     archive_bytes = build_gateway_archive(
         GatewayArchivePayload(

@@ -5,7 +5,7 @@
 #   staging – adds the staging entrypoint (fly.io)
 #
 # To update: check https://github.com/openclaw/openclaw/pkgs/container/openclaw/versions
-FROM ghcr.io/openclaw/openclaw:2026.4.15 AS base
+FROM ghcr.io/openclaw/openclaw:2026.4.21 AS base
 
 ENV OPENCLAW_PORT=7788
 ENV OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
@@ -73,6 +73,7 @@ RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /o
 # SellerClaw web UI chat delivery channel (OpenClaw plugin).
 # Files must stay root-owned: OpenClaw blocks config-origin plugins with non-root ownership.
 COPY sellerclaw-agent/plugins/sellerclaw-ui /opt/openclaw-plugins/sellerclaw-ui
+COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/sellerclaw-web-search
 
 # Workaround: openclaw 2026.4.12 is missing dist/subagent-registry.runtime.js
 # (upstream bug https://github.com/openclaw/openclaw/issues/66096).
@@ -90,11 +91,11 @@ RUN printf '%s\n' \
 # OpenClaw scans all directories in the bundled extensions dir at startup, even when
 # allow/load filters are set. Pruning 90+ unused extensions (~119 MB) avoids that overhead.
 # Keep only extensions referenced by the generated openclaw.json:
-#   browser, telegram, litellm, brave, tavily, memory-core
+#   browser, telegram, litellm, memory-core (web search is sellerclaw-web-search under /opt/openclaw-plugins)
 RUN cd /app/dist/extensions && \
     for dir in */; do \
         case "${dir%/}" in \
-            browser|telegram|litellm|brave|tavily|memory-core) ;; \
+            browser|telegram|litellm|memory-core) ;; \
             *) rm -rf "$dir" ;; \
         esac; \
     done
@@ -168,5 +169,10 @@ COPY sellerclaw-agent/runtime/supervisord-staging.conf /etc/supervisor/conf.d/op
 
 COPY sellerclaw-agent/runtime/entrypoint-staging.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Override the openclaw base image healthcheck (which probes port 18789 that we do
+# not run): check the FastAPI control plane that /entrypoint.sh brings up on 8001.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8001/health || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ManifestModelSpec(BaseModel):
@@ -30,9 +30,11 @@ class ManifestTelegram(BaseModel):
 
 
 class ManifestWebSearch(BaseModel):
+    """Monolith computes BYOK vs corporate; the manifest only toggles tool availability."""
+
+    model_config = ConfigDict(extra="ignore")
+
     enabled: bool = False
-    provider: str | None = None
-    api_key: str = ""
 
 
 class GetManifestResponse(BaseModel):
@@ -127,8 +129,14 @@ class SaveManifestRequest(BaseModel):
     """Request body mirroring `bundle_manifest_from_mapping` input."""
 
     user_id: UUID
-    gateway_token: str
-    hooks_token: str
+    gateway_token: str | None = Field(
+        default=None,
+        deprecated="Stored in SELLERCLAW_DATA_DIR/secrets.json; ignored on save",
+    )
+    hooks_token: str | None = Field(
+        default=None,
+        deprecated="Stored in SELLERCLAW_DATA_DIR/secrets.json; ignored on save",
+    )
     litellm_base_url: str
     litellm_api_key: str
     models: ManifestModels
@@ -142,6 +150,7 @@ class SaveManifestRequest(BaseModel):
     primary_channel: str = "sellerclaw-ui"
     proxy_url: str = ""
     model_name_prefix: str = ""
+    agent_api_base_path: str = ""
 
     def _model_spec_mapping(self, spec: ManifestModelSpec) -> dict[str, Any]:
         inp: list[str] | str
@@ -162,8 +171,6 @@ class SaveManifestRequest(BaseModel):
         """Plain dict for `bundle_manifest_from_mapping` / JSON persistence."""
         return {
             "user_id": str(self.user_id),
-            "gateway_token": self.gateway_token,
-            "hooks_token": self.hooks_token,
             "litellm_base_url": self.litellm_base_url,
             "litellm_api_key": self.litellm_api_key,
             "models": {
@@ -183,10 +190,9 @@ class SaveManifestRequest(BaseModel):
             },
             "web_search": {
                 "enabled": self.web_search.enabled,
-                "provider": self.web_search.provider,
-                "api_key": self.web_search.api_key,
             },
             "primary_channel": self.primary_channel,
             "proxy_url": self.proxy_url,
             "model_name_prefix": self.model_name_prefix,
+            "agent_api_base_path": self.agent_api_base_path,
         }

@@ -65,12 +65,77 @@ def test_bundle_manifest_roundtrip_preserves_model_prefix() -> None:
     assert again["model_name_prefix"] == "u:abc/"
 
 
+def test_bundle_manifest_web_search_ignores_legacy_wire_fields() -> None:
+    mapping = _minimal_valid_bundle_mapping()
+    mapping["web_search"] = {
+        "enabled": True,
+        "provider": "brave",
+        "api_key": "must-not-round-trip",
+        "base_url": "https://ignored.example",
+    }
+    loaded = bundle_manifest_from_mapping(mapping)
+    assert loaded.web_search == WebSearchManifest(enabled=True)
+    again = loaded.to_save_manifest_mapping()
+    ws = again["web_search"]
+    assert isinstance(ws, dict)
+    assert ws == {"enabled": True}
+
+
 def test_bundle_manifest_roundtrip_preserves_proxy_url() -> None:
     mapping = _minimal_valid_bundle_mapping()
     mapping["proxy_url"] = "http://user:pass@proxy.example:3128"
     loaded = bundle_manifest_from_mapping(mapping)
     assert loaded.proxy_url == "http://user:pass@proxy.example:3128"
     assert loaded.to_save_manifest_mapping()["proxy_url"] == loaded.proxy_url
+
+
+def test_bundle_manifest_roundtrip_preserves_agent_api_base_path() -> None:
+    mapping = _minimal_valid_bundle_mapping()
+    mapping["agent_api_base_path"] = "/agent"
+    loaded = bundle_manifest_from_mapping(mapping)
+    assert loaded.agent_api_base_path == "/agent"
+    again = loaded.to_save_manifest_mapping()
+    assert again["agent_api_base_path"] == "/agent"
+
+
+def test_bundle_manifest_agent_api_base_path_defaults_to_empty_when_missing() -> None:
+    mapping = _minimal_valid_bundle_mapping()
+    loaded = bundle_manifest_from_mapping(mapping)
+    assert loaded.agent_api_base_path == ""
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param("/agent", "/agent", id="already-normalized"),
+        pytest.param("  /agent  ", "/agent", id="whitespace-stripped"),
+        pytest.param("/agent/", "/agent", id="trailing-slash-trimmed"),
+        pytest.param("", "", id="empty-string"),
+        pytest.param(None, "", id="none"),
+    ],
+)
+def test_bundle_manifest_agent_api_base_path_normalization(
+    raw: object,
+    expected: str,
+) -> None:
+    mapping = _minimal_valid_bundle_mapping()
+    mapping["agent_api_base_path"] = raw
+    loaded = bundle_manifest_from_mapping(mapping)
+    assert loaded.agent_api_base_path == expected
+
+
+def test_bundle_manifest_agent_api_base_path_missing_leading_slash_raises() -> None:
+    mapping = _minimal_valid_bundle_mapping()
+    mapping["agent_api_base_path"] = "agent"
+    with pytest.raises(ValueError, match="agent_api_base_path must start with '/'"):
+        bundle_manifest_from_mapping(mapping)
+
+
+def test_bundle_manifest_agent_api_base_path_rejects_non_string() -> None:
+    mapping = _minimal_valid_bundle_mapping()
+    mapping["agent_api_base_path"] = 123
+    with pytest.raises(TypeError, match="agent_api_base_path must be a string"):
+        bundle_manifest_from_mapping(mapping)
 
 
 def test_bundle_manifest_yaml_roundtrip(tmp_path: Path, make_manifest) -> None:

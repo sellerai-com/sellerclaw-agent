@@ -53,9 +53,9 @@ class TelegramManifest:
 
 @dataclass(frozen=True)
 class WebSearchManifest:
+    """Web search is configured only on the monolith; the manifest carries a single toggle."""
+
     enabled: bool = False
-    provider: str | None = None
-    api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -63,8 +63,6 @@ class BundleManifest:
     """Flat input for bundle generation (caller supplies all template data and secrets)."""
 
     user_id: UUID
-    gateway_token: str
-    hooks_token: str
     litellm_base_url: str
     litellm_api_key: str
     model_complex: ModelSpec
@@ -79,6 +77,9 @@ class BundleManifest:
     primary_channel: str = "sellerclaw-ui"
     proxy_url: str = ""
     model_name_prefix: str = ""
+    # Path segment appended to SELLERCLAW_API_URL to form SELLERCLAW_AGENT_API_BASE_URL.
+    # Empty string means the agent API lives directly at SELLERCLAW_API_URL.
+    agent_api_base_path: str = ""
 
     def resolved_enabled_modules(self) -> list[AgentModuleId]:
         out: list[AgentModuleId] = []
@@ -105,8 +106,6 @@ class BundleManifest:
 
         return {
             "user_id": str(self.user_id),
-            "gateway_token": self.gateway_token,
-            "hooks_token": self.hooks_token,
             "litellm_base_url": self.litellm_base_url,
             "litellm_api_key": self.litellm_api_key,
             "models": {
@@ -126,12 +125,11 @@ class BundleManifest:
             },
             "web_search": {
                 "enabled": self.web_search.enabled,
-                "provider": self.web_search.provider,
-                "api_key": self.web_search.api_key,
             },
             "primary_channel": self.primary_channel,
             "proxy_url": self.proxy_url,
             "model_name_prefix": self.model_name_prefix,
+            "agent_api_base_path": self.agent_api_base_path,
         }
 
     @staticmethod
@@ -199,11 +197,8 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
     ws_raw = data.get("web_search") or {}
     if not isinstance(ws_raw, dict):
         raise ValueError("web_search must be a mapping")
-    prov = ws_raw.get("provider")
     web_search = WebSearchManifest(
         enabled=bool(ws_raw.get("enabled", False)),
-        provider=str(prov) if prov not in (None, "") else None,
-        api_key=str(ws_raw.get("api_key", "")),
     )
 
     enabled = data.get("enabled_modules") or []
@@ -228,8 +223,6 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
 
     return BundleManifest(
         user_id=UUID(str(data["user_id"])),
-        gateway_token=str(data["gateway_token"]),
-        hooks_token=str(data["hooks_token"]),
         litellm_base_url=str(data["litellm_base_url"]),
         litellm_api_key=str(data["litellm_api_key"]),
         model_complex=model_complex,
@@ -244,4 +237,21 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
         primary_channel=str(data.get("primary_channel", "sellerclaw-ui")),
         proxy_url=str(data.get("proxy_url") or "").strip(),
         model_name_prefix=str(data.get("model_name_prefix") or "").strip(),
+        agent_api_base_path=_normalize_agent_api_base_path(data.get("agent_api_base_path")),
     )
+
+
+def _normalize_agent_api_base_path(value: object) -> str:
+    """Accept str/None, strip whitespace, require leading slash when non-empty."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TypeError("agent_api_base_path must be a string")
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        return ""
+    if not normalized.startswith("/"):
+        raise ValueError(
+            f"agent_api_base_path must start with '/' when non-empty, got {normalized!r}"
+        )
+    return normalized

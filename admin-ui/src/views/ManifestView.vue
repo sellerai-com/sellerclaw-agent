@@ -38,8 +38,6 @@ const INTEGRATION_LABELS: Record<IntegrationKind, string> = {
   research_social: 'Research: Social',
 }
 
-const WEB_SEARCH_PROVIDERS = ['tavily', 'brave', 'exa'] as const
-
 interface KVRow {
   key: string
   value: string
@@ -66,7 +64,6 @@ const telegramGroupIdsText = ref('')
 const showGatewayToken = ref(false)
 const showHooksToken = ref(false)
 const showLitellmKey = ref(false)
-const showWebSearchKey = ref(false)
 const showTelegramToken = ref(false)
 
 const currentVersion = ref<string | null>(null)
@@ -94,8 +91,6 @@ function ensureTelegram(value: ManifestTelegram | undefined): ManifestTelegram {
 function ensureWebSearch(value: ManifestWebSearch | undefined): ManifestWebSearch {
   return {
     enabled: value?.enabled ?? false,
-    provider: value?.provider ?? null,
-    api_key: value?.api_key ?? '',
   }
 }
 
@@ -164,6 +159,10 @@ function loadIntoForm(data: Record<string, unknown>): void {
   form.litellm_api_key = raw.litellm_api_key ?? ''
   form.primary_channel = raw.primary_channel ?? tpl.primary_channel
   form.global_browser_enabled = raw.global_browser_enabled ?? true
+  form.agent_api_base_path =
+    typeof raw.agent_api_base_path === 'string'
+      ? raw.agent_api_base_path
+      : (tpl.agent_api_base_path ?? '')
 
   form.models = {
     complex: ensureModelSpec(raw.models?.complex, tpl.models.complex),
@@ -278,6 +277,7 @@ function buildPayload(): SaveManifestRequest {
     litellm_api_key: form.litellm_api_key,
     primary_channel: form.primary_channel,
     global_browser_enabled: form.global_browser_enabled,
+    agent_api_base_path: (form.agent_api_base_path ?? '').trim(),
     models: {
       complex: { ...complex, input: normalizeInput(complex.input) },
       simple: { ...simple, input: normalizeInput(simple.input) },
@@ -294,8 +294,6 @@ function buildPayload(): SaveManifestRequest {
     },
     web_search: {
       enabled: form.web_search?.enabled ?? false,
-      provider: form.web_search?.provider ?? null,
-      api_key: form.web_search?.api_key ?? '',
     },
   }
 }
@@ -401,6 +399,21 @@ onMounted(refresh)
               v-model="form.primary_channel"
               type="text"
               class="w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none focus:border-emerald-600"
+            />
+          </label>
+          <label class="block text-xs md:col-span-2">
+            <span class="mb-1 block text-slate-400">
+              Agent API base path
+              <span class="text-slate-500">
+                (appended to <code class="text-slate-300">SELLERCLAW_API_URL</code>
+                to form <code class="text-slate-300">SELLERCLAW_AGENT_API_BASE_URL</code>)
+              </span>
+            </span>
+            <input
+              v-model="form.agent_api_base_path"
+              type="text"
+              placeholder="/agent"
+              class="w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 font-mono text-sm text-slate-100 outline-none focus:border-emerald-600"
             />
           </label>
           <label class="block text-xs">
@@ -665,60 +678,23 @@ onMounted(refresh)
 
       <fieldset class="space-y-3 rounded-lg border border-slate-800 bg-slate-900/60 p-5">
         <legend class="px-2 text-sm font-medium text-slate-200">Web search</legend>
+        <p class="text-xs text-slate-400">
+          Enables the <code class="text-slate-300">web_search</code> tool when the SellerClaw server allows it for
+          this user (BYOK or corporate keys are configured in SellerClaw, not here).
+        </p>
         <label class="flex items-center gap-2 text-sm text-slate-200">
           <input
             :checked="form.web_search?.enabled ?? false"
             type="checkbox"
             @change="
               form.web_search = {
-                ...(form.web_search ?? { provider: null, api_key: '' }),
+                ...(form.web_search ?? {}),
                 enabled: ($event.target as HTMLInputElement).checked,
               }
             "
           />
           Enabled
         </label>
-        <div class="grid gap-3 md:grid-cols-2">
-          <label class="block text-xs">
-            <span class="mb-1 block text-slate-400">Provider</span>
-            <select
-              :value="form.web_search?.provider ?? ''"
-              class="w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none focus:border-emerald-600"
-              @change="
-                form.web_search = {
-                  ...(form.web_search ?? { enabled: false, api_key: '' }),
-                  provider: ($event.target as HTMLSelectElement).value || null,
-                }
-              "
-            >
-              <option value="">—</option>
-              <option v-for="p in WEB_SEARCH_PROVIDERS" :key="p" :value="p">{{ p }}</option>
-            </select>
-          </label>
-          <label class="block text-xs">
-            <span class="mb-1 block text-slate-400">API key</span>
-            <div class="flex gap-2">
-              <input
-                :value="form.web_search?.api_key ?? ''"
-                :type="showWebSearchKey ? 'text' : 'password'"
-                class="w-full rounded border border-slate-800 bg-slate-950 px-2 py-1 text-sm text-slate-100 outline-none focus:border-emerald-600"
-                @input="
-                  form.web_search = {
-                    ...(form.web_search ?? { enabled: false, provider: null }),
-                    api_key: ($event.target as HTMLInputElement).value,
-                  }
-                "
-              />
-              <button
-                type="button"
-                class="rounded bg-slate-800 px-2 text-xs hover:bg-slate-700"
-                @click="showWebSearchKey = !showWebSearchKey"
-              >
-                {{ showWebSearchKey ? 'Hide' : 'Show' }}
-              </button>
-            </div>
-          </label>
-        </div>
       </fieldset>
 
       <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/60 p-4">

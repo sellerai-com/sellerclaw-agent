@@ -12,6 +12,9 @@ from sellerclaw_agent.bundle.config_generator import (
     OPENCLAW_BUNDLE_LOG_LEVEL,
     OPENCLAW_BUNDLE_REDACT_SENSITIVE,
     OPENCLAW_LOCAL_AGENT_BASE_URL,
+    OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI,
+    OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH,
+    SELLERCLAW_WEB_SEARCH_PLUGIN_ID,
     generate_openclaw_config,
 )
 from sellerclaw_agent.bundle.manifest import ModelSpec
@@ -117,7 +120,72 @@ def test_generate_openclaw_config_telegram_channel_and_bindings(
     assert any(b.get("match") == {"channel": "telegram"} for b in bindings)
 
 
-def test_generate_openclaw_config_web_search_plugin_and_tools(
+def test_generate_openclaw_config_web_search_enabled_wires_sellerclaw_plugin(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    mc, ms = _base_specs()
+    raw = generate_openclaw_config(
+        assembled_agents=_supervisor_only(make_assembled_agent),
+        gateway_token="g",
+        hooks_token="h",
+        user_id=_USER_ID,
+        sellerclaw_api_url="http://api/",
+        sellerclaw_agent_api_base_url="http://api/agent",
+        litellm_base_url="http://litellm",
+        litellm_api_key="k",
+        model_complex=mc,
+        model_simple=ms,
+        telegram_enabled=False,
+        telegram_bot_token="",
+        telegram_allowed_user_ids=(),
+        telegram_allowed_group_ids=(),
+        web_search_enabled=True,
+        web_search_auth_token="sca_test_token",
+    )
+    payload = json.loads(raw)
+    assert SELLERCLAW_WEB_SEARCH_PLUGIN_ID in payload["plugins"]["allow"]
+    entry = payload["plugins"]["entries"][SELLERCLAW_WEB_SEARCH_PLUGIN_ID]
+    # The plugin appends ``/research/web-search`` to baseUrl — the derived
+    # SELLERCLAW_AGENT_API_BASE_URL already includes the ``/agent`` prefix so
+    # requests correctly resolve to ``POST /agent/research/web-search``.
+    assert entry["config"]["webSearch"]["baseUrl"] == "http://api/agent"
+    assert entry["config"]["webSearch"]["authToken"] == "sca_test_token"
+    assert payload["tools"]["web"]["search"]["enabled"] is True
+    assert payload["tools"]["web"]["search"]["provider"] == SELLERCLAW_WEB_SEARCH_PLUGIN_ID
+    assert payload["plugins"]["load"]["paths"] == [
+        OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI,
+        OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH,
+    ]
+
+
+def test_generate_openclaw_config_web_search_baseurl_falls_back_to_sellerclaw_api_url(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """When no derived URL is passed, the plugin baseUrl defaults to the bare host."""
+    mc, ms = _base_specs()
+    raw = generate_openclaw_config(
+        assembled_agents=_supervisor_only(make_assembled_agent),
+        gateway_token="g",
+        hooks_token="h",
+        user_id=_USER_ID,
+        sellerclaw_api_url="http://api/",
+        litellm_base_url="http://litellm",
+        litellm_api_key="k",
+        model_complex=mc,
+        model_simple=ms,
+        telegram_enabled=False,
+        telegram_bot_token="",
+        telegram_allowed_user_ids=(),
+        telegram_allowed_group_ids=(),
+        web_search_enabled=True,
+        web_search_auth_token="sca_test_token",
+    )
+    payload = json.loads(raw)
+    entry = payload["plugins"]["entries"][SELLERCLAW_WEB_SEARCH_PLUGIN_ID]
+    assert entry["config"]["webSearch"]["baseUrl"] == "http://api"
+
+
+def test_generate_openclaw_config_web_search_disabled_has_no_plugin_or_provider(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
     mc, ms = _base_specs()
@@ -135,14 +203,12 @@ def test_generate_openclaw_config_web_search_plugin_and_tools(
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
         telegram_allowed_group_ids=(),
-        web_search_enabled=True,
-        web_search_provider="brave",
-        web_search_api_key="ws-key",
     )
     payload = json.loads(raw)
-    assert "brave" in payload["plugins"]["allow"]
-    assert payload["plugins"]["entries"]["brave"]["config"]["webSearch"]["apiKey"] == "ws-key"
-    assert payload["tools"]["web"]["search"]["enabled"] is True
+    assert SELLERCLAW_WEB_SEARCH_PLUGIN_ID not in payload["plugins"]["allow"]
+    assert SELLERCLAW_WEB_SEARCH_PLUGIN_ID not in payload["plugins"]["entries"]
+    assert payload["tools"]["web"]["search"] == {"enabled": False}
+    assert payload["plugins"]["load"]["paths"] == [OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI]
 
 
 def test_generate_openclaw_config_browser_disabled(
@@ -307,17 +373,17 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
     )
 
 
-def test_generate_openclaw_config_web_search_enabled_without_provider_raises(
+def test_generate_openclaw_config_web_search_enabled_requires_auth_token(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
     mc, ms = _base_specs()
-    with pytest.raises(ValueError, match="Web search provider"):
+    with pytest.raises(ValueError, match="auth token"):
         generate_openclaw_config(
             assembled_agents=_supervisor_only(make_assembled_agent),
             gateway_token="g",
             hooks_token="h",
             user_id=_USER_ID,
-            sellerclaw_api_url="http://api",
+            sellerclaw_api_url="http://api/",
             litellm_base_url="http://litellm",
             litellm_api_key="k",
             model_complex=mc,
@@ -327,6 +393,29 @@ def test_generate_openclaw_config_web_search_enabled_without_provider_raises(
             telegram_allowed_user_ids=(),
             telegram_allowed_group_ids=(),
             web_search_enabled=True,
-            web_search_provider=None,
-            web_search_api_key="x",
+            web_search_auth_token="",
+        )
+
+
+def test_generate_openclaw_config_web_search_enabled_requires_api_base_url(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    mc, ms = _base_specs()
+    with pytest.raises(ValueError, match="SELLERCLAW_API_URL"):
+        generate_openclaw_config(
+            assembled_agents=_supervisor_only(make_assembled_agent),
+            gateway_token="g",
+            hooks_token="h",
+            user_id=_USER_ID,
+            sellerclaw_api_url="   ",
+            litellm_base_url="http://litellm",
+            litellm_api_key="k",
+            model_complex=mc,
+            model_simple=ms,
+            telegram_enabled=False,
+            telegram_bot_token="",
+            telegram_allowed_user_ids=(),
+            telegram_allowed_group_ids=(),
+            web_search_enabled=True,
+            web_search_auth_token="tok",
         )

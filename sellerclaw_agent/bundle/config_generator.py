@@ -31,6 +31,11 @@ OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 30000
 # assert the emitted config.
 OPENCLAW_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:8001"
 
+# Keyless web search: plugin id, OpenClaw web-search provider id, and directory under /opt/openclaw-plugins/.
+SELLERCLAW_WEB_SEARCH_PLUGIN_ID = "sellerclaw-web-search"
+OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI = "/opt/openclaw-plugins/sellerclaw-ui"
+OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH = "/opt/openclaw-plugins/sellerclaw-web-search"
+
 
 def _openclaw_litellm_model_ref(group_model_name: str) -> str:
     return f"{_LITELLM_OPENCLAW_PROVIDER}/{group_model_name}"
@@ -92,6 +97,7 @@ def generate_openclaw_config(
     hooks_token: str,
     user_id: UUID,
     sellerclaw_api_url: str,
+    sellerclaw_agent_api_base_url: str | None = None,
     litellm_base_url: str,
     litellm_api_key: str,
     model_complex: ModelSpec,
@@ -104,8 +110,7 @@ def generate_openclaw_config(
     allowed_origins: tuple[str, ...] = (),
     browser_enabled: bool = True,
     web_search_enabled: bool = False,
-    web_search_provider: str | None = None,
-    web_search_api_key: str = "",
+    web_search_auth_token: str = "",
     primary_channel: str = "sellerclaw-ui",
 ) -> str:
     """Build OpenClaw JSON config from assembled agents and flat parameters."""
@@ -145,10 +150,52 @@ def generate_openclaw_config(
             },
         ]
 
-    if web_search_enabled and not web_search_provider:
-        raise ValueError("Web search provider is required when web search is enabled")
+    # Derived agent API base URL (SELLERCLAW_AGENT_API_BASE_URL). Defaults to the
+    # bare SELLERCLAW_API_URL when the caller doesn't supply a derived value, which
+    # keeps older call sites (and tests) working without an explicit path segment.
+    effective_agent_api_base_url = (
+        sellerclaw_agent_api_base_url
+        if sellerclaw_agent_api_base_url is not None
+        else sellerclaw_api_url
+    )
+    effective_agent_api_base_url = (effective_agent_api_base_url or "").strip().rstrip("/")
 
-    web_search_plugin_id: str | None = web_search_provider
+    if web_search_enabled:
+        if not (web_search_auth_token or "").strip():
+            raise ValueError(
+                "Web search auth token is required when web search is enabled "
+                "(agent bearer from agent_token.json or AGENT_API_KEY)."
+            )
+        if not effective_agent_api_base_url:
+            raise ValueError(
+                "SellerClaw API base URL is required when web search is enabled (SELLERCLAW_API_URL)."
+            )
+
+    plugin_load_paths: list[str] = [OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI]
+    if web_search_enabled:
+        plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH)
+
+    web_search_plugin_entry: dict[str, object] | None = None
+    web_search_plugin_id: str | None = None
+    if web_search_enabled:
+        web_search_plugin_id = SELLERCLAW_WEB_SEARCH_PLUGIN_ID
+        web_search_plugin_entry = {
+            "enabled": True,
+            "config": {
+                "webSearch": {
+                    "baseUrl": effective_agent_api_base_url,
+                    "authToken": (web_search_auth_token or "").strip(),
+                }
+            },
+        }
+
+    if web_search_enabled:
+        web_search_tools: dict[str, object] = {
+            "enabled": True,
+            "provider": SELLERCLAW_WEB_SEARCH_PLUGIN_ID,
+        }
+    else:
+        web_search_tools = {"enabled": False}
 
     agents_list: list[dict[str, object]] = []
     default_primary = _openclaw_litellm_model_ref(complex_group)
@@ -264,17 +311,14 @@ def generate_openclaw_config(
                     else []
                 ),
             ],
-            "load": {"paths": ["/opt/openclaw-plugins/sellerclaw-ui"]},
+            "load": {"paths": plugin_load_paths},
             "entries": {
                 "sellerclaw-ui": {"enabled": True, "config": sellerclaw_ui_plugin_config},
                 **(
-                    {
-                        web_search_plugin_id: {
-                            "enabled": True,
-                            "config": {"webSearch": {"apiKey": web_search_api_key}},
-                        }
-                    }
-                    if web_search_enabled and web_search_plugin_id is not None
+                    {web_search_plugin_id: web_search_plugin_entry}
+                    if web_search_enabled
+                    and web_search_plugin_id is not None
+                    and web_search_plugin_entry is not None
                     else {}
                 ),
             },
@@ -293,7 +337,7 @@ def generate_openclaw_config(
         "tools": {
             "web": {
                 "fetch": {"enabled": True},
-                "search": {"enabled": web_search_enabled},
+                "search": web_search_tools,
             },
             "exec": {"security": "full", "ask": "off"},
             "sessions": {"visibility": "all"},

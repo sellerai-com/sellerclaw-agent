@@ -49,10 +49,49 @@ def test_save_manifest_request_mapping_validates_against_packaged_schema(
                     "max_tokens": 50,
                 },
             },
-            "template_variables": {"api_base_path": "/agent"},
+            "template_variables": {},
+            "agent_api_base_path": "/agent",
             "enabled_modules": ["product_scout"],
             "connected_integrations": ["research_trends"],
             "model_name_prefix": "u:abc/",
         }
     )
     jsonschema.validate(instance=req.to_mapping(), schema=agent_manifest_schema)
+
+
+def test_agent_manifest_schema_allows_extra_web_search_properties(
+    agent_manifest_schema: dict[str, object],
+) -> None:
+    """Raw JSON may still include legacy web_search keys during monolith migration."""
+    instance = {
+        "user_id": "11111111-1111-4111-8111-111111111111",
+        "gateway_token": "g",
+        "hooks_token": "h",
+        "litellm_base_url": "http://litellm",
+        "litellm_api_key": "k",
+        "models": {
+            "complex": {
+                "id": "c1",
+                "name": "C",
+                "reasoning": True,
+                "input": ["text"],
+                "context_window": 100,
+                "max_tokens": 50,
+            },
+            "simple": {
+                "id": "s1",
+                "name": "S",
+                "reasoning": False,
+                "input": ["text"],
+                "context_window": 100,
+                "max_tokens": 50,
+            },
+        },
+        "web_search": {
+            "enabled": True,
+            "provider": "brave",
+            "api_key": "legacy-key",
+            "base_url": "https://old.example",
+        },
+    }
+    jsonschema.validate(instance=instance, schema=agent_manifest_schema)

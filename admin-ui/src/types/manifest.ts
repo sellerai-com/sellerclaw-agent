@@ -44,10 +44,9 @@ export interface ManifestTelegram {
   allowed_group_ids?: string[]
 }
 
+/** Toggle only; BYOK vs corporate keys are configured on the SellerClaw server. */
 export interface ManifestWebSearch {
   enabled?: boolean
-  provider?: string | null
-  api_key?: string
 }
 
 export interface SaveManifestRequest {
@@ -65,6 +64,12 @@ export interface SaveManifestRequest {
   telegram?: ManifestTelegram
   web_search?: ManifestWebSearch
   primary_channel?: string
+  /**
+   * Path segment appended to `SELLERCLAW_API_URL` by the agent to form the
+   * derived `SELLERCLAW_AGENT_API_BASE_URL` (used as `{{api_base_url}}` in
+   * prompts and as `baseUrl` for the `sellerclaw-web-search` plugin).
+   */
+  agent_api_base_path?: string
 }
 
 export interface SaveManifestResponse {

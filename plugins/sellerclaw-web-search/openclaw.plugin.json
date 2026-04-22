@@ -1,0 +1,28 @@
+{
+  "id": "sellerclaw-web-search",
+  "name": "SellerClaw Web Search",
+  "description": "Routes web_search through the SellerClaw API.",
+  "contracts": { "webSearchProviders": ["sellerclaw-web-search"] },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["webSearch"],
+    "properties": {
+      "webSearch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["baseUrl", "authToken"],
+        "properties": {
+          "baseUrl": { "type": "string", "minLength": 1 },
+          "authToken": {
+            "type": ["string", "object"],
+            "description": "Bearer token or SecretRef"
+          }
+        }
+      }
+    }
+  },
+  "uiHints": {
+    "webSearch.authToken": { "sensitive": true }
+  }
+}
