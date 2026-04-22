@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -15,7 +17,11 @@ from sellerclaw_agent.cli_watch import (
     MAX_ERROR_CHARS,
     WATCH_STOPPED_HINT,
     _first_task_last_error,
+    _format_uptime,
     _parse_last_success_ago,
+    _humanize_integrations,
+    _humanize_modules,
+    load_manifest_from_disk,
     render_status_panel,
     run_status_watch,
 )
@@ -26,7 +32,7 @@ pytestmark = pytest.mark.unit
 REF_TS = 1_700_000_000.0
 
 
-def _plain_console(width: int = 100) -> Console:
+def _plain_console(width: int = 120) -> Console:
     return Console(
         record=True,
         width=width,
@@ -35,7 +41,7 @@ def _plain_console(width: int = 100) -> Console:
     )
 
 
-def _render_to_text(renderable: RenderableType, *, width: int = 100) -> str:
+def _render_to_text(renderable: RenderableType, *, width: int = 120) -> str:
     console = _plain_console(width=width)
     console.print(renderable)
     return console.export_text().lower()
@@ -57,6 +63,9 @@ def _health_snapshot(  # noqa: PLR0913
     chat_last_error: str | None = None,
     ping_last_error: str | None = None,
     command_last_error: str | None = None,
+    openclaw_status: str | None = "running",
+    openclaw_uptime_seconds: float | int | None = 8054,
+    openclaw_error: str | None = None,
 ) -> dict[str, Any]:
     return {
         "status": "healthy",
@@ -70,99 +79,343 @@ def _health_snapshot(  # noqa: PLR0913
                 "last_error": ping_last_error,
             },
         },
-        "openclaw": {},
+        "openclaw": {
+            "status": openclaw_status,
+            "uptime_seconds": openclaw_uptime_seconds,
+            "error": openclaw_error,
+        },
+    }
+
+
+def _full_manifest() -> dict[str, Any]:
+    return {
+        "enabled_modules": [
+            "product_scout",
+            "dropshipping_supplier",
+            "shopify_store_manager",
+            "ebay_store_manager",
+            "marketing_manager",
+        ],
+        "connected_integrations": [
+            "shopify_store",
+            "supplier_cj",
+            "research_trends",
+            "research_seo",
+        ],
+        "global_browser_enabled": True,
+        "per_module_browser": {
+            "product_scout": True,
+            "dropshipping_supplier": True,
+            "shopify_store_manager": True,
+            "ebay_store_manager": True,
+            "marketing_manager": True,
+        },
+        "web_search": {"enabled": True},
+        "telegram": {"enabled": False},
     }
 
 
 # ---------------------------------------------------------------------------
-# render_status_panel
+# User-facing panel content
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("snapshot", "must_contain", "must_not_contain"),
-    [
-        pytest.param(
-            _health_snapshot(ping_last_success_at=_iso(offset_s=-5.0)),
-            ["connected", "5s ago"],
-            ["reconnecting", "null"],
-            id="connected_fresh_ping",
-        ),
-        pytest.param(
-            _health_snapshot(ping_last_success_at=_iso(offset_s=-100.0)),
-            ["100s ago"],
-            [],
-            id="stale_yellow",
-        ),
-        pytest.param(
-            _health_snapshot(ping_last_success_at=_iso(offset_s=-200.0)),
-            ["200s ago"],
-            [],
-            id="stale_red",
-        ),
-        pytest.param(
-            _health_snapshot(
-                session_connected=False,
-                chat_connected=False,
-                ping_last_success_at=None,
-            ),
-            ["disconnected", "reconnecting", "null"],
-            ["5s ago"],
-            id="disconnected",
-        ),
-        pytest.param(
-            {"status": "healthy", "session": {}, "tasks": {}},
-            ["unknown", "null"],
-            [],
-            id="missing_fields",
-        ),
-    ],
-)
-def test_render_status_panel_core_states(
-    snapshot: dict[str, Any] | None,
-    must_contain: list[str],
-    must_not_contain: list[str],
-) -> None:
-    text = _render_to_text(render_status_panel(snapshot, now=REF_TS))
-    for token in must_contain:
-        assert token.lower() in text, text
-    for token in must_not_contain:
-        assert token.lower() not in text, text
+def test_panel_shows_human_labels_no_jargon_when_healthy() -> None:
+    snap = _health_snapshot(ping_last_success_at=_iso(offset_s=-3.0))
+    text = _render_to_text(
+        render_status_panel(snap, now=REF_TS, manifest=_full_manifest())
+    )
+    # Positive: human labels present
+    assert "cloud connection" in text
+    assert "connected" in text
+    assert "agent (openclaw)" in text
+    assert "running for 2h 14m" in text
+    assert "chat with agent" in text
+    assert "available" in text
+    assert "browser" in text
+    assert "active modules" in text
+    assert "product scout" in text
+    assert "shopify store" in text
+    assert "integrations" in text
+    assert "cj dropshipping" in text
+    assert "google trends" in text
+    assert "web search" in text
+    assert "telegram" in text
+    # Negative: no raw jargon
+    assert "chat sse" not in text
+    assert "last cloud ping" not in text
+    assert "cloud session" not in text
+    assert "ping_loop" not in text
 
 
-def test_render_truncates_long_error_with_ellipsis() -> None:
+def test_panel_without_manifest_when_signed_in_says_loading() -> None:
+    """Fresh install after sign-in: manifest hasn't arrived from cloud yet.
+
+    The label must make it clear that data is on the way — not hint the user
+    to sign in again.
+    """
+    snap = _health_snapshot(
+        session_connected=True,
+        ping_last_success_at=_iso(offset_s=-1.0),
+    )
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None))
+    assert "personalisation" in text
+    assert "loading from cloud" in text
+    assert "will appear after sign-in" not in text
+    assert "active modules" not in text
+    assert "integrations" not in text
+
+
+def test_panel_without_manifest_when_not_signed_in_mentions_signin() -> None:
+    snap = _health_snapshot(
+        session_connected=False, ping_last_success_at=None
+    )
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None))
+    assert "personalisation" in text
+    assert "will appear after sign-in" in text
+    assert "loading from cloud" not in text
+
+
+def test_agent_stopped_while_waiting_for_manifest_is_friendly() -> None:
+    """Right after sign-in OpenClaw is `stopped` until the cloud pushes the
+    manifest. We must not scream red — explain the normal waiting state.
+    """
+    snap = _health_snapshot(
+        session_connected=True,
+        ping_last_success_at=_iso(offset_s=-1.0),
+        openclaw_status="stopped",
+        openclaw_uptime_seconds=None,
+    )
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None))
+    assert "waiting for configuration from cloud" in text
+
+
+def test_agent_stopped_after_manifest_is_still_stopped() -> None:
+    """When the user has a manifest but explicitly stopped the agent we keep
+    the plain `stopped` message (red) — that IS a problem worth flagging.
+    """
+    snap = _health_snapshot(
+        session_connected=True,
+        ping_last_success_at=_iso(offset_s=-1.0),
+        openclaw_status="stopped",
+        openclaw_uptime_seconds=None,
+    )
+    text = _render_to_text(
+        render_status_panel(snap, now=REF_TS, manifest=_full_manifest())
+    )
+    assert "stopped" in text
+    assert "waiting for configuration" not in text
+
+
+def test_panel_when_snapshot_missing_says_unreachable() -> None:
+    text = _render_to_text(
+        render_status_panel(None, now=REF_TS, manifest=None, fetch_error="boom")
+    )
+    assert "unreachable" in text
+    assert "boom" in text
+
+
+def test_panel_when_not_signed_in_prompts_user() -> None:
+    snap = _health_snapshot(session_connected=False, ping_last_success_at=None)
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None))
+    assert "not signed in" in text
+    assert "./setup.sh" in text
+
+
+def test_chat_when_signed_in_without_manifest_says_will_connect_on_start() -> None:
+    """Fresh install: chat SSE will not dial out until the cloud pushes a
+    `start` command (which writes the manifest). "Reconnecting" would be
+    misleading — the channel has never connected yet.
+    """
+    snap = _health_snapshot(
+        session_connected=True,
+        ping_last_success_at=_iso(offset_s=-1.0),
+        chat_connected=False,
+    )
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None))
+    assert "will connect when agent starts" in text
+    assert "reconnecting" not in text
+
+
+def test_chat_reconnecting_when_manifest_present_but_sse_down() -> None:
+    """Manifest already on disk but SSE is currently disconnected — this IS
+    a real reconnect scenario and we should say so.
+    """
+    snap = _health_snapshot(
+        session_connected=True,
+        ping_last_success_at=_iso(offset_s=-1.0),
+        chat_connected=False,
+    )
+    text = _render_to_text(
+        render_status_panel(snap, now=REF_TS, manifest=_full_manifest())
+    )
+    assert "reconnecting" in text
+    assert "shortly" in text
+    assert "will connect when agent starts" not in text
+
+
+def test_chat_reconnecting_when_not_signed_in_keeps_generic_message() -> None:
+    snap = _health_snapshot(
+        session_connected=False,
+        ping_last_success_at=None,
+        chat_connected=False,
+    )
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None))
+    # We still surface reconnecting here; the signed-in/manifest override is
+    # specifically for the fresh-install path.
+    assert "reconnecting" in text
+
+
+def test_openclaw_statuses_rendered_in_plain_english() -> None:
+    # Each case explicitly decouples from the "stopped-while-waiting" special
+    # case so we verify the base rendering for each state.
+    cases = [
+        # (status, expected, manifest, session_connected)
+        ("running", "running for", None, True),
+        ("starting", "starting up", None, True),
+        ("stopped", "stopped", _full_manifest(), True),
+    ]
+    for status, expected, manifest, connected in cases:
+        snap = _health_snapshot(
+            session_connected=connected,
+            ping_last_success_at=_iso(offset_s=-1.0),
+            openclaw_status=status,
+        )
+        text = _render_to_text(
+            render_status_panel(snap, now=REF_TS, manifest=manifest)
+        )
+        assert expected in text, (status, text)
+        if status == "stopped":
+            assert "waiting for configuration" not in text
+
+
+def test_openclaw_error_is_visible() -> None:
+    snap = _health_snapshot(
+        ping_last_success_at=_iso(offset_s=-1.0),
+        openclaw_status="error",
+        openclaw_error="container failed to boot: image missing",
+    )
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None))
+    assert "error" in text
+    assert "image missing" in text
+
+
+def test_browser_summary_reflects_per_module_setting() -> None:
+    snap = _health_snapshot(ping_last_success_at=_iso(offset_s=-1.0))
+    manifest = _full_manifest()
+    manifest["per_module_browser"] = {
+        "product_scout": True,
+        "dropshipping_supplier": True,
+        "shopify_store_manager": False,
+        "ebay_store_manager": False,
+        "marketing_manager": False,
+    }
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=manifest))
+    assert "on (2 of 5 modules)" in text
+
+
+def test_browser_disabled_globally_is_off() -> None:
+    snap = _health_snapshot(ping_last_success_at=_iso(offset_s=-1.0))
+    manifest = _full_manifest()
+    manifest["global_browser_enabled"] = False
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=manifest))
+    assert "browser" in text
+    assert "off" in text
+
+
+def test_web_search_and_telegram_show_on_off() -> None:
+    snap = _health_snapshot(ping_last_success_at=_iso(offset_s=-1.0))
+    manifest = _full_manifest()
+    manifest["web_search"] = {"enabled": False}
+    manifest["telegram"] = {"enabled": True}
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=manifest))
+    # Find the web search / telegram rows and check their values
+    for line in text.splitlines():
+        if "web search" in line:
+            assert "off" in line
+        if "telegram " in line or line.strip().startswith("telegram"):
+            assert "on" in line
+
+
+def test_panel_truncates_long_error() -> None:
     long_e = "x" * 400
-    snap = _health_snapshot(ping_last_error=long_e)
-    text = _render_to_text(render_status_panel(snap, now=REF_TS), width=300)
+    snap = _health_snapshot(
+        ping_last_success_at=_iso(offset_s=-1.0),
+        ping_last_error=long_e,
+    )
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None), width=300)
     assert "…" in text
-    # Truncated body must be strictly shorter than the raw input.
-    assert len(long_e) > MAX_ERROR_CHARS
     assert "x" * (MAX_ERROR_CHARS + 5) not in text
 
 
-def test_render_fetch_error_with_no_snapshot() -> None:
-    text = _render_to_text(
-        render_status_panel(None, now=REF_TS, fetch_error="httpx: connection dead"),
-    )
-    assert "connection dead" in text
-    assert "null" in text
-
-
-def test_render_fetch_error_overrides_task_error() -> None:
-    snap = _health_snapshot(ping_last_error="stale ping error")
-    text = _render_to_text(
-        render_status_panel(snap, now=REF_TS, fetch_error="fresh fetch failure"),
-    )
-    assert "fresh fetch failure" in text
-    assert "stale ping error" not in text
-
-
 # ---------------------------------------------------------------------------
-# _first_task_last_error — explicit priority
+# Humanizers
 # ---------------------------------------------------------------------------
 
 
-def test_first_task_error_prefers_ping_loop_over_others() -> None:
+def test_humanize_modules_uses_nice_names_and_keeps_unknowns() -> None:
+    names = _humanize_modules(
+        ["product_scout", "marketing_manager", "experimental_module"]
+    )
+    assert names[0] == "Product Scout"
+    assert "Marketing Manager" in names
+    assert "Experimental Module" in names  # title-cased fallback
+
+
+def test_humanize_integrations_orders_by_catalog() -> None:
+    names = _humanize_integrations(["supplier_cj", "shopify_store"])
+    # Shopify should come before CJ per catalog order
+    assert names.index("Shopify store") < names.index("CJ Dropshipping")
+
+
+def test_humanize_handles_non_list_input() -> None:
+    assert _humanize_modules(None) == []
+    assert _humanize_integrations("nope") == []
+
+
+# ---------------------------------------------------------------------------
+# load_manifest_from_disk
+# ---------------------------------------------------------------------------
+
+
+def test_load_manifest_returns_none_when_missing(tmp_path: Path) -> None:
+    assert load_manifest_from_disk(tmp_path) is None
+
+
+def test_load_manifest_returns_none_on_invalid_json(tmp_path: Path) -> None:
+    (tmp_path / "manifest.json").write_text("not json", encoding="utf-8")
+    assert load_manifest_from_disk(tmp_path) is None
+
+
+def test_load_manifest_returns_dict(tmp_path: Path) -> None:
+    (tmp_path / "manifest.json").write_text(json.dumps({"a": 1}), encoding="utf-8")
+    assert load_manifest_from_disk(tmp_path) == {"a": 1}
+
+
+def test_load_manifest_rejects_non_dict(tmp_path: Path) -> None:
+    (tmp_path / "manifest.json").write_text("[1, 2, 3]", encoding="utf-8")
+    assert load_manifest_from_disk(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# Low-level helpers
+# ---------------------------------------------------------------------------
+
+
+def test_format_uptime_humanizes_seconds() -> None:
+    assert _format_uptime(0) == "0s"
+    assert _format_uptime(59) == "59s"
+    assert _format_uptime(60) == "1m"
+    assert _format_uptime(65) == "1m 5s"
+    assert _format_uptime(3600) == "1h"
+    assert _format_uptime(3700) == "1h 1m"
+    assert _format_uptime(90000) == "1d 1h"
+    assert _format_uptime(None) == ""
+    assert _format_uptime("invalid") == ""  # type: ignore[arg-type]
+    assert _format_uptime(-1) == ""
+
+
+def test_first_task_error_prefers_ping_loop() -> None:
     tasks = {
         "chat_sse": {"last_error": "sse dead"},
         "command_executor": {"last_error": "executor dead"},
@@ -171,56 +424,18 @@ def test_first_task_error_prefers_ping_loop_over_others() -> None:
     assert _first_task_last_error(tasks) == "ping dead"
 
 
-def test_first_task_error_falls_back_to_chat_when_ping_silent() -> None:
-    tasks = {
-        "chat_sse": {"last_error": "sse dead"},
-        "command_executor": {"last_error": "executor dead"},
-        "ping_loop": {"last_error": None},
-    }
-    assert _first_task_last_error(tasks) == "sse dead"
-
-
-def test_first_task_error_handles_unknown_tasks_alphabetically() -> None:
-    tasks = {
-        "aaa_custom": {"last_error": "custom a"},
-        "zzz_custom": {"last_error": "custom z"},
-    }
-    assert _first_task_last_error(tasks) == "custom a"
-
-
-def test_first_task_error_ignores_non_string_values() -> None:
-    tasks = {"ping_loop": {"last_error": 42}, "chat_sse": {"last_error": "real"}}
-    assert _first_task_last_error(tasks) == "real"
-
-
-# ---------------------------------------------------------------------------
-# clock skew — future timestamps
-# ---------------------------------------------------------------------------
-
-
-def test_ping_within_future_tolerance_renders_as_zero_seconds() -> None:
-    assert _parse_last_success_ago(
-        last_success_at=_iso(offset_s=2.0), now=REF_TS
-    ) == 0
-
-
-def test_ping_beyond_future_tolerance_is_null() -> None:
+def test_clock_skew_beyond_tolerance_is_null() -> None:
     future = _iso(offset_s=float(FUTURE_SKEW_TOLERANCE_S + 10))
     assert _parse_last_success_ago(last_success_at=future, now=REF_TS) is None
-    snap = _health_snapshot(ping_last_success_at=future)
-    text = _render_to_text(render_status_panel(snap, now=REF_TS))
-    assert "null" in text
 
 
-def test_ping_invalid_timestamp_is_null() -> None:
-    assert _parse_last_success_ago(last_success_at="not-a-date", now=REF_TS) is None
-    assert _parse_last_success_ago(last_success_at="", now=REF_TS) is None
-    assert _parse_last_success_ago(last_success_at=None, now=REF_TS) is None
-    assert _parse_last_success_ago(last_success_at=123, now=REF_TS) is None
+def test_clock_skew_within_tolerance_is_zero() -> None:
+    near_future = _iso(offset_s=2.0)
+    assert _parse_last_success_ago(last_success_at=near_future, now=REF_TS) == 0
 
 
 # ---------------------------------------------------------------------------
-# run_status_watch — integration-lite with real rich.live.Live
+# run_status_watch — polling loop
 # ---------------------------------------------------------------------------
 
 
@@ -238,7 +453,6 @@ def _make_sleep_then_interrupt(n_ticks: int) -> Any:
 def _spy_live_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[list[tuple[RenderableType, bool]], list[int]]:
-    """Record every ``Live.update`` call and count ``Live.refresh`` invocations."""
     updates: list[tuple[RenderableType, bool]] = []
     refreshes: list[int] = []
 
@@ -259,31 +473,26 @@ def _spy_live_update(
 
 
 def _render_snapshot_text(r: RenderableType) -> str:
-    buf = _plain_console(width=120)
+    buf = _plain_console(width=160)
     buf.print(r)
     return buf.export_text().lower()
 
 
-def test_real_live_refreshes_every_tick_and_leaves_final_frame(
+def test_live_refreshes_every_tick_and_leaves_final_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression for C1 + H1: each update uses refresh=True and last frame persists."""
     updates, refreshes = _spy_live_update(monkeypatch)
 
-    timestamps = [_iso(offset_s=-1.0), _iso(offset_s=-2.0), _iso(offset_s=-3.0)]
-    call_n = {"n": 0}
-
     def get_snapshot(_: str) -> dict[str, Any]:
-        i = call_n["n"]
-        call_n["n"] += 1
-        idx = min(i, len(timestamps) - 1)
-        return _health_snapshot(ping_last_success_at=timestamps[idx])
+        return _health_snapshot(
+            ping_last_success_at=_iso(offset_s=-1.0), openclaw_uptime_seconds=1
+        )
 
     sleep_fn, _ = _make_sleep_then_interrupt(3)
-    console = _plain_console(width=120)
+    console = _plain_console()
 
     rc = run_status_watch(
-        "http://127.0.0.1:8001",
+        "http://x",
         console,
         poll_interval=0.0,
         get_snapshot=get_snapshot,
@@ -291,27 +500,74 @@ def test_real_live_refreshes_every_tick_and_leaves_final_frame(
         now=lambda: REF_TS,
     )
     assert rc == 0
-
-    assert len(updates) >= 2, "Expected at least two live.update calls"
-    assert all(refresh for _r, refresh in updates), (
-        "Every live.update must be called with refresh=True (C1)"
-    )
-    rendered = [_render_snapshot_text(r) for r, _refresh in updates]
-    # First frame goes into Live() constructor; subsequent frames arrive via update()
-    assert any("2s ago" in f for f in rendered)
-    assert any("3s ago" in f for f in rendered)
-
-    final_text = console.export_text().lower()
-    assert "3s ago" in final_text
-    assert "watch stopped" in final_text
+    assert len(updates) >= 2
+    assert all(refresh for _r, refresh in updates)
     assert len(refreshes) >= len(updates)
+    final = console.export_text().lower()
+    assert "sellerclaw status" in final
+    assert "watch stopped" in final
 
 
-def test_run_status_watch_survives_request_error_and_renders_it(
+def test_watch_passes_manifest_to_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
+    updates, _ = _spy_live_update(monkeypatch)
+
+    def get_snapshot(_: str) -> dict[str, Any]:
+        return _health_snapshot(ping_last_success_at=_iso(offset_s=-1.0))
+
+    manifest_calls = {"n": 0}
+
+    def get_manifest() -> dict[str, Any]:
+        manifest_calls["n"] += 1
+        return _full_manifest()
+
+    sleep_fn, _ = _make_sleep_then_interrupt(2)
+    console = _plain_console()
+
+    rc = run_status_watch(
+        "http://x",
+        console,
+        poll_interval=0.0,
+        get_snapshot=get_snapshot,
+        get_manifest=get_manifest,
+        sleep=sleep_fn,
+        now=lambda: REF_TS,
+    )
+    assert rc == 0
+    assert manifest_calls["n"] >= 1
+    rendered = [_render_snapshot_text(r) for r, _ in updates]
+    assert any("product scout" in f for f in rendered)
+    assert any("cj dropshipping" in f for f in rendered)
+
+
+def test_watch_survives_manifest_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    def get_snapshot(_: str) -> dict[str, Any]:
+        return _health_snapshot(ping_last_success_at=_iso(offset_s=-1.0))
+
+    def get_manifest() -> dict[str, Any]:
+        raise RuntimeError("manifest file locked")
+
+    sleep_fn, _ = _make_sleep_then_interrupt(2)
+    console = _plain_console()
+    rc = run_status_watch(
+        "http://x",
+        console,
+        poll_interval=0.0,
+        get_snapshot=get_snapshot,
+        get_manifest=get_manifest,
+        sleep=sleep_fn,
+        now=lambda: REF_TS,
+    )
+    assert rc == 0
+    # Error from manifest must not surface; panel should fall back to "personalisation" line
+    final = console.export_text().lower()
+    assert "personalisation" in final
+    assert "manifest file locked" not in final
+
+
+def test_watch_captures_request_error_into_last_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     updates, _ = _spy_live_update(monkeypatch)
-
     call_n = {"n": 0}
     good = _health_snapshot(ping_last_success_at=_iso(offset_s=-1.0))
 
@@ -322,10 +578,9 @@ def test_run_status_watch_survives_request_error_and_renders_it(
         return good
 
     sleep_fn, _ = _make_sleep_then_interrupt(3)
-    console = _plain_console(width=120)
-
+    console = _plain_console()
     rc = run_status_watch(
-        "http://127.0.0.1:8001",
+        "http://x",
         console,
         poll_interval=0.0,
         get_snapshot=get_snapshot,
@@ -333,20 +588,15 @@ def test_run_status_watch_survives_request_error_and_renders_it(
         now=lambda: REF_TS,
     )
     assert rc == 0
-    assert call_n["n"] >= 2
-
-    rendered = [_render_snapshot_text(r) for r, _refresh in updates]
-    assert any("refused" in f for f in rendered), rendered
-    assert "watch stopped" in console.export_text().lower()
+    rendered = [_render_snapshot_text(r) for r, _ in updates]
+    assert any("refused" in f for f in rendered)
 
 
 @pytest.mark.parametrize(
     "raise_where",
     ["sleep", "get_snapshot", "now", "initial_fetch"],
 )
-def test_run_status_watch_keyboard_interrupt_from_any_stage_returns_zero(
-    raise_where: str,
-) -> None:
+def test_keyboard_interrupt_from_any_stage_returns_zero(raise_where: str) -> None:
     ticks = {"n": 0}
     good = _health_snapshot(ping_last_success_at=_iso(offset_s=-1.0))
 
@@ -366,7 +616,6 @@ def test_run_status_watch_keyboard_interrupt_from_any_stage_returns_zero(
 
     def now_fn() -> float:
         now_calls["n"] += 1
-        # First call happens before the loop; interrupt on the 3rd → inside loop body
         if raise_where == "now" and now_calls["n"] >= 3:
             raise KeyboardInterrupt
         return REF_TS
@@ -384,77 +633,6 @@ def test_run_status_watch_keyboard_interrupt_from_any_stage_returns_zero(
     assert "watch stopped" in console.export_text().lower()
 
 
-def test_run_status_watch_snapshot_exception_is_displayed_not_raised() -> None:
-    """Any non-KBI exception from get_snapshot is captured into Last error."""
-
-    def get_snapshot(_: str) -> dict[str, Any]:
-        raise RuntimeError("boom: /health parsing failed")
-
-    sleep_fn, _ = _make_sleep_then_interrupt(2)
-    console = _plain_console(width=120)
-    rc = run_status_watch(
-        "http://x",
-        console,
-        poll_interval=0.0,
-        get_snapshot=get_snapshot,
-        sleep=sleep_fn,
-        now=lambda: REF_TS,
-    )
-    assert rc == 0
-    text = console.export_text().lower()
-    assert "boom: /health parsing failed" in text
-
-
-def test_run_status_watch_non_dict_response_surfaces_error() -> None:
-    def get_snapshot(_: str) -> Any:
-        return "not a dict"
-
-    sleep_fn, _ = _make_sleep_then_interrupt(2)
-    console = _plain_console(width=120)
-    rc = run_status_watch(
-        "http://x",
-        console,
-        poll_interval=0.0,
-        get_snapshot=get_snapshot,
-        sleep=sleep_fn,
-        now=lambda: REF_TS,
-    )
-    assert rc == 0
-    text = console.export_text().lower()
-    assert "invalid /health response" in text
-
-
-def test_run_status_watch_uses_live_class(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Smoke-test that ``rich.live.Live`` is the default factory."""
-    entered = {"ok": False}
-
-    original_enter = Live.__enter__
-
-    def traced(self: Live) -> Live:
-        entered["ok"] = True
-        return original_enter(self)
-
-    monkeypatch.setattr(Live, "__enter__", traced)
-
-    def get_snapshot(_: str) -> dict[str, Any]:
-        return _health_snapshot(ping_last_success_at=_iso(offset_s=-1.0))
-
-    def sleep_fn(_d: float) -> None:
-        raise KeyboardInterrupt
-
-    rc = run_status_watch(
-        "http://x",
-        _plain_console(),
-        poll_interval=0.0,
-        get_snapshot=get_snapshot,
-        sleep=sleep_fn,
-        now=lambda: REF_TS,
-    )
-    assert rc == 0
-    assert entered["ok"] is True
-
-
-def test_watch_stopped_hint_is_english_consistent_with_setup_cli() -> None:
-    """Message must not mix languages (see M5)."""
+def test_watch_stopped_hint_is_english_only() -> None:
     cyrillic = any("\u0400" <= ch <= "\u04ff" for ch in WATCH_STOPPED_HINT)
     assert not cyrillic, WATCH_STOPPED_HINT

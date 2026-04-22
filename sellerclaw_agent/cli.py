@@ -21,7 +21,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.theme import Theme
 
-from sellerclaw_agent.cli_watch import run_status_watch
+from sellerclaw_agent.cli_watch import load_manifest_from_disk, run_status_watch
 
 try:
     import questionary
@@ -899,6 +899,7 @@ def cmd_setup(console: Console) -> int:
                     base,
                     console,
                     get_snapshot=_get_health_snapshot,
+                    get_manifest=lambda: load_manifest_from_disk(root / "data"),
                 )
             console.print()
 
@@ -927,15 +928,12 @@ def cmd_setup(console: Console) -> int:
             )
 
         if connected:
-            ok, reason, chat_ok = _wait_for_cloud_live(base, console)
+            ok, reason, _chat_ok = _wait_for_cloud_live(base, console)
             if not ok:
                 _print_cloud_verification_failure(console, reason or "unknown error")
                 return 1
-            if not chat_ok:
-                console.print(
-                    "[warning]Live chat stream is not connected yet — "
-                    "it should come up shortly.[/warning]",
-                )
+            # Chat SSE readiness is reported by the live watch panel itself,
+            # so we don't print a duplicate warning here.
 
         if not connected:
             console.print()
@@ -946,6 +944,7 @@ def cmd_setup(console: Console) -> int:
             base,
             console,
             get_snapshot=_get_health_snapshot,
+            get_manifest=lambda: load_manifest_from_disk(root / "data"),
         )
     except KeyboardInterrupt:
         console.print()
