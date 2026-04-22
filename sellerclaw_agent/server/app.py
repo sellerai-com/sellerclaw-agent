@@ -568,8 +568,28 @@ app.include_router(media_upload.router)
 _default_admin_ui_dist = Path(__file__).resolve().parents[2] / "admin-ui" / "dist"
 _admin_ui_dist = Path(os.environ.get("AGENT_ADMIN_UI_DIST", str(_default_admin_ui_dist)))
 if _admin_ui_dist.is_dir():
+
+    class _NoCacheHtmlStaticFiles(StaticFiles):
+        """StaticFiles that forbids caching of index.html (hashed assets still cache).
+
+        Why: the admin UI shell embeds the current JS bundle hash. Letting the browser
+        cache index.html causes tabs opened before a rebuild to keep polling with the
+        stale bundle (e.g. before ``initApiClient`` gained the request interceptor),
+        producing 401 noise against ``/openclaw/status``. Hashed assets under
+        ``/assets`` are content-addressed and remain cacheable.
+        """
+
+        async def get_response(self, path: str, scope):  # type: ignore[override]
+            response = await super().get_response(path, scope)
+            content_type = response.headers.get("content-type", "")
+            if content_type.startswith("text/html"):
+                # ``no-store`` is sufficient per RFC 9111; we drop the legacy ``Pragma``
+                # and the malformed ``Expires: 0`` (which isn't a valid HTTP-date).
+                response.headers["Cache-Control"] = "no-store"
+            return response
+
     app.mount(
         "/admin",
-        StaticFiles(directory=str(_admin_ui_dist), html=True),
+        _NoCacheHtmlStaticFiles(directory=str(_admin_ui_dist), html=True),
         name="admin",
     )
