@@ -18,7 +18,6 @@ from sellerclaw_agent.bundle.manifest import (
 from sellerclaw_agent.models import IntegrationKind, ModelTier
 
 _DEFAULT_TEMPLATE_VARIABLES: dict[str, str] = {
-    "api_base_path": "/agent",
     "user_name": "Test",
     "config_generated_at": "2026-01-01 00:00 UTC",
     "available_supplier_providers": "",
@@ -28,6 +27,8 @@ _DEFAULT_TEMPLATE_VARIABLES: dict[str, str] = {
     "ad_strategy_settings": "No strategy settings configured -- use defaults.\n",
     "telegram_group_id": "",
 }
+
+_DEFAULT_AGENT_API_BASE_PATH = "/agent"
 
 
 @pytest.fixture
@@ -82,6 +83,7 @@ def make_manifest(
         primary_channel: str = "sellerclaw-ui",
         proxy_url: str = "",
         model_name_prefix: str = "",
+        agent_api_base_path: str = _DEFAULT_AGENT_API_BASE_PATH,
     ) -> BundleManifest:
         mc = model_complex or make_model_spec()
         ms = model_simple or make_model_spec(
@@ -114,6 +116,7 @@ def make_manifest(
             primary_channel=primary_channel,
             proxy_url=proxy_url,
             model_name_prefix=model_name_prefix,
+            agent_api_base_path=agent_api_base_path,
         )
 
     return _build

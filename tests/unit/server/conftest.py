@@ -44,7 +44,8 @@ def make_manifest_data() -> Callable[..., dict[str, Any]]:
                 "complex": dict(_DEFAULT_MODEL),
                 "simple": dict(_DEFAULT_SIMPLE_MODEL),
             },
-            "template_variables": {"api_base_path": "/agent"},
+            "template_variables": {},
+            "agent_api_base_path": "/agent",
             "enabled_modules": [],
             "connected_integrations": [],
         }
@@ -69,7 +70,8 @@ def make_save_manifest_request() -> Callable[..., SaveManifestRequest]:
                 complex=ManifestModelSpec(**_DEFAULT_MODEL),
                 simple=ManifestModelSpec(**_DEFAULT_SIMPLE_MODEL),
             ),
-            "template_variables": {"x": "y", "api_base_path": "/agent"},
+            "template_variables": {"x": "y"},
+            "agent_api_base_path": "/agent",
             "enabled_modules": [],
             "connected_integrations": [],
         }
