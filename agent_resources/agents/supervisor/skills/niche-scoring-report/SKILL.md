@@ -1,6 +1,6 @@
 ---
 name: niche-scoring-report
-description: Score scout data using 6-dimension rubrics, format the user-facing niche report, complete the Team Task.
+description: "Score scout data using 6-dimension rubrics, format the user-facing niche report, complete the Team Task."
 ---
 
 # Niche Scoring — Report (Supervisor)

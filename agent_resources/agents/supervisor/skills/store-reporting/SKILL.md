@@ -1,6 +1,6 @@
 ---
 name: store-reporting
-description: Build store health and performance reports from products, orders, and channel metadata.
+description: "Build store health and performance reports from products, orders, and channel metadata."
 ---
 
 # Store Reporting Skill

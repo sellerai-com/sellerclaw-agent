@@ -65,6 +65,29 @@ def test_assembler_supervisor_always_includes_goal_section_and_skill(agent_resou
     assert "goal-tracking" in sup.skills
 
 
+def test_assembler_supervisor_excludes_shared_skills_from_per_agent_dict(
+    agent_resources_root: Path,
+) -> None:
+    """Shared skills (``agent_resources/shared-skills``) must not land in the per-agent ``skills`` dict.
+
+    They are exposed separately via ``assemble_shared_skills`` so the runtime can
+    drop them into OpenClaw's machine-wide managed-skills directory instead of
+    duplicating them into every agent workspace.
+    """
+    asm = AgentConfigAssembler(resources_root=agent_resources_root)
+    sup = asm.assemble_supervisor_only(template_variables=_template_vars())
+    # ``file-storage`` is a shared skill referenced by ``base_supervisor_skills``.
+    assert "file-storage" not in sup.skills
+    assert "task-reporting" not in sup.skills
+
+
+def test_assembler_shared_skills_exposes_all_shared_skills(agent_resources_root: Path) -> None:
+    asm = AgentConfigAssembler(resources_root=agent_resources_root)
+    shared = asm.assemble_shared_skills(_template_vars())
+    assert set(shared.keys()) == {"file-storage", "task-reporting"}
+    assert all(content.strip() for content in shared.values())
+
+
 def test_assembler_scout_conditional_skills_follow_connected_integrations(agent_resources_root: Path) -> None:
     scout = get_module(AgentModuleId.PRODUCT_SCOUT)
     assert scout is not None

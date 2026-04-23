@@ -1,6 +1,6 @@
 ---
 name: keyword-research
-description: Expand and filter keywords for niche or product discovery using DataForSEO autocomplete, volume, and related-keyword APIs.
+description: "Expand and filter keywords for niche or product discovery using DataForSEO autocomplete, volume, and related-keyword APIs."
 ---
 
 # Keyword Research Skill

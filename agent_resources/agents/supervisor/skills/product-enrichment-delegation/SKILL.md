@@ -1,6 +1,6 @@
 ---
 name: product-enrichment-delegation
-description: Recognize a "my product card is incomplete — help me fill it" request and delegate enrichment to the Product Scout agent. Do not perform enrichment yourself; Scout has the right tool/skill profile.
+description: "Recognize a \"my product card is incomplete — help me fill it\" request and delegate enrichment to the Product Scout agent. Do not perform enrichment yourself; Scout has the right tool/skill profile."
 ---
 
 # Product Enrichment — Supervisor Delegation

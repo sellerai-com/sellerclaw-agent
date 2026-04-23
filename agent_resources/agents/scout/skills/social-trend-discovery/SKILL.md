@@ -1,6 +1,6 @@
 ---
 name: social-trend-discovery
-description: Discover product and niche momentum from TikTok, YouTube Shorts, and Reddit via SociaVault-backed sellerclaw-api.
+description: "Discover product and niche momentum from TikTok, YouTube Shorts, and Reddit via SociaVault-backed sellerclaw-api."
 ---
 
 # Social Trend Discovery Skill

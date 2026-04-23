@@ -1,6 +1,6 @@
 ---
 name: owner-notifications
-description: Send structured owner notifications about critical events, actions, and operational updates.
+description: "Send structured owner notifications about critical events, actions, and operational updates."
 ---
 
 # Owner Notifications Skill

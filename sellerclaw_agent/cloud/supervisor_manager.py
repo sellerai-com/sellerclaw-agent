@@ -57,6 +57,7 @@ def write_bundle_to_disk(
     *,
     openclaw_config: str,
     workspaces: dict[str, str],
+    shared_skills: dict[str, str] | None = None,
     proxy_url: str = "",
 ) -> None:
     root = bundle_volume_path
@@ -70,6 +71,15 @@ def write_bundle_to_disk(
         path = ws_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+    # Machine-wide managed skills — runtime hydration copies these into
+    # ``~/.openclaw/skills`` so every agent sees them without per-workspace duplication.
+    shared_root = root / "shared-skills"
+    if shared_root.exists():
+        shutil.rmtree(shared_root)
+    for skill_name, content in sorted((shared_skills or {}).items()):
+        skill_path = shared_root / skill_name / "SKILL.md"
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        skill_path.write_text(content, encoding="utf-8")
     write_runtime_env(root, proxy_url=proxy_url)
 
 
@@ -514,6 +524,7 @@ class SupervisorContainerManager:
                 self.bundle_volume_path,
                 openclaw_config=built.openclaw_config,
                 workspaces=built.workspaces,
+                shared_skills=built.shared_skills,
                 proxy_url=manifest.proxy_url,
             )
         except Exception as exc:  # noqa: BLE001
@@ -539,6 +550,7 @@ class SupervisorContainerManager:
                 self.bundle_volume_path,
                 openclaw_config=built.openclaw_config,
                 workspaces=built.workspaces,
+                shared_skills=built.shared_skills,
                 proxy_url=manifest.proxy_url,
             )
         except Exception as exc:  # noqa: BLE001

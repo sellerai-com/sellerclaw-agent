@@ -1,6 +1,6 @@
 ---
 name: supplier-matching
-description: Find and compare suppliers for shortlisted products using connected supplier APIs via sellerclaw-api.
+description: "Find and compare suppliers for shortlisted products using connected supplier APIs via sellerclaw-api."
 ---
 
 # Supplier Matching Skill

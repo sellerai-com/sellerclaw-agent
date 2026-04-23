@@ -28,6 +28,14 @@ def test_bundle_builder_produces_config_and_workspaces(
     assert '"gateway"' in result.openclaw_config
     assert "supervisor/AGENTS.md" in result.workspaces
     assert len(result.version) == 64
+    # Shared skills are surfaced as a separate output so the runtime can place
+    # them under ~/.openclaw/skills once instead of copying them per workspace.
+    assert "file-storage" in result.shared_skills
+    assert "task-reporting" in result.shared_skills
+    # Per-agent workspaces must not redundantly carry shared skill files.
+    assert not any(
+        key.endswith("/skills/file-storage/SKILL.md") for key in result.workspaces
+    )
 
 
 def test_bundle_builder_invalid_module_id_raises(

@@ -1,6 +1,6 @@
 ---
 name: competitor-research
-description: Analyze competitors via DataForSEO marketplace/SERP APIs when available, with browser-based deep dives as fallback.
+description: "Analyze competitors via DataForSEO marketplace/SERP APIs when available, with browser-based deep dives as fallback."
 ---
 
 # Competitor Research Skill

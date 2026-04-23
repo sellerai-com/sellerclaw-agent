@@ -1,6 +1,6 @@
 ---
 name: product-scout-delegation
-description: Delegate product research, competitive intelligence, and supplier discovery tasks to the Product Scout subagent. For niche evaluation/scoring, use niche-scoring-delegation (+ niche-scoring-report).
+description: "Delegate product research, competitive intelligence, and supplier discovery tasks to the Product Scout subagent. For niche evaluation/scoring, use niche-scoring-delegation (+ niche-scoring-report)."
 ---
 
 # Product Scout delegation

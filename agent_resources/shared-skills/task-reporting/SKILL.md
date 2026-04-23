@@ -1,6 +1,6 @@
 ---
 name: task-reporting
-description: Report progress and status changes on assigned agent tasks.
+description: "Report progress and status changes on assigned agent tasks."
 ---
 
 # Task Reporting Skill

@@ -1,6 +1,6 @@
 ---
 name: cj-dropshipping
-description: Use CJ Dropshipping through sellerclaw-api for product sourcing, shipping quotes, purchasing, and tracking.
+description: "Use CJ Dropshipping through sellerclaw-api for product sourcing, shipping quotes, purchasing, and tracking."
 ---
 
 # CJ Dropshipping Skill

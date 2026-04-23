@@ -1,6 +1,6 @@
 ---
 name: product-data-api
-description: Read product catalog data for ad campaign planning and optimization.
+description: "Read product catalog data for ad campaign planning and optimization."
 ---
 
 # Product Data API Skill

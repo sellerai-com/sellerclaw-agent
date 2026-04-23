@@ -1,6 +1,6 @@
 ---
 name: goal-tracking
-description: Manage projects, team tasks, and agent tasks through the Goals API.
+description: "Manage projects, team tasks, and agent tasks through the Goals API."
 ---
 
 # Goal Tracking Skill

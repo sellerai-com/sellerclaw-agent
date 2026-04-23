@@ -1,6 +1,6 @@
 ---
 name: file-storage
-description: Upload text and binary files to SellerClaw File Storage API and share download links with the user or other agents.
+description: "Upload text and binary files to SellerClaw File Storage API and share download links with the user or other agents."
 ---
 
 # File Storage Skill

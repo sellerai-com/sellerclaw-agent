@@ -1,6 +1,6 @@
 ---
 name: trend-analysis
-description: Query and interpret Google Trends data through sellerclaw-api for demand validation, niche discovery, and seasonal pattern detection.
+description: "Query and interpret Google Trends data through sellerclaw-api for demand validation, niche discovery, and seasonal pattern detection."
 ---
 
 # Trend Analysis Skill

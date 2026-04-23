@@ -1,6 +1,6 @@
 ---
 name: ebay-delegation
-description: Delegate eBay store operations to the eBay Store Manager subagent.
+description: "Delegate eBay store operations to the eBay Store Manager subagent."
 ---
 
 # eBay Store Manager delegation

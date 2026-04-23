@@ -1,6 +1,6 @@
 ---
 name: shopify-api
-description: Work with Shopify through sellerclaw-api endpoints for products, listings, orders, fulfillment, and inventory.
+description: "Work with Shopify through sellerclaw-api endpoints for products, listings, orders, fulfillment, and inventory."
 ---
 
 # Shopify API Skill

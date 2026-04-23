@@ -1,6 +1,6 @@
 ---
 name: shopify-delegation
-description: Delegate Shopify store operations to the Shopify Store Manager subagent.
+description: "Delegate Shopify store operations to the Shopify Store Manager subagent."
 ---
 
 # Shopify Store Manager delegation

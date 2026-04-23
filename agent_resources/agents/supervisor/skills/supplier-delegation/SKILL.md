@@ -1,3 +1,7 @@
+---
+name: supplier-delegation
+description: "Delegate supplier sourcing, purchasing, fulfillment, and tracking to the Dropshipping Supplier subagent (e.g. CJ Dropshipping)."
+---
 # Supplier delegation
 
 ## Purpose

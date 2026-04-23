@@ -1,6 +1,6 @@
 ---
 name: product-demand-analysis
-description: Deep-dive a product or niche with marketplace listings, reviews, PAA questions, and sentiment via DataForSEO.
+description: "Deep-dive a product or niche with marketplace listings, reviews, PAA questions, and sentiment via DataForSEO."
 ---
 
 # Product Demand Analysis Skill

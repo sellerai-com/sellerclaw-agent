@@ -1,6 +1,6 @@
 ---
 name: order-orchestration
-description: Orchestrate order lifecycle across sync, purchase, tracking, fulfillment, and exception handling.
+description: "Orchestrate order lifecycle across sync, purchase, tracking, fulfillment, and exception handling."
 ---
 
 # Order Orchestration Skill

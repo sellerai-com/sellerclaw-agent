@@ -1,6 +1,6 @@
 ---
 name: catalog-management
-description: Manage store catalog workflows, including product sourcing, owner approval, publishing, and sync strategy.
+description: "Manage store catalog workflows, including product sourcing, owner approval, publishing, and sync strategy."
 ---
 
 # Catalog Management Skill

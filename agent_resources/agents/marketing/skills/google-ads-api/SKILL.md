@@ -1,6 +1,6 @@
 ---
 name: google-ads-api
-description: Work with Google Ads through sellerclaw-api endpoints for campaigns, ad groups, metrics, Merchant products, asset groups, and keyword ideas.
+description: "Work with Google Ads through sellerclaw-api endpoints for campaigns, ad groups, metrics, Merchant products, asset groups, and keyword ideas."
 ---
 
 # Google Ads API Skill

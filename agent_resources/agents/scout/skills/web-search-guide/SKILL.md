@@ -1,6 +1,6 @@
 ---
 name: web-search-guide
-description: Reference for web_search tool parameters, browser snapshot usage, and fallback strategies to avoid common errors.
+description: "Reference for web_search tool parameters, browser snapshot usage, and fallback strategies to avoid common errors."
 ---
 
 # Web Search & Browser Guide

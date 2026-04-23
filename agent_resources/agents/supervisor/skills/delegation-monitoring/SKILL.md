@@ -1,6 +1,6 @@
 ---
 name: delegation-monitoring
-description: Monitor delegated subagent work using OpenClaw session tools — avoid blind retries and duplicate spawns.
+description: "Monitor delegated subagent work using OpenClaw session tools — avoid blind retries and duplicate spawns."
 ---
 
 # Delegation monitoring

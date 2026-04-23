@@ -1,6 +1,6 @@
 ---
 name: facebook-ads-api
-description: Work with Facebook / Meta Ads through sellerclaw-api endpoints for campaigns, ad sets, ads, audiences, and performance metrics.
+description: "Work with Facebook / Meta Ads through sellerclaw-api endpoints for campaigns, ad sets, ads, audiences, and performance metrics."
 ---
 
 # Facebook Ads API Skill

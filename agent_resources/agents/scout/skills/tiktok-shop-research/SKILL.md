@@ -1,6 +1,6 @@
 ---
 name: tiktok-shop-research
-description: Research TikTok Shop listings, product detail, and reviews via SociaVault-backed sellerclaw-api.
+description: "Research TikTok Shop listings, product detail, and reviews via SociaVault-backed sellerclaw-api."
 ---
 
 # TikTok Shop Research Skill

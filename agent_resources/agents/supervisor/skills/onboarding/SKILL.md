@@ -1,6 +1,6 @@
 ---
 name: onboarding
-description: Guide new users through first-time setup, explain capabilities at each integration level, and suggest quick wins.
+description: "Guide new users through first-time setup, explain capabilities at each integration level, and suggest quick wins."
 ---
 
 # Onboarding Skill

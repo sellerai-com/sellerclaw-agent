@@ -1,6 +1,6 @@
 ---
 name: store-api
-description: Platform-independent SellerClaw API endpoints for orders, products, and sales channels.
+description: "Platform-independent SellerClaw API endpoints for orders, products, and sales channels."
 ---
 
 # Store API Skill

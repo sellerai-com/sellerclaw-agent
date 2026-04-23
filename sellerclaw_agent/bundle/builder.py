@@ -117,6 +117,7 @@ class BundleBuilder:
             global_browser_enabled=manifest.global_browser_enabled,
             per_module_browser=manifest.resolved_per_module_browser(),
         )
+        shared_skills = assembler.assemble_shared_skills(template_variables)
         workspaces = build_workspaces_from_assembled(assembled)
         if data_dir is not None:
             agent_api_key = resolve_agent_bearer_token_from_data_dir(data_dir)
@@ -154,11 +155,16 @@ class BundleBuilder:
             web_search_auth_token=web_search_auth_token,
             primary_channel=manifest.primary_channel,
         )
-        version = build_gateway_version(openclaw_config=openclaw_config, workspaces=workspaces)
+        version = build_gateway_version(
+            openclaw_config=openclaw_config,
+            workspaces=workspaces,
+            shared_skills=shared_skills,
+        )
         ts = created_at or datetime.now(tz=UTC)
         return BundleResult(
             openclaw_config=openclaw_config,
             workspaces=workspaces,
+            shared_skills=shared_skills,
             version=version,
             created_at=ts,
         )

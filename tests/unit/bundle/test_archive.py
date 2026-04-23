@@ -107,3 +107,32 @@ def test_build_gateway_archive_empty_workspaces() -> None:
         with tarfile.open(fileobj=gz, mode="r") as tar:
             names = tar.getnames()
     assert names == ["openclaw/openclaw.json"]
+
+
+def test_build_gateway_archive_packs_shared_skills_at_top_level() -> None:
+    """Shared skills live under ``shared-skills/`` in the tar (parallel to ``workspaces/``)."""
+    payload = GatewayArchivePayload(
+        openclaw_config="{}",
+        workspaces={"supervisor/AGENTS.md": "# A"},
+        created_at=datetime.now(tz=UTC),
+        shared_skills={"file-storage": "# File Storage", "task-reporting": "# Task Reporting"},
+    )
+    raw = build_gateway_archive(payload)
+    with gzip.GzipFile(fileobj=io.BytesIO(raw), mode="rb") as gz:
+        with tarfile.open(fileobj=gz, mode="r") as tar:
+            names = tar.getnames()
+            fs = tar.extractfile("shared-skills/file-storage/SKILL.md")
+            assert fs is not None
+            assert fs.read().decode("utf-8") == "# File Storage"
+    assert "shared-skills/file-storage/SKILL.md" in names
+    assert "shared-skills/task-reporting/SKILL.md" in names
+
+
+def test_build_gateway_version_includes_shared_skills() -> None:
+    v_without = build_gateway_version(openclaw_config="{}", workspaces={"a.md": "x"})
+    v_with = build_gateway_version(
+        openclaw_config="{}",
+        workspaces={"a.md": "x"},
+        shared_skills={"foo": "bar"},
+    )
+    assert v_without != v_with

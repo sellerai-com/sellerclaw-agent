@@ -314,23 +314,39 @@ class AgentConfigAssembler:
             for name, raw in self._load_raw_shared_skills().items()
         }
 
+    def assemble_shared_skills(self, variables: dict[str, str]) -> dict[str, str]:
+        """Render shared skills (``agent_resources/shared-skills/``).
+
+        Returned separately from per-agent skills so the caller can drop them
+        into OpenClaw's machine-wide managed-skills directory
+        (``~/.openclaw/skills``), visible to every agent without per-workspace
+        duplication.
+        """
+        return self._load_all_shared_skills(variables)
+
     def _merge_supervisor_skills(
         self,
         *,
         supervisor_skill_names: list[str],
         variables: dict[str, str],
     ) -> dict[str, str]:
-        skills = self._load_all_shared_skills(variables)
+        shared_names = set(self._iter_shared_skill_names())
+        skills: dict[str, str] = {}
         for name in supervisor_skill_names:
             agent_path = (
                 self.resources_root / "agents" / "supervisor" / "skills" / name / "SKILL.md"
             )
             if agent_path.is_file():
+                # Agent-specific override; workspace skills beat managed skills
+                # in OpenClaw precedence, so this still wins over the shared copy.
                 skills[name] = self._render(
                     self._load_skill_markdown(f"agents/supervisor/skills/{name}/SKILL"),
                     variables,
                 )
-            elif name not in skills:
+            elif name in shared_names:
+                # Loaded once globally from ~/.openclaw/skills; don't duplicate per-agent.
+                continue
+            else:
                 raise FileNotFoundError(
                     f"Supervisor skill '{name}' not found: neither "
                     f"agents/supervisor/skills/{name}/SKILL.md nor "
@@ -345,7 +361,8 @@ class AgentConfigAssembler:
         module_skill_names: list[str],
         variables: dict[str, str],
     ) -> dict[str, str]:
-        skills = self._load_all_shared_skills(variables)
+        shared_names = set(self._iter_shared_skill_names())
+        skills: dict[str, str] = {}
         for name in module_skill_names:
             agent_path = (
                 self.resources_root / "agents" / agent_id / "skills" / name / "SKILL.md"
@@ -355,6 +372,8 @@ class AgentConfigAssembler:
                 resolved = f"agents/{agent_id}/skills/{name}/SKILL"
             elif module_path.is_file():
                 resolved = f"module-skills/{name}/SKILL"
+            elif name in shared_names:
+                continue
             else:
                 raise FileNotFoundError(
                     f"Module skill '{name}' for agent '{agent_id}' not found: neither "

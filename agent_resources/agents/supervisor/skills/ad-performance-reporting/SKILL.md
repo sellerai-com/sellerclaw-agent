@@ -1,6 +1,6 @@
 ---
 name: ad-performance-reporting
-description: Build ad campaign performance reports, identify winners and losers, and recommend optimization actions.
+description: "Build ad campaign performance reports, identify winners and losers, and recommend optimization actions."
 ---
 
 # Ad Performance Reporting Skill

@@ -1,6 +1,6 @@
 ---
 name: marketing-delegation
-description: Delegate advertising and paid acquisition tasks to the Marketing Manager subagent.
+description: "Delegate advertising and paid acquisition tasks to the Marketing Manager subagent."
 ---
 
 # Marketing Manager delegation

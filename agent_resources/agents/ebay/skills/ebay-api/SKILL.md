@@ -1,6 +1,6 @@
 ---
 name: ebay-api
-description: Work with SellerClaw eBay Agent API endpoints for accounts, listings, orders, fulfillments, and locations.
+description: "Work with SellerClaw eBay Agent API endpoints for accounts, listings, orders, fulfillments, and locations."
 ---
 
 # eBay API Skill

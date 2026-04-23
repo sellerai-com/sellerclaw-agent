@@ -552,6 +552,7 @@ def download_bundle_archive(
         GatewayArchivePayload(
             openclaw_config=result.openclaw_config,
             workspaces=result.workspaces,
+            shared_skills=result.shared_skills,
             created_at=result.created_at,
         )
     )

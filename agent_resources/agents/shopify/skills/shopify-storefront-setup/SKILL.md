@@ -1,6 +1,6 @@
 ---
 name: shopify-storefront-setup
-description: Set up and customize Shopify storefront — pages, collections, navigation, shop settings, and themes via sellerclaw-api.
+description: "Set up and customize Shopify storefront — pages, collections, navigation, shop settings, and themes via sellerclaw-api."
 ---
 
 # Shopify storefront setup

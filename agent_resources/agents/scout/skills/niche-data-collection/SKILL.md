@@ -1,6 +1,6 @@
 ---
 name: niche-data-collection
-description: Collect structured research data for niche evaluation when delegated by supervisor. Return raw data as JSON — supervisor owns scoring.
+description: "Collect structured research data for niche evaluation when delegated by supervisor. Return raw data as JSON — supervisor owns scoring."
 ---
 
 # Niche Data Collection Skill

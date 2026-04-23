@@ -1,6 +1,6 @@
 ---
 name: niche-scoring-delegation
-description: Decompose niche analysis into scout Agent Tasks, delegate data collection, then yield. Phase 2 (scoring + report) is handled by niche-scoring-report.
+description: "Decompose niche analysis into scout Agent Tasks, delegate data collection, then yield. Phase 2 (scoring + report) is handled by niche-scoring-report."
 ---
 
 # Niche Scoring — Delegation (Supervisor)

@@ -1,6 +1,6 @@
 ---
 name: listing-optimization
-description: Improve titles, bullets, and tags using search behavior data (autocomplete, PAA, volumes) from DataForSEO.
+description: "Improve titles, bullets, and tags using search behavior data (autocomplete, PAA, volumes) from DataForSEO."
 ---
 
 # Listing Optimization Skill
