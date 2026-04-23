@@ -133,6 +133,8 @@ def make_assembled_agent() -> Callable[..., AssembledAgentConfig]:
         memory_md: str = "# Agent memory: supervisor\n",
         soul_md: str | None = "# SOUL.md\n",
         user_md: str | None = "# USER.md\n",
+        tools_md: str | None = "# TOOLS.md\n",
+        identity_md: str | None = "# IDENTITY.md\n",
         skills: dict[str, str] | None = None,
     ) -> AssembledAgentConfig:
         return AssembledAgentConfig(
@@ -147,6 +149,8 @@ def make_assembled_agent() -> Callable[..., AssembledAgentConfig]:
             memory_md=memory_md,
             soul_md=soul_md,
             user_md=user_md,
+            tools_md=tools_md,
+            identity_md=identity_md,
             skills=skills if skills is not None else {"file-storage": "# File Storage"},
         )
 

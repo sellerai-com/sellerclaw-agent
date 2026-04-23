@@ -65,7 +65,7 @@ def test_build_gateway_version_differs_when_workspace_changes() -> None:
     assert v1 != v2
 
 
-def test_build_workspaces_from_assembled_maps_agents_memory_soul_user_and_skills(
+def test_build_workspaces_from_assembled_maps_all_templates_and_skills(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
     agent = make_assembled_agent(
@@ -77,22 +77,28 @@ def test_build_workspaces_from_assembled_maps_agents_memory_soul_user_and_skills
     assert ws["lead/MEMORY.md"] == agent.memory_md
     assert ws["lead/SOUL.md"] == agent.soul_md
     assert ws["lead/USER.md"] == agent.user_md
+    assert ws["lead/TOOLS.md"] == agent.tools_md
+    assert ws["lead/IDENTITY.md"] == agent.identity_md
     assert ws["lead/skills/alpha/SKILL.md"] == "# Alpha skill"
     assert ws["lead/skills/beta/SKILL.md"] == "# Beta skill"
 
 
-def test_build_workspaces_from_assembled_skips_missing_soul_user_and_empty_skills(
+def test_build_workspaces_from_assembled_skips_missing_optional_templates_and_empty_skills(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
     agent = make_assembled_agent(
         soul_md=None,
         user_md=None,
+        tools_md=None,
+        identity_md=None,
         skills={},
     )
     ws = build_workspaces_from_assembled([agent])
     keys = set(ws.keys())
     assert f"{agent.agent_id}/SOUL.md" not in keys
     assert f"{agent.agent_id}/USER.md" not in keys
+    assert f"{agent.agent_id}/TOOLS.md" not in keys
+    assert f"{agent.agent_id}/IDENTITY.md" not in keys
     assert not any("/skills/" in k for k in keys)
 
 

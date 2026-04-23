@@ -199,9 +199,20 @@ def test_resolve_template_variables_injects_api_base_url() -> None:
     resolved = _resolve_template_variables(
         {"user_name": "Ada", "api_base_url": "should-be-overwritten"},
         agent_api_base_url="https://api.example.com/agent",
+        global_browser_enabled=False,
+        web_search_enabled=True,
+        primary_channel="telegram",
+        telegram_enabled=True,
+        proxy_url="http://proxy:8080",
     )
     assert resolved["api_base_url"] == "https://api.example.com/agent"
     assert resolved["user_name"] == "Ada"
+    assert resolved["global_browser_enabled"] == "disabled"
+    assert resolved["web_search_enabled"] == "enabled"
+    assert resolved["primary_channel"] == "telegram"
+    assert resolved["telegram_enabled"] == "enabled"
+    assert resolved["proxy_configured"] == "yes"
+    assert resolved["tools_browser_media_root"] == "/home/node/.openclaw/media"
 
 
 def test_bundle_builder_web_search_enabled_requires_sellerclaw_api_url(

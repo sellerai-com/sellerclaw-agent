@@ -50,15 +50,30 @@ def _resolve_template_variables(
     manifest_variables: dict[str, str],
     *,
     agent_api_base_url: str,
+    global_browser_enabled: bool = True,
+    web_search_enabled: bool = False,
+    primary_channel: str = "sellerclaw-ui",
+    telegram_enabled: bool = False,
+    proxy_url: str = "",
 ) -> dict[str, str]:
-    """Inject the derived ``api_base_url`` into prompt template variables.
+    """Merge manifest ``template_variables`` with derived deployment fields.
 
-    Prompt templates (``SKILL.md`` etc.) reference ``{{ api_base_url }}``; the
-    manifest never ships it directly — the agent always derives it from
-    ``SELLERCLAW_API_URL`` plus the manifest-supplied ``agent_api_base_path``.
+    - ``api_base_url`` is always set from ``SELLERCLAW_API_URL`` + ``agent_api_base_path``
+      (manifest must not ship it; any manifest copy is overwritten).
+    - Boolean toggles are exposed as ``enabled`` / ``disabled`` for prompts (e.g. ``TOOLS.md``).
+    - ``tools_browser_media_root`` / ``tools_temp_exports_root`` default to common OpenClaw
+      paths but can be overridden via manifest ``template_variables``.
     """
     resolved = dict(manifest_variables)
     resolved[_API_BASE_URL_KEY] = agent_api_base_url
+    resolved["global_browser_enabled"] = "enabled" if global_browser_enabled else "disabled"
+    resolved["web_search_enabled"] = "enabled" if web_search_enabled else "disabled"
+    resolved["primary_channel"] = (primary_channel or "sellerclaw-ui").strip() or "sellerclaw-ui"
+    resolved["telegram_enabled"] = "enabled" if telegram_enabled else "disabled"
+    resolved["proxy_configured"] = "yes" if proxy_url.strip() else "no"
+    resolved.setdefault("tools_browser_media_root", "/home/node/.openclaw/media")
+    resolved.setdefault("tools_temp_exports_root", "/tmp")
+    resolved.setdefault("tools_quirks", "")
     return resolved
 
 
@@ -106,6 +121,11 @@ class BundleBuilder:
         template_variables = _resolve_template_variables(
             dict(manifest.template_variables),
             agent_api_base_url=agent_api_base_url,
+            global_browser_enabled=manifest.global_browser_enabled,
+            web_search_enabled=manifest.web_search.enabled,
+            primary_channel=manifest.primary_channel,
+            telegram_enabled=manifest.telegram.enabled,
+            proxy_url=manifest.proxy_url,
         )
         allowed_origins = _resolve_allowed_origins()
 

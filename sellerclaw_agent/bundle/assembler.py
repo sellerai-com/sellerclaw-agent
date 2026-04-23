@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -95,36 +96,59 @@ class AgentConfigAssembler:
             kind=IntegrationKind.SUPPLIER_ANY,
         )
 
-        sections: list[str] = [
-            self._render(self._load_section("agents/supervisor/sections/core"), variables),
-            self._render(
-                self._load_section("agents/supervisor/sections/goal_tracking"),
-                variables,
-            ),
-        ]
-
-        if has_any_store:
-            sections.append(
+        def _legacy_supervisor_sections() -> str:
+            sections: list[str] = [
+                self._render(self._load_section("agents/supervisor/sections/core"), variables),
                 self._render(
-                    self._load_section("agents/supervisor/sections/store_management"), variables
-                )
-            )
-
-        if has_supplier:
-            sections.append(
-                self._render(
-                    self._load_section(
-                        "agents/supervisor/sections/dropshipping_fulfillment",
-                    ),
+                    self._load_section("agents/supervisor/sections/goal_tracking"),
                     variables,
+                ),
+            ]
+            if has_any_store:
+                sections.append(
+                    self._render(
+                        self._load_section("agents/supervisor/sections/store_management"),
+                        variables,
+                    )
                 )
-            )
+            if has_supplier:
+                sections.append(
+                    self._render(
+                        self._load_section(
+                            "agents/supervisor/sections/dropshipping_fulfillment",
+                        ),
+                        variables,
+                    )
+                )
+            return "\n\n".join(section for section in sections if section.strip())
 
-        agents_md = "\n\n".join(section for section in sections if section.strip())
-
-        soul_md = self._render(self._load_section("souls/supervisor"), variables)
-
-        user_md = self._render(self._load_section("agents/supervisor/user"), variables)
+        agents_md = self._resolve_agents_md(
+            agent_id="supervisor",
+            variables=variables,
+            fallback=_legacy_supervisor_sections,
+        )
+        soul_md = self._resolve_optional_template(
+            agent_id="supervisor",
+            filename="soul.md",
+            variables=variables,
+        )
+        if soul_md is None:
+            soul_md = self._render(self._load_section("souls/supervisor"), variables)
+        user_md = self._resolve_optional_template(
+            agent_id="supervisor",
+            filename="user.md",
+            variables=variables,
+        )
+        tools_md = self._resolve_optional_template(
+            agent_id="supervisor",
+            filename="tools.md",
+            variables=variables,
+        )
+        identity_md = self._resolve_optional_template(
+            agent_id="supervisor",
+            filename="identity.md",
+            variables=variables,
+        )
 
         base_supervisor_skills = ["file-storage", "owner-notifications", "goal-tracking"]
         supervisor_skill_names = self._deduplicate(
@@ -171,6 +195,8 @@ class AgentConfigAssembler:
             memory_md="# Agent memory: supervisor\n",
             soul_md=soul_md,
             user_md=user_md,
+            tools_md=tools_md,
+            identity_md=identity_md,
             skills=skills,
         )
 
@@ -198,16 +224,23 @@ class AgentConfigAssembler:
             module_variables,
         )
 
-        sections = [
-            self._render(
-                self._load_section(
-                    f"agents/{module.agent_id}/sections/{section_path}",
-                ),
-                module_variables,
-            )
-            for section_path in module.agent_sections
-        ]
-        agents_md = "\n\n".join(section for section in sections if section.strip())
+        def _legacy_module_sections() -> str:
+            sections = [
+                self._render(
+                    self._load_section(
+                        f"agents/{module.agent_id}/sections/{section_path}",
+                    ),
+                    module_variables,
+                )
+                for section_path in module.agent_sections
+            ]
+            return "\n\n".join(section for section in sections if section.strip())
+
+        agents_md = self._resolve_agents_md(
+            agent_id=module.agent_id,
+            variables=module_variables,
+            fallback=_legacy_module_sections,
+        )
 
         all_skill_names = list(module.skills)
         for conditional_skill in module.conditional_skills:
@@ -219,7 +252,28 @@ class AgentConfigAssembler:
             module_skill_names=all_skill_names,
             variables=module_variables,
         )
-        soul_md = self._render(self._load_section("souls/subagent"), module_variables)
+        soul_md = self._resolve_optional_template(
+            agent_id=module.agent_id,
+            filename="soul.md",
+            variables=module_variables,
+        )
+        if soul_md is None:
+            soul_md = self._render(self._load_section("souls/subagent"), module_variables)
+        user_md = self._resolve_optional_template(
+            agent_id=module.agent_id,
+            filename="user.md",
+            variables=module_variables,
+        )
+        tools_md = self._resolve_optional_template(
+            agent_id=module.agent_id,
+            filename="tools.md",
+            variables=module_variables,
+        )
+        identity_md = self._resolve_optional_template(
+            agent_id=module.agent_id,
+            filename="identity.md",
+            variables=module_variables,
+        )
 
         mod_tools = list(module.tools_allow)
         if not module_browser_enabled:
@@ -236,7 +290,9 @@ class AgentConfigAssembler:
             agents_md=agents_md,
             memory_md=f"# Agent memory: {module.agent_id}\n",
             soul_md=soul_md,
-            user_md=None,
+            user_md=user_md,
+            tools_md=tools_md,
+            identity_md=identity_md,
             skills=skills,
         )
 
@@ -391,6 +447,30 @@ class AgentConfigAssembler:
                 f"Skill file not found: '{relative_path_without_md}.md' at '{path}'."
             )
         return path.read_text(encoding="utf-8")
+
+    def _resolve_agents_md(
+        self,
+        *,
+        agent_id: str,
+        variables: dict[str, str],
+        fallback: Callable[[], str],
+    ) -> str:
+        agents_path = self.resources_root / "agents" / agent_id / "agents.md"
+        if agents_path.is_file():
+            return self._render(agents_path.read_text(encoding="utf-8"), variables)
+        return fallback()
+
+    def _resolve_optional_template(
+        self,
+        *,
+        agent_id: str,
+        filename: str,
+        variables: dict[str, str],
+    ) -> str | None:
+        path = self.resources_root / "agents" / agent_id / filename
+        if not path.is_file():
+            return None
+        return self._render(path.read_text(encoding="utf-8"), variables)
 
     def _load_section(self, relative_path: str) -> str:
         """Load a markdown section by path relative to resources root."""

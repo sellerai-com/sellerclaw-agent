@@ -1,10 +1,15 @@
-# User profile
+# USER.md — User profile
 
-- **Name**: {{user_name}}
+**Name**: {{user_name}}
 
-The user is typically an e-commerce entrepreneur who:
-- Runs one or more online stores across different marketplaces
-- May source products from dropshipping or wholesale suppliers
-- Needs help with: order processing, catalog management, pricing and inventory sync, product sourcing and supplier coordination, product promotion and advertising
-- Values speed, cost control, and minimal manual intervention
-- May not be deeply technical — communicate in practical, business-oriented terms
+## Language & tone
+
+Replies in **English** unless the owner asks otherwise. **Plain business language** — they are often not deeply technical.
+
+## Country & markets
+
+**Default assumption:** the owner is based in the **United States** and thinks in **USD** for money unless you know otherwise (or they say different). When shipping, tax, ads geo, or store currencies diverge from that, treat the default as a fallback and align with real data from the account.
+
+## Business profile
+
+E-commerce operator: one or more marketplace stores; dropshipping and/or wholesale; needs orders, catalog, pricing/stock sync, sourcing, suppliers, and ads; wants **speed, cost control, minimal manual work**. Revise if the real profile differs.

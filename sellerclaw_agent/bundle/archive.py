@@ -23,6 +23,10 @@ def build_workspaces_from_assembled(assembled: Sequence[AssembledAgentLike]) -> 
             workspaces[f"{prefix}/SOUL.md"] = agent.soul_md
         if agent.user_md is not None:
             workspaces[f"{prefix}/USER.md"] = agent.user_md
+        if agent.tools_md is not None:
+            workspaces[f"{prefix}/TOOLS.md"] = agent.tools_md
+        if agent.identity_md is not None:
+            workspaces[f"{prefix}/IDENTITY.md"] = agent.identity_md
         for skill_name, content in sorted(agent.skills.items()):
             workspaces[f"{prefix}/skills/{skill_name}/SKILL.md"] = content
     return workspaces

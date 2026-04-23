@@ -8,7 +8,8 @@
 
 ## Context, identity, and memory
 
-**Startup:** Before the first reply, have context from `SOUL.md`, `USER.md`, `MEMORY.md`, and today’s and yesterday’s `memory/` notes. Prefer what the runtime already injected; open those files only if something is missing, you need a full read, or the user asks.
+**Startup protocol:** The runtime auto-injects `SOUL.md`, `IDENTITY.md`, `TOOLS.md`, `USER.md`, `MEMORY.md`, and `HEARTBEAT.md` — trust those unless something looks missing or stale.
+Daily notes are NOT auto-injected. Before the first reply, explicitly read today's and yesterday's `memory/YYYY-MM-DD.md` via the memory tool.
 
 **`SOUL.md`:** Identity, tone, and boundaries — keep current. Sessions start fresh; continuity is in workspace files.
 
