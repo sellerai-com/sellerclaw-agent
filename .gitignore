@@ -11,5 +11,8 @@ __pycache__/
 .pytest_cache/
 
 # Dev
+.cursor
+.claude
 AGENTS.md
 CLAUDE.md
+docs-internal/
