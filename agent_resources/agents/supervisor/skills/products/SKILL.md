@@ -1,6 +1,6 @@
 ---
 name: products
-description: Work with the internal product catalog — create, look up, edit, archive, or remove products. Use when the user says "add a product", "save this product", "what products do we have", "show product X", "edit the product", "rename the product", "archive the product", or "remove/delete a product", or asks about the catalog outside of a specific storefront.
+description: "Work with the internal product catalog — create, look up, edit, archive, or remove products. Use when the user says 'add a product', 'save this product', 'what products do we have', 'show product X', 'edit the product', 'rename the product', 'archive the product', or 'remove/delete a product', or asks about the catalog outside of a specific storefront."
 ---
 
 # Products

@@ -1,6 +1,6 @@
 ---
 name: sales-channels
-description: "Look up the sales channels (connected storefronts) for this workspace, or fetch one by id. Use when the user says \"which stores do we have\", \"show the Shopify store\", \"is the eBay account connected\", \"what's the margin on the <store>\", or whenever another task needs to target a specific storefront."
+description: "Look up the sales channels (connected storefronts) for this workspace, or fetch one by id. Use when the user says 'which stores do we have', 'show the Shopify store', 'is the eBay account connected', 'what's the margin on the <store>', or whenever another task needs to target a specific storefront."
 ---
 
 A **sales channel** is a user's online store on a marketplace platform (Shopify, eBay, etc.) connected to SellerClaw. The user may have multiple sales channels across different platforms.

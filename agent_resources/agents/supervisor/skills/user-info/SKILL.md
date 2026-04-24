@@ -1,6 +1,6 @@
 ---
 name: user-info
-description: "Look up who the owner is, their preferences, and which external accounts are connected. Use when the user says \"who am I\", \"what's my workspace\", \"show my settings\", \"which integrations are connected\", \"do I have a Shopify / supplier / ads account linked\", or whenever another task needs the owner's profile or connection state."
+description: "Look up who the owner is, their preferences, and which external accounts are connected. Use when the user says 'who am I', 'what's my workspace', 'show my settings', 'which integrations are connected', 'do I have a Shopify / supplier / ads account linked', or whenever another task needs the owner's profile or connection state."
 ---
 
 ## What this covers
@@ -27,7 +27,7 @@ sellerclaw agent-context get-settings
 sellerclaw agent-context list-integrations
 ```
 
-Parse machine output from `data` in the JSON on stdout. Auth: `agents.md`.
+Parse machine output from `data` in the JSON on stdout.
 
 ## Flow
 

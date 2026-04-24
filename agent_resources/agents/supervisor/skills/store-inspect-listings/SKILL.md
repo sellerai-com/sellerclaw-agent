@@ -1,28 +1,21 @@
 ---
+name: store-inspect-listings
+description: "Delegate to the store management subagent (shopify, ebay, ...) to see how products currently look, are priced, and are stocked on the target storefront. Use when the user says 'what is on store', 'check the shop', 'how does the listing look', 'what price/stock is live', or asks to verify a publish/update landed."
+---
 
-## name: shopify-inspect-listings
-description: Delegate to the `shopify` subagent to see how products currently look, are priced, and are stocked on the Shopify storefront. Use when the user says "what's on Shopify", "check the shop", "how does the listing look", "what price/stock is live", or asks to verify a publish/update landed.
-
-# Inspect Shopify listings
-
-Delegate a read-only lookup. Returns listing state as it is in Shopify — which can diverge from the DB product row.
-
-## Preconditions
-
-1. Confirm the Shopify store:
-  ```bash
-   sellerclaw agent-sales-channels get <store_id>
-  ```
-   Require `platform == "shopify"` and active `status`.
-2. If the owner referenced specific products, sanity-check them:
-  ```bash
-   sellerclaw agent-products get <product_id>
-  ```
-   Missing id → the owner may have meant something else; ask before assuming.
+# Inspect storefront listings
 
 ## Delegation
 
-> **Read Shopify listings.**
+Pick the subagent by the target channel's `platform` (already known from the channel lookup):
+
+- `platform == "shopify"` → `shopify` subagent
+- `platform == "ebay"` → `ebay` subagent
+- additional store platforms (`amazon`, ...) → the corresponding subagent when it exists; if none exists for the platform, STOP and tell the owner the platform is not supported
+
+Hand this task off to that subagent.
+
+> **Read storefront listings.**
 >
 > - `store_id`: `<store_id>`
 > - Target: either `product_ids`: `<id_1, ...>` OR `query`: `<free-text filter — status, collection, stock condition, etc.>`
@@ -30,7 +23,7 @@ Delegate a read-only lookup. Returns listing state as it is in Shopify — which
 
 ## Output to the owner
 
-Plain language. Use product names and URLs; include ids only if the owner asked for them.
+Plain language. Product names and storefront URLs (or platform-native identifier if the platform has no per-product URL). Include ids only if the owner asked for them.
 
 ```
 Here's what's currently live on <store name>:
