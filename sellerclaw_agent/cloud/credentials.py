@@ -53,6 +53,10 @@ class CredentialsStorage:
         tmp_path = path.with_suffix(".json.tmp")
         tmp_path.write_text(pretty, encoding="utf-8")
         os.replace(tmp_path, path)
+        # Lazy import to avoid import cycle (cli_config is a consumer of this layer).
+        from sellerclaw_agent.cloud.cli_config import write_cli_config
+
+        write_cli_config(token=agent_token)
         return path
 
     def load(self) -> StoredAgentCredentials | None:
@@ -78,3 +82,6 @@ class CredentialsStorage:
         path = self.credentials_path
         if path.is_file():
             path.unlink()
+        from sellerclaw_agent.cloud.cli_config import remove_cli_config
+
+        remove_cli_config()

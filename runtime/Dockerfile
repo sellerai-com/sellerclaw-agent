@@ -66,6 +66,17 @@ RUN wget -qO- "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2
     | tar -xz -C /usr/local/bin gost \
     && chmod +x /usr/local/bin/gost
 
+# Edge-side Python CLIs (e.g. sellerclaw-cli) installed system-wide so OpenClaw
+# agents can invoke them from exec-tool with zero configuration. Version pins
+# live in runtime/edge-requirements.txt — keep this layer thin.
+#
+# Auth for sellerclaw-cli: SELLERCLAW_API_URL comes from docker-compose/fly env;
+# SELLERCLAW_TOKEN is hydrated by openclaw_start from the device-flow token file.
+COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
+COPY sellerclaw-agent/runtime/edge-requirements.txt /tmp/edge-requirements.txt
+RUN UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/edge-requirements.txt \
+    && rm -f /tmp/edge-requirements.txt
+
 # Writable runtime directories for the node user.
 RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins \
     && chown -R node:node /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins

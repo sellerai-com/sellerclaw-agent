@@ -1,0 +1,7 @@
+# Python tools installed system-wide into the OpenClaw edge base image.
+#
+# These are standalone CLIs that agents invoke from exec-tool — NOT dependencies
+# of the agent's own Python code (those live in pyproject.toml under the
+# `server` extra). Pin exact versions so image rebuilds are reproducible.
+
+sellerclaw-cli==0.1.0
