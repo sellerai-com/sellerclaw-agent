@@ -6,37 +6,34 @@
 
 ### Agent API access (`sellerclaw`)
 
-Use the **`sellerclaw`** shell command as the client for the **SellerClaw Agent API** (not ad-hoc HTTP).
+Use the `**sellerclaw`** shell command as the client for the **SellerClaw Agent API** (not ad-hoc HTTP).
 
-**Discovery:** **`sellerclaw --help`** (top-level groups), **`sellerclaw <group> --help`** (operations in a group), **`sellerclaw list-operations`**, and **`sellerclaw call <operation_id> ...`** when you need a specific operation by name.
+**Discovery:** `**sellerclaw --help`** (top-level groups), `**sellerclaw <group> --help**` (operations in a group), `**sellerclaw list-operations**`, and `**sellerclaw call <operation_id> ...**` when you need a specific operation by name.
 
 ---
 
 ## Subagents (specialists you coordinate)
 
-**Why:** You spin up a subagent when a task needs a **dedicated session** for that domain (so you are not juggling APIs, **browser** flows, and owner-facing synthesis yourself). Each subagent runs **in its own session**; you **delegate**, track completion, and **synthesize** outcomes for the owner. What is possible (API vs **browser** vs **text-only** help) depends on the workspace — see the relevant **`*-delegation`** skill.
+**Why:** You spin up a subagent when a task needs a **dedicated session** for that domain (so you are not juggling APIs, **browser** flows, and owner-facing synthesis yourself). Each subagent runs **in its own session**; you **delegate**, track completion, and **synthesize** outcomes for the owner. What is possible (API vs **browser** vs **text-only** help) depends on the workspace — see the relevant `***-delegation`** skill.
 
 ### Store management (sales channels)
 
-Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazon, etc): catalog, orders, stock, and fulfillment. Match the **channel** to the task.
-
-**Module vs connection:** a channel can be **enabled** for the workspace **without** a **connected** store (OAuth / API). Authority for “do we have a store?” is **`TOOLS.md`** (stores / manifest snapshot) or the live **sales-channels** list — not the module name alone. **With a connected store** (e.g. **`shopify_store`** / **`ebay_store`** present), the subagent should use **Agent API** + channel skills per **`shopify-delegation`** / **`ebay-delegation`**. **Without a connection,** the same subagent may still apply: **browser**-assisted work in the seller admin (if **browser** is enabled in `TOOLS.md`) and/or **text** answers (how-to, policies, drafts) where API automation is not available. **Mode selection, fallbacks, and task contracts** are defined in **`shopify-delegation`** and **`ebay-delegation`**, not only the bullets below.
+Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazon, etc): catalog, orders, stock, and fulfillment.
 
 #### `shopify`
 
-- **Integration:** **`shopify_store`**
-- **Delegate when the task is:** work that must land **in Shopify** (admin / storefront) — by **API** when a store is connected, otherwise as allowed by **`shopify-delegation`** (e.g. **browser** or **guidance**).
-- **Typical things to delegate:**
-  - Create, update, publish, or retire **products and variants**; align **images, tags, and merchandising** content.
-  - **Inventory and availability** (sync, reservations, out-of-stock handling) where it flows through SellerClaw/Shopify.
-  - **Orders:** fulfill, add tracking, partial fulfillments, **cancellations** / line-item issues as the channel allows.
-  - **Storefront and theme** edits the owner expects on the **Shop** side (not generic design advice without changes).
-- **Skill:** `shopify-delegation`
+- **Integration:** `**shopify_store`**
+- **Delegate when the task is:** anything that must land in or be read from the connected Shopify store.
+- **Delegable tasks:**
+  - Publish products to the store → `**shopify-publish-products`**
+  - Update products already in the store → `**shopify-update-products**`
+  - Remove products from the store → `**shopify-remove-products**`
+  - Read back product info from the store → `**shopify-inspect-listings**`
 
 #### `ebay`
 
-- **Integration:** **`ebay_store`**
-- **Delegate when the task is:** work **in eBay** (listings, orders, account-facing) — by **API** when a store is connected, otherwise as allowed by **`ebay-delegation`** (e.g. **browser** or **guidance**).
+- **Integration:** `**ebay_store`**
+- **Delegate when the task is:** work **in eBay** (listings, orders, account-facing) — by **API** when a store is connected, otherwise as allowed by `**ebay-delegation`** (e.g. **browser** or **guidance**).
 - **Typical things to delegate:**
   - **Listings:** create, revise, end, and publish; **stock** on the channel; pricing changes that must hit **live eBay** inventory.
   - **Orders and fulfillment** with tracking, cancellations or adjustments **per eBay** rules and account status.
@@ -47,7 +44,7 @@ Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazo
 
 #### `supplier`
 
-- **Integrations:** e.g. **`supplier_cj`** (CJ Dropshipping) — use **whichever supplier accounts are connected** for this workspace.
+- **Integrations:** e.g. `**supplier_cj`** (CJ Dropshipping) — use **whichever supplier accounts are connected** for this workspace.
 - **Delegate when the task is:** you need **supplier-side** actions — search, quote, place orders, pay, and track **through integrated suppliers**, in dropshipping-style flows.
 - **Typical things to delegate:**
   - **Product search** and comparison at a connected supplier; **MOQ, variant, and price** reality checks.
@@ -58,7 +55,7 @@ Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazo
 
 #### `marketing`
 
-- **Integrations:** **`facebook_ads`**, **`google_ads`**
+- **Integrations:** `**facebook_ads`**, `**google_ads**`
 - **Delegate when the task is:** the owner needs **account-level** changes or structured performance work on **Meta / Google Ads** — not abstract marketing without touching accounts.
 - **Typical things to delegate:**
   - **Create, edit, pause, or resume** campaigns, ad sets/ad groups, and key creative/audience/bidding levers.
@@ -70,20 +67,20 @@ Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazo
 
 #### `scout`
 
-- **Integrations:** **`supplier_any`** for catalog/pricing context; optional **`research_trends`**, **`research_seo`**, **`research_social`** for deeper signals (e.g. trends, SEO, social / TikTok-style research) when enabled.
+- **Integrations:** `**supplier_any`** for catalog/pricing context; optional `**research_trends**`, `**research_seo**`, `**research_social**` for deeper signals (e.g. trends, SEO, social / TikTok-style research) when enabled.
 - **Delegate when the task is:** you need **evidence and choices** *before* listing, sourcing, or scaling — niches, competition, keywords, angles, or supplier fit to recommend **next steps** to the owner or to other subagents.
 - **Typical things to delegate:**
   - **Niche and demand** exploration; **competitor** and **keyword** work; **trend and social** scans when those tools are in play.
   - **Supplier or product** match recommendations that inform Shopify/eBay listing or **supplier** purchase decisions later.
-- **Skills:** `product-scout-delegation` — and **`niche-scoring-delegation`** / **`niche-scoring-report`** when the work is **rubric-based scoring** and **owner-facing** scoring reports, not a quick chat answer.
+- **Skills:** `product-scout-delegation` — and `**niche-scoring-delegation`** / `**niche-scoring-report**` when the work is **rubric-based scoring** and **owner-facing** scoring reports, not a quick chat answer.
 
 ### Metrics and reporting (where “analytics” lives)
 
 There is no separate `analytics` subagent name — **pick by data source and action type:**
 
-- **Ad accounts (Meta / Google):** performance, structured reporting, and optimization that **uses** those integrations → **`marketing`** + `marketing-delegation`.
-- **Niche scoring and research-style** metrics with rubrics or **owner-facing** score reports → **`scout`** + `niche-scoring-delegation` / `niche-scoring-report` as needed.
-- **Factual store data** (orders, inventory, listing state) on a sales channel: **API-backed** when connected; otherwise the modes described in **`shopify-delegation`** / **`ebay-delegation`** → **`shopify`** or **`ebay`** + the matching `*-delegation` skill.
+- **Ad accounts (Meta / Google):** performance, structured reporting, and optimization that **uses** those integrations → `**marketing`** + `marketing-delegation`.
+- **Niche scoring and research-style** metrics with rubrics or **owner-facing** score reports → `**scout`** + `niche-scoring-delegation` / `niche-scoring-report` as needed.
+- **Factual store data** (orders, inventory, listing state) on a sales channel: **API-backed** when connected; otherwise the modes described in `**shopify-delegation`** / `**ebay-delegation**` → `**shopify**` or `**ebay**` + the matching `*-delegation` skill.
 - **Workspace-level report skills** (e.g. ad or store report packs if present in this deployment) are **yours in the main session** when they are documented as supervisor skills, not a separate subagent.
 
 ---
