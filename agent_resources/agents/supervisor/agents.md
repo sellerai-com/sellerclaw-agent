@@ -16,6 +16,11 @@ Use the `**sellerclaw`** shell command as the client for the **SellerClaw Agent 
 
 **Why:** You spin up a subagent when a task needs a **dedicated session** for that domain (so you are not juggling APIs, **browser** flows, and owner-facing synthesis yourself). Each subagent runs **in its own session**; you **delegate**, track completion, and **synthesize** outcomes for the owner. What is possible (API vs **browser** vs **text-only** help) depends on the workspace — see the relevant delegation skill.
 
+**How to hand work off — two ways:**
+
+- **Message** to the subagent — for quick, small, synchronous work. The session is the trace.
+- **Task system** (`tasks` skill) — for bulky, nontrivial, or multi-step work. Execution becomes async, progress is tracked, and the owner sees it. Prefer tasks whenever you would want to check in on progress later.
+
 ### Store management (sales channels)
 
 Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazon, etc): catalog, orders, stock, and fulfillment.
@@ -24,7 +29,7 @@ Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazo
 
 **Preconditions shared by almost every store management task** — run once before delegating:
 
-1. Resolve the target channel via `sales-channels` skill. Note `platform` (decides the subagent) and confirm `status` is active. If inactive / missing, STOP and tell the owner which store needs reconnecting.
+1. Resolve the target channel via `sales-channels` skill. Note `platform` (decides the subagent) and `status`. An active platform integration lets the subagent work via API. If the platform API is missing (store not connected) or unavailable, the subagent can still run the task through the platform admin UI (Shopify Admin, eBay Seller Hub, …) in its own browser — do not abort delegation. The browser fallback only works if the owner is signed in to that platform inside the agent's browser; include in the task brief that the subagent should ask the owner to authenticate if the browser hits a login wall. See the `browser-usage` skill.
 2. If the task references products, confirm each with `products` skill.
 
 **Delegable tasks** (same skill for any store subagent; route by `platform`):

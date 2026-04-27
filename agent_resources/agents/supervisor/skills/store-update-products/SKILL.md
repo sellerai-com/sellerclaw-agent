@@ -7,6 +7,15 @@ description: "Delegate to the store management subagent (shopify, ebay, ...) to 
 
 If the owner's intent is destructively ambiguous (e.g. "cheaper" without a number, "nicer images" without references), ask one clarifying question before delegating. Do not guess.
 
+## Delegation mode — chat vs tasks
+
+Pick by the shape of the job:
+
+- **Chat (direct message to the subagent)** — a handful of products (~≤10) with a simple, single-axis change (one field, one value), owner waiting in-session.
+- **Tasks (async, trackable)** — bulky or nontrivial: large batch, mixed fields, re-pricing passes, rewrite of many descriptions, anything the owner will want progress on. Create a team task framing the whole update job + at least one agent task addressed to the picked store subagent. Use the `tasks` skill.
+
+If in doubt, lean toward tasks.
+
 ## Delegation
 
 Pick the subagent by the target channel's `platform` (already known from the channel lookup):
@@ -15,7 +24,7 @@ Pick the subagent by the target channel's `platform` (already known from the cha
 - `platform == "ebay"` → `ebay` subagent
 - additional store platforms (`amazon`, ...) → the corresponding subagent when it exists; if none exists for the platform, STOP and tell the owner the platform is not supported
 
-Hand this task off to that subagent.
+Hand the work off to that subagent — either as a chat message (for the chat mode above) or by creating an agent task assigned to it (for the tasks mode above).
 
 > **Update listings on the storefront.**
 >
