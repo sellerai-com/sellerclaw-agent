@@ -1,6 +1,6 @@
 ---
 name: task-management
-description: "Plan and supervise work in the goals system — create projects, team tasks, and agent tasks; review, complete, send back, cancel, reopen. Use when the user says 'create a task', 'make a project', 'delegate this as a task', 'track this work', 'review the task', 'mark it done', 'send the task back', 'reopen the task', or whenever a delegation needs to be async and trackable."
+description: "Plan and supervise work via the goals system: create projects, team tasks, and agent tasks; review, approve, or send back the executor's results. Use whenever delegation needs to be async and trackable, or when the user says 'create a task', 'delegate this', 'review the task', or 'mark it done'."
 ---
 
 # Task management (orchestrator)

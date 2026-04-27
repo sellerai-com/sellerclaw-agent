@@ -1,6 +1,6 @@
 ---
 name: browser-usage
-description: "Use the browser only as a last resort when integrations cannot complete the task; expect instability and ask the user for help with login or other access blocks."
+description: "How to use the browser tool responsibly: when it is appropriate, what to expect, and how to ask the user for help when blocked. Read this skill before using the browser tool for the first time in a session, or whenever browser actions start failing."
 ---
 
 # Browser Usage

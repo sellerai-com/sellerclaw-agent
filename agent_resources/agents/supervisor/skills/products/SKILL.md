@@ -1,6 +1,6 @@
 ---
 name: products
-description: "Work with the internal product catalog — create, look up, edit, archive, or remove products. Use when the user says 'add a product', 'save this product', 'what products do we have', 'show product X', 'edit the product', 'rename the product', 'archive the product', or 'remove/delete a product', or asks about the catalog outside of a specific storefront."
+description: "Work with the internal product catalog (SellerClaw database, not storefronts): create, list, fetch, edit, archive, or delete catalog products. Use when the user asks about products in general, the catalog, or saving products from a supplier — distinct from changes on a specific storefront."
 ---
 
 # Products
@@ -9,7 +9,7 @@ A **product** is an internal SellerClaw catalog entity (DB row) bound to a suppl
 
 ## Data model (non-obvious fields)
 
-The table below covers only what you would otherwise get wrong. The **full product model** (every field, create/patch request bodies, enum values, validation pitfalls) lives in `[references/data-model.md](references/data-model.md)` — read it only when you need a field that is not here, not by default.
+The table below covers only what you would otherwise get wrong. The **full product model** (every field, create/patch request bodies, enum values, validation pitfalls) lives in `references/data-model.md` — read it only when you need a field that is not here, not by default.
 
 **Product**
 
@@ -123,6 +123,7 @@ If the owner wants to change pricing, stock, the supplier binding, or variation 
 - Never send `purchase_price` / `shipping_cost` as `0` or made-up values — costs drive every listing's price.
 - Never call `patch` with fields it does not accept (`supplier_`*, `variations`, prices, stock) — the call will silently ignore them at best; the owner's intent will not be applied.
 - `batch-create` is all-or-nothing per request — validate required fields before sending.
+- Run `sellerclaw describe <operation_id>` only if (a) the CLI returns a validation error you don't understand, or (b) you need a field not listed in this body or in references/data-model.md.
 
 ## Failure handling
 

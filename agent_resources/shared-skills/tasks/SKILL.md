@@ -1,11 +1,11 @@
 ---
 name: tasks
-description: "Run tasks assigned to you in the goals system — see what is on your queue, start, log progress, request review, or report a blocker. Use when the user says 'what am I working on', 'what is my queue', 'start the task', 'log progress', 'request review', 'i am done with the task', or when you find an assigned task in your queue at session start."
+description: "Execute a task assigned to you in the goals system: see your queue, start work, log progress, request review, or fail with a reason. Use when working as a sub-agent (shopify, ebay, supplier, etc.) and the user or session start indicates assigned work."
 ---
 
 # Tasks (executor)
 
-This skill covers the **executor** side of the goals system: how to pick up assigned work, report on it, and hand it back for review. Planning, creating, and reviewing tasks is a separate role — the supervisor's `task-management` skill.
+This skill covers the **executor** side of the goals system: how to pick up assigned work, report on it, and hand it back for review. Use only when running as a sub-agent executor. Planning, creating, and reviewing tasks is a separate role — the supervisor's `task-management` skill.
 
 ## Entity recap
 
