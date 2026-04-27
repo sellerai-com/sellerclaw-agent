@@ -3,37 +3,34 @@ name: products
 description: "Work with the internal product catalog (SellerClaw database, not storefronts): create, list, fetch, edit, archive, or delete catalog products. Use when the user asks about products in general, the catalog, or saving products from a supplier — distinct from changes on a specific storefront."
 ---
 
-# Products
+# Data models
 
-A **product** is an internal SellerClaw catalog entity (DB row) bound to a supplier variant. One product can be published as **listings** on many sales channels (Shopify, eBay, ...). The product holds channel-agnostic data (supplier link, cost, base copy, images); the listing holds channel-specific presentation.
+Only fields that are easy to misuse are listed here. Read `references/data-model.md` only when you need the full schema, request body, enums, or relationship details.
 
-## Data model (non-obvious fields)
+## Product
 
-The table below covers only what you would otherwise get wrong. The **full product model** (every field, create/patch request bodies, enum values, validation pitfalls) lives in `references/data-model.md` — read it only when you need a field that is not here, not by default.
+Internal catalog item saved in SellerClaw, not a storefront listing. It contains channel-neutral copy/images and supplier binding. Storefront-specific data, listing price, remote listing id, store URL, and channel status live in listing/channel APIs.
 
-**Product**
+Important fields:
 
+- `id` — internal catalog id; usually mentioned as `product_id` in skills.
+- `supplier_id`, `supplier_provider`, `supplier_product_id` — fixed supplier binding. Resolve from a real supplier/integration lookup; do not invent.
+- `status` — `sourced`, `active`, or `archived`. `active` products are those that are already published.
+- `variations` — sellable SKUs under the product.
 
-| Field                                                     | Notes                                                                                                                                                                                                      |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                                                      | Pass as `product_id` to channel skills.                                                                                                                                                                    |
-| `supplier_id`, `supplier_provider`, `supplier_product_id` | Triple that binds the product to a supplier catalog entry. Resolve `supplier_id` via `sellerclaw agent-context list-integrations`; `supplier_provider` is a code like `cj`. **Not editable after create.** |
-| `status`                                                  | Enum: `sourced` → `active` → `archived`.                                                                                                                                                                   |
-| `variations`                                              | One entry per SKU — see below. **Not editable via `patch`**; re-create the product if variations must change.                                                                                              |
+## Variation
 
+One sellable variant under a product.
 
-**Variation**
+Important fields:
 
+- `sku` — seller-facing stable SKU; matches listings and order lines.
+- `supplier_variant_id` — supplier-side variant id; needed to connect catalog, listings, and order fulfillment.
+- `attributes` — option map such as `{"color": "red", "size": "M"}`.
+- `available_quantity` — supplier stock, integer `>= 0`.
+- `purchase_price`, `shipping_cost` — supplier costs.
+- `images` — optional variant-specific images; product images are the fallback.
 
-| Field                             | Notes                                                                                |
-| --------------------------------- | ------------------------------------------------------------------------------------ |
-| `supplier_variant_id`             | Supplier-side variant id.                                                            |
-| `attributes`                      | Option map, e.g. `{"color": "red", "size": "M"}`.                                    |
-| `available_quantity`              | Integer ≥ 0.                                                                         |
-| `purchase_price`, `shipping_cost` | Decimal **strings** (not numbers). Supplier cost and shipping for the target market. |
-
-
-Listing price is **not** stored on the product — it is computed per channel as `(purchase_price + shipping_cost) × channel.margin` when the listing is created.
 
 ## Commands
 

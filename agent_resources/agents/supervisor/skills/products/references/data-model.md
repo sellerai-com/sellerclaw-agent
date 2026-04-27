@@ -1,116 +1,86 @@
-# Product data model — full reference
+# Product data model
 
-Generated from the `sellerclaw-cli` OpenAPI spec. This is an exhaustive reference; the skill body (`SKILL.md`) only lists non-obvious fields. **Read this file only when you actually need a field not covered there** — full schemas are expensive in context.
+## Product response (`list` / `get`)
 
-At runtime you can also pull the live schema for any operation with `sellerclaw describe <operation_id>`.
 
----
+| Field                 | Type                         | Notes                                                                                 |
+| --------------------- | ---------------------------- | ------------------------------------------------------------------------------------- |
+| `id`                  | uuid                         | Primary identifier. Pass as `product_id` everywhere.                                  |
+| `user_id`             | uuid                         | Owning workspace user.                                                                |
+| `supplier_id`         | uuid                         | Connected supplier account. Resolve via `sellerclaw agent-context list-integrations`. |
+| `supplier_provider`   | string                       | Provider code, e.g. `cj`.                                                             |
+| `supplier_product_id` | string                       | Supplier-side product id.                                                             |
+| `name`                | string                       | Canonical product name.                                                               |
+| `description`         | string                       | Canonical description.                                                                |
+| `images`              | string[]                     | Image URLs (first = hero).                                                            |
+| `category`            | string                       | Taxonomy path.                                                                        |
+| `status`              | `ProductStatus`              | See enum below.                                                                       |
+| `variations`          | `ProductVariationResponse[]` | One entry per SKU.                                                                    |
+| `created_at`          | datetime (ISO 8601)          |                                                                                       |
+| `updated_at`          | datetime (ISO 8601)          | Bumped on any server-side change.                                                     |
 
-## Product (response shape returned by `list` / `get`)
 
-Source: `ProductResponse`. Every field below is always present on a product (all required).
+`ProductStatus`: `sourced` = saved from supplier search, not active yet; `active` = live catalog item eligible for listings; `archived` = retired, do not publish or send to supplier.
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | uuid | Primary identifier. Pass as `product_id` everywhere. |
-| `user_id` | uuid | Owning workspace user. |
-| `supplier_id` | uuid | Connected supplier account. Resolve via `sellerclaw agent-context list-integrations`. |
-| `supplier_provider` | string | Provider code, e.g. `cj`. |
-| `supplier_product_id` | string | Supplier-side product id. |
-| `name` | string | Canonical product name. |
-| `description` | string | Canonical description. |
-| `images` | string[] | Image URLs (first = hero). |
-| `category` | string | Taxonomy path. |
-| `status` | `ProductStatus` (string) | See enum below. |
-| `variations` | `ProductVariationResponse[]` | One entry per SKU. |
-| `created_at` | datetime (ISO 8601) | |
-| `updated_at` | datetime (ISO 8601) | Bumped on any server-side change. |
+### Variation response
 
-### `ProductStatus` enum
 
-| Value | Meaning |
-|---|---|
-| `sourced` | Freshly saved from a supplier search, not yet promoted to active catalog. |
-| `active` | Part of the live catalog; eligible for channel listings. |
-| `archived` | Retired; do not publish, do not send to supplier. |
+| Field                 | Type               | Notes                                                    |
+| --------------------- | ------------------ | -------------------------------------------------------- |
+| `supplier_variant_id` | string             | Supplier-side variant id.                                |
+| `sku`                 | string             | Internal SKU.                                            |
+| `name`                | string             | Variant label.                                           |
+| `images`              | string[]           | Variant-specific images (may be empty).                  |
+| `attributes`          | `{string: string}` | Option map, e.g. `{"color": "red", "size": "M"}`.        |
+| `available_quantity`  | integer ≥ 0        | Supplier stock.                                          |
+| `purchase_price`      | decimal **string** | Supplier unit cost; signed decimal string, not a number. |
+| `shipping_cost`       | decimal **string** | Supplier shipping for the target market; same format.    |
 
-### `ProductVariationResponse`
-
-| Field | Type | Notes |
-|---|---|---|
-| `supplier_variant_id` | string | Supplier-side variant id. |
-| `sku` | string | Internal SKU. |
-| `name` | string | Variant label. |
-| `images` | string[] | Variant-specific images (may be empty). |
-| `attributes` | `{string: string}` | Option map, e.g. `{"color": "red", "size": "M"}`. |
-| `available_quantity` | integer ≥ 0 | Supplier stock. |
-| `purchase_price` | decimal **string** | Supplier unit cost. Format: signed decimal string; not a number. |
-| `shipping_cost` | decimal **string** | Supplier shipping for the target market. Same format. |
 
 ---
 
 ## Create request — `batch-create`
 
-Body: `ProductBatchCreateRequest` = `{"items": ProductCreate[]}`. One call per batch; the server applies all-or-nothing semantics.
+Body: `{"items": ProductCreate[]}`. One batch call is all-or-nothing.
 
-### `ProductCreate` (one per item)
+`ProductCreate` required: `supplier_id` (uuid), `supplier_provider` (string), `supplier_product_id` (string), `name`, `description`, `category`, `variations` (`ProductVariationCreate[]`, ≥1). Optional: `images` (`string[]`; strongly recommended, because downstream listings reject products without images).
 
-| Field | Required | Type | Notes |
-|---|---|---|---|
-| `supplier_id` | ✓ | uuid | |
-| `supplier_provider` | ✓ | string | |
-| `supplier_product_id` | ✓ | string | |
-| `name` | ✓ | string | |
-| `description` | ✓ | string | |
-| `category` | ✓ | string | |
-| `images` | ✗ | string[] | Optional but strongly recommended; listings without an image get rejected downstream. |
-| `variations` | ✓ | `ProductVariationCreate[]` | Must have ≥1. |
-
-### `ProductVariationCreate`
-
-| Field | Required | Type | Notes |
-|---|---|---|---|
-| `supplier_variant_id` | ✓ | string | |
-| `sku` | ✓ | string | |
-| `name` | ✓ | string | |
-| `images` | ✗ | string[] | |
-| `attributes` | ✗ | `{string: string}` | |
-| `available_quantity` | ✓ | integer ≥ 0 | |
-| `purchase_price` | ✓ | number \| decimal string | Server normalises to decimal string. |
-| `shipping_cost` | ✓ | number \| decimal string | Server normalises to decimal string. |
-
-Fields NOT accepted on create (do not put them in the body, the server will 422):
-- `id`, `user_id`, `status`, `created_at`, `updated_at` — server-assigned.
+`ProductVariationCreate` required: `supplier_variant_id`, `sku`, `name`, `available_quantity` (integer ≥ 0), `purchase_price`, `shipping_cost` (numbers or decimal strings; server normalises to decimal strings). Optional: `images` (`string[]`), `attributes` (`{string: string}`).
 
 ---
 
 ## Patch request — `patch`
 
-Body: `ProductPatchRequest`. "Partial update for user-editable product metadata. Omit a field to leave it unchanged."
+Body: `ProductPatchRequest`. Omit a field to leave it unchanged.
 
-| Field | Type | Notes |
-|---|---|---|
-| `name` | string \| null | |
-| `description` | string \| null | |
-| `images` | string[] \| null | Full replacement — send the new full list. |
-| `category` | string \| null | |
-| `status` | `ProductStatus` \| null | Only the three enum values above. |
+Editable: `name`, `description`, `category` (`string | null`), `images` (`string[] | null`, full replacement), `status` (`ProductStatus | null`).
 
-Fields NOT editable via `patch` (surface to the owner, do not try to send them):
+Not editable via `patch`; tell the owner instead of sending:
+
 - `supplier_id`, `supplier_provider`, `supplier_product_id` — the supplier binding is fixed at create time.
 - `variations` and anything inside them (`sku`, `attributes`, `available_quantity`, `purchase_price`, `shipping_cost`). To change variation structure or pricing, recreate the product.
 
 ---
 
-## Delete
+## Common validation pitfalls
 
-No body. Idempotence is not guaranteed — calling `delete` on an already-deleted id typically returns 404. Treat it as one-shot.
+- `supplier_`* must match an existing connected integration; a fabricated `supplier_id` can pass type validation and fail later.
+- `images` accepts any URL string; the server does not validate that the URL resolves or is an image. A broken URL will surface later during channel publishing.
+- `status` enum is case-sensitive and lower-case.
 
 ---
 
-## Common validation pitfalls
+## Relationships and published listings
 
-- Sending `purchase_price` / `shipping_cost` as plain JSON numbers can work on create (the server accepts both), but **every read of the product returns them as strings**. Downstream code should not assume numeric type.
-- `supplier_*` triple must match an existing connected integration; a fabricated `supplier_id` UUID will pass type validation and fail at the domain layer, often with a generic 422.
-- `images` accepts any URL string; the server does not validate that the URL resolves or is an image. A broken URL will surface later during channel publishing.
-- `status` enum is case-sensitive and lower-case.
+Read when debugging catalog ↔ store ↔ order flows:
+
+```text
+Sales Channel (id = store_id)
+  ├─ Orders (sales_channel_id) → line items: product_id → Product; supplier_variant_id → variation
+  └─ Published listings (sales_channel_id) → product_id + supplier_variant_id + sku + remote_id
+
+Product
+  └─ variations[]: supplier_variant_id, sku, pricing, stock
+```
+
+**Published listing** links a product variation to a marketplace listing and drives stock/price sync. Typical fields: `product_id`, `sales_channel_id`, `supplier_variant_id`, `sku`, `remote_id` (marketplace listing id; `null` while pending). For full store API fields, use `sellerclaw list-operations --search listing` and `describe`.
