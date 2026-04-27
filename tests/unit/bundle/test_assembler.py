@@ -94,7 +94,7 @@ def test_assembler_supervisor_loads_optional_templates_from_per_agent_files(
     assert sup.user_md is not None and "Business profile" in sup.user_md
     assert sup.tools_md is not None and "TOOLS.md" in sup.tools_md
     assert sup.identity_md is not None and "IDENTITY.md" in sup.identity_md
-    # ``soul.md`` under the supervisor folder wins over the legacy ``souls/supervisor.md``.
+    # ``soul.md`` for the supervisor lives only under ``agents/supervisor/soul.md``.
     own_soul = (agent_resources_root / "agents" / "supervisor" / "soul.md").read_text(
         encoding="utf-8"
     )
@@ -120,7 +120,7 @@ def test_assembler_raises_when_supervisor_agents_md_missing(
 def test_assembler_module_loads_optional_per_agent_templates_when_present(
     tmp_path: Path, agent_resources_root: Path
 ) -> None:
-    """Module agents also honor per-agent user/tools/identity/soul files."""
+    """Module agents honor per-agent soul/user/tools/identity the same way as the supervisor."""
     import shutil
 
     shopify = get_module(AgentModuleId.SHOPIFY_STORE_MANAGER)
@@ -129,10 +129,10 @@ def test_assembler_module_loads_optional_per_agent_templates_when_present(
     mirror = tmp_path / "resources"
     shutil.copytree(agent_resources_root, mirror)
     shopify_dir = mirror / "agents" / "shopify"
+    (shopify_dir / "soul.md").write_text("# Shopify SOUL\n", encoding="utf-8")
     (shopify_dir / "user.md").write_text("# Shopify USER\n", encoding="utf-8")
     (shopify_dir / "tools.md").write_text("# Shopify TOOLS\n", encoding="utf-8")
     (shopify_dir / "identity.md").write_text("# Shopify IDENTITY\n", encoding="utf-8")
-    (shopify_dir / "soul.md").write_text("# Shopify SOUL\n", encoding="utf-8")
 
     asm = AgentConfigAssembler(resources_root=mirror)
     mod = asm.assemble(
@@ -141,16 +141,16 @@ def test_assembler_module_loads_optional_per_agent_templates_when_present(
         connected_integrations=frozenset(),
         global_browser_enabled=True,
     )[1]
+    assert mod.soul_md == "# Shopify SOUL\n"
     assert mod.user_md == "# Shopify USER\n"
     assert mod.tools_md == "# Shopify TOOLS\n"
     assert mod.identity_md == "# Shopify IDENTITY\n"
-    assert mod.soul_md == "# Shopify SOUL\n"
 
 
-def test_assembler_module_without_optional_templates_keeps_subagent_soul_fallback(
+def test_assembler_module_has_no_soul_subagent_rules_in_agents_md(
     agent_resources_root: Path,
 ) -> None:
-    """When no per-agent soul.md exists, the module soul still comes from ``souls/subagent.md``."""
+    """Without ``agents/<id>/soul.md``, subagents have no SOUL; executor rules live in ``AGENTS.md``."""
     shopify = get_module(AgentModuleId.SHOPIFY_STORE_MANAGER)
     assert shopify is not None
     asm = AgentConfigAssembler(resources_root=agent_resources_root)
@@ -160,9 +160,8 @@ def test_assembler_module_without_optional_templates_keeps_subagent_soul_fallbac
         connected_integrations=frozenset(),
         global_browser_enabled=True,
     )[1]
-    subagent_soul_raw = (agent_resources_root / "souls" / "subagent.md").read_text(encoding="utf-8")
-    assert mod.soul_md is not None
-    assert subagent_soul_raw.splitlines()[0] in mod.soul_md
+    assert mod.soul_md is None
+    assert "Subagent execution (shared)" in mod.agents_md
     assert mod.user_md is None
     assert mod.tools_md is None
     assert mod.identity_md is None
@@ -175,7 +174,7 @@ def test_assembler_supervisor_includes_shared_skills_in_workspace_dict(
     asm = AgentConfigAssembler(resources_root=agent_resources_root)
     sup = asm.assemble_supervisor_only(template_variables=_template_vars())
     assert "file-storage" in sup.skills
-    assert "store-management" in sup.skills
+    assert "tasks" in sup.skills
 
 
 def test_assembler_shared_skills_attachment_is_empty(agent_resources_root: Path) -> None:

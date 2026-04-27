@@ -30,7 +30,7 @@ def test_bundle_builder_produces_config_and_workspaces(
     assert len(result.version) == 64
     assert result.shared_skills == {}
     assert "supervisor/skills/file-storage/SKILL.md" in result.workspaces
-    assert "supervisor/skills/store-management/SKILL.md" in result.workspaces
+    assert "supervisor/skills/tasks/SKILL.md" in result.workspaces
 
 
 def test_bundle_builder_invalid_module_id_raises(

@@ -90,8 +90,6 @@ class AgentConfigAssembler:
             filename="soul.md",
             variables=variables,
         )
-        if soul_md is None:
-            soul_md = self._render(self._load_section("souls/supervisor"), variables)
         user_md = self._resolve_optional_template(
             agent_id="supervisor",
             filename="user.md",
@@ -155,13 +153,6 @@ class AgentConfigAssembler:
 
         module_variables = {**variables, "agent_id": module.agent_id}
         module_variables["capabilities_modes"] = capabilities_modes
-        task_tracking_raw = (
-            self.resources_root / "partials" / "task-tracking.md"
-        ).read_text(encoding="utf-8")
-        module_variables["task_tracking_section"] = self._render(
-            task_tracking_raw,
-            module_variables,
-        )
 
         agents_md = self._resolve_agents_md(
             agent_id=module.agent_id,
@@ -183,8 +174,6 @@ class AgentConfigAssembler:
             filename="soul.md",
             variables=module_variables,
         )
-        if soul_md is None:
-            soul_md = self._render(self._load_section("souls/subagent"), module_variables)
         user_md = self._resolve_optional_template(
             agent_id=module.agent_id,
             filename="user.md",
@@ -365,12 +354,3 @@ class AgentConfigAssembler:
         if not path.is_file():
             return None
         return self._render(path.read_text(encoding="utf-8"), variables)
-
-    def _load_section(self, relative_path: str) -> str:
-        """Load a markdown section by path relative to resources root."""
-        path = self.resources_root / f"{relative_path}.md"
-        if not path.exists() or not path.is_file():
-            raise FileNotFoundError(
-                f"Resource section not found: '{relative_path}.md' at '{path}'."
-            )
-        return path.read_text(encoding="utf-8")
