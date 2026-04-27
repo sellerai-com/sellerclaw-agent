@@ -70,7 +70,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     configure_agent_logging()
     data_dir = _get_data_dir()
-    storage = ManifestStorage(data_dir)
+    storage = ManifestStorage(data_dir)  # noqa: F841
     get_local_api_key(data_dir)
 
     # Refresh the sellerclaw-cli config on boot if a token was persisted in a

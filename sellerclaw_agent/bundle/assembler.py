@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -96,36 +95,9 @@ class AgentConfigAssembler:
             kind=IntegrationKind.SUPPLIER_ANY,
         )
 
-        def _legacy_supervisor_sections() -> str:
-            sections: list[str] = [
-                self._render(self._load_section("agents/supervisor/sections/core"), variables),
-                self._render(
-                    self._load_section("agents/supervisor/sections/goal_tracking"),
-                    variables,
-                ),
-            ]
-            if has_any_store:
-                sections.append(
-                    self._render(
-                        self._load_section("agents/supervisor/sections/store_management"),
-                        variables,
-                    )
-                )
-            if has_supplier:
-                sections.append(
-                    self._render(
-                        self._load_section(
-                            "agents/supervisor/sections/dropshipping_fulfillment",
-                        ),
-                        variables,
-                    )
-                )
-            return "\n\n".join(section for section in sections if section.strip())
-
         agents_md = self._resolve_agents_md(
             agent_id="supervisor",
             variables=variables,
-            fallback=_legacy_supervisor_sections,
         )
         soul_md = self._resolve_optional_template(
             agent_id="supervisor",
@@ -224,22 +196,9 @@ class AgentConfigAssembler:
             module_variables,
         )
 
-        def _legacy_module_sections() -> str:
-            sections = [
-                self._render(
-                    self._load_section(
-                        f"agents/{module.agent_id}/sections/{section_path}",
-                    ),
-                    module_variables,
-                )
-                for section_path in module.agent_sections
-            ]
-            return "\n\n".join(section for section in sections if section.strip())
-
         agents_md = self._resolve_agents_md(
             agent_id=module.agent_id,
             variables=module_variables,
-            fallback=_legacy_module_sections,
         )
 
         all_skill_names = list(module.skills)
@@ -453,12 +412,14 @@ class AgentConfigAssembler:
         *,
         agent_id: str,
         variables: dict[str, str],
-        fallback: Callable[[], str],
     ) -> str:
         agents_path = self.resources_root / "agents" / agent_id / "agents.md"
-        if agents_path.is_file():
-            return self._render(agents_path.read_text(encoding="utf-8"), variables)
-        return fallback()
+        if not agents_path.is_file():
+            raise FileNotFoundError(
+                "Agent AGENTS.md template missing: expected "
+                f"'agents/{agent_id}/agents.md' at '{agents_path}'."
+            )
+        return self._render(agents_path.read_text(encoding="utf-8"), variables)
 
     def _resolve_optional_template(
         self,

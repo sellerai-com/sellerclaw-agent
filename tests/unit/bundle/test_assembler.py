@@ -80,14 +80,10 @@ def test_assembler_supervisor_always_includes_goal_tracking_skill(agent_resource
     assert "goal-tracking" in sup.skills
 
 
-def test_assembler_supervisor_reads_agents_md_over_sections_when_present(
+def test_assembler_supervisor_agents_md_comes_from_agents_template(
     agent_resources_root: Path,
 ) -> None:
-    """When ``agents/supervisor/agents.md`` exists, it becomes AGENTS.md verbatim.
-
-    The legacy ``sections/`` bundle (core.md, goal_tracking.md, ...) is the
-    fallback path — the per-agent ``agents.md`` file wins.
-    """
+    """``AGENTS.md`` in the bundle is produced only from ``agents/supervisor/agents.md``."""
     asm = AgentConfigAssembler(resources_root=agent_resources_root)
     sup = asm.assemble_supervisor_only(template_variables=_template_vars())
     expected = (agent_resources_root / "agents" / "supervisor" / "agents.md").read_text(
@@ -112,29 +108,19 @@ def test_assembler_supervisor_loads_optional_templates_from_per_agent_files(
     assert sup.soul_md == own_soul.strip() or own_soul.strip() in sup.soul_md
 
 
-def test_assembler_supervisor_falls_back_to_sections_when_agents_md_missing(
+def test_assembler_raises_when_supervisor_agents_md_missing(
     tmp_path: Path, agent_resources_root: Path
 ) -> None:
-    """Without per-agent ``agents.md`` the assembler must rebuild AGENTS.md from ``sections/``."""
+    """If ``agents/<id>/agents.md`` is absent, assembly fails before any section fallback."""
     import shutil
 
     mirror = tmp_path / "resources"
     shutil.copytree(agent_resources_root, mirror)
-    supervisor_dir = mirror / "agents" / "supervisor"
-    (supervisor_dir / "agents.md").unlink()
-    sections_dir = supervisor_dir / "sections"
-    sections_dir.mkdir()
-    (sections_dir / "core.md").write_text(
-        "# Legacy core section\nCore body text.\n", encoding="utf-8"
-    )
-    (sections_dir / "goal_tracking.md").write_text(
-        "# Goal & Task Tracking\nLegacy goal tracking copy.\n", encoding="utf-8"
-    )
+    (mirror / "agents" / "supervisor" / "agents.md").unlink()
 
     asm = AgentConfigAssembler(resources_root=mirror)
-    sup = asm.assemble_supervisor_only(template_variables=_template_vars())
-    assert "Legacy core section" in sup.agents_md
-    assert "Goal & Task Tracking" in sup.agents_md
+    with pytest.raises(FileNotFoundError, match=r"agents/supervisor/agents\.md"):
+        asm.assemble_supervisor_only(template_variables=_template_vars())
 
 
 def test_assembler_module_loads_optional_per_agent_templates_when_present(
