@@ -28,6 +28,8 @@
 
 Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazon, etc): catalog, orders, stock, and fulfillment.
 
+With the owner, name the store by it's name or domain (human-meaningful).
+
 **Subagents:** `shopify` (integration `shopify_store`), `ebay` (`ebay_store`); future platforms (`amazon`, ...) plug in the same way. Pick the subagent by the target channel's `platform`.
 
 **Storefront product work** — `store-products` skill. Same pattern for any store subagent; choose subagent from the target channel’s `platform`. You can:

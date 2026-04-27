@@ -5,19 +5,23 @@ description: "Look up connected storefronts (Shopify, eBay, etc.): list them, fi
 
 A **sales channel** is a user's online store on a marketplace platform (Shopify, eBay, etc.) connected to SellerClaw. The user may have multiple sales channels across different platforms.
 
+**Owner-facing copy:** When you talk *to* the user about “which store”, refer to it by `**name` or `domain`**, not by the internal `**id**` (UUID).
+
 ## Channel model
 
-| Field | Meaning |
-|--------|---------|
-| `id` | UUID → reuse as `sales_channel_id` / `store_id` in other **sellerclaw** calls for that shop. |
-| `platform` | Marketplace type (API string; can grow). |
-| `status` | Active, inactive, or needs credential refresh — check before integration-dependent work. |
-| `name` | Label; align with how the owner names the shop. |
-| `domain` | Storefront domain if set. |
-| `margin` | Markup for this channel — how the owner prices sales in that store. |
-| `description` | Free-text note. |
 
-Ignore the rest of the payload unless the task explicitly needs it.
+| Field         | Meaning                                                                                      |
+| ------------- | -------------------------------------------------------------------------------------------- |
+| `id`          | UUID → reuse as `sales_channel_id` / `store_id` in other **sellerclaw** calls for that shop. |
+| `platform`    | Marketplace type (API string; can grow).                                                     |
+| `status`      | Active, inactive, or needs credential refresh — check before integration-dependent work.     |
+| `name`        | Label; align with how the owner names the shop.                                              |
+| `domain`      | Storefront domain if set.                                                                    |
+| `margin`      | Markup for this channel — how the owner prices sales in that store.                          |
+| `description` | Free-text note.                                                                              |
+
+
+**More detail (read on demand, not by default):** full field list, exact `status` values, and **background** behavior — references/channel-record.md.
 
 ## Commands
 
@@ -35,7 +39,6 @@ sellerclaw agent-sales-channels list-for-user --platform shopify
 
 Values match the API (e.g. `shopify`, `ebay`).
 
-
 **Active only** — default is **active-only** channels. To include inactive or credential-invalid rows:
 
 ```bash
@@ -47,13 +50,3 @@ sellerclaw agent-sales-channels list-for-user --active_only=false
 ```bash
 sellerclaw agent-sales-channels get <sales_channel_id>
 ```
-
-## Flow
-
-1. No `id` → `list-for-user` (optionally with **platform**), pick a row.
-2. Have `id` → `get` to confirm **status**.
-3. Pass `id` into any scoped follow-up work.
-
-## Output to the owner
-Plain language. Store name and platform, status if not active, domain if relevant.
-"You have 2 connected stores: 'Acme Pet Shop' on Shopify (active) and an eBay store (needs credential refresh)."
