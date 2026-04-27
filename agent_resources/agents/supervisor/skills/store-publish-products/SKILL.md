@@ -10,7 +10,7 @@ description: "Delegate to the store management subagent (shopify, ebay, ...) to 
 Pick by the shape of the job:
 
 - **Chat (direct message to the subagent)** — a handful of products (~≤3), no enrichment heavy lifting, owner is waiting in-session.
-- **Tasks (async, trackable)** — bulky or nontrivial: large batch, enrichment-heavy products, multi-step, or anything the owner will want to see progress on. Create a team task framing the whole publication job + at least one agent task addressed to the picked store subagent. Use the `tasks` skill.
+- **Tasks (async, trackable)** — bulky or nontrivial: large batch, enrichment-heavy products, multi-step, or anything the owner will want to see progress on. Create a team task framing the whole publication job + at least one agent task addressed to the picked store subagent. Use the `task-management` skill.
 
 If in doubt, lean toward tasks: publication is the kind of work where an audit trail and async progress are usually wanted.
 

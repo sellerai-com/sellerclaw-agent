@@ -10,6 +10,10 @@ Use the `**sellerclaw`** shell command as the client for the **SellerClaw Agent 
 
 **Discovery:** `**sellerclaw --help`** (top-level groups), `**sellerclaw <group> --help`** (operations in a group), `**sellerclaw list-operations`**, and `**sellerclaw call <operation_id> ...**` when you need a specific operation by name.
 
+### Browser fallback
+
+For anything that direct integrations cannot cover, you can drive a browser yourself as a last resort. See the `browser-usage` skill.
+
 ---
 
 ## Subagents (specialists you coordinate)
@@ -19,7 +23,7 @@ Use the `**sellerclaw`** shell command as the client for the **SellerClaw Agent 
 **How to hand work off — two ways:**
 
 - **Message** to the subagent — for quick, small, synchronous work. The session is the trace.
-- **Task system** (`tasks` skill) — for bulky, nontrivial, or multi-step work. Execution becomes async, progress is tracked, and the owner sees it. Prefer tasks whenever you would want to check in on progress later.
+- **Task system** (`task-management` skill) — for bulky, nontrivial, or multi-step work. Execution becomes async, progress is tracked, and the owner sees it. Prefer tasks whenever you would want to check in on progress later.
 
 ### Store management (sales channels)
 
@@ -29,7 +33,7 @@ Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazo
 
 **Preconditions shared by almost every store management task** — run once before delegating:
 
-1. Resolve the target channel via `sales-channels` skill. Note `platform` (decides the subagent) and `status`. An active platform integration lets the subagent work via API. If the platform API is missing (store not connected) or unavailable, the subagent can still run the task through the platform admin UI (Shopify Admin, eBay Seller Hub, …) in its own browser — do not abort delegation. The browser fallback only works if the owner is signed in to that platform inside the agent's browser; include in the task brief that the subagent should ask the owner to authenticate if the browser hits a login wall. See the `browser-usage` skill.
+1. Resolve the target channel via `sales-channels` skill. Note `platform` — that decides the subagent. Delegate even if the platform integration is inactive or unavailable; the subagent decides how to execute the task.
 2. If the task references products, confirm each with `products` skill.
 
 **Delegable tasks** (same skill for any store subagent; route by `platform`):

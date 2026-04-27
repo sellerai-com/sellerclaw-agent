@@ -12,7 +12,7 @@ If the owner's intent is destructively ambiguous (e.g. "cheaper" without a numbe
 Pick by the shape of the job:
 
 - **Chat (direct message to the subagent)** — a handful of products (~≤10) with a simple, single-axis change (one field, one value), owner waiting in-session.
-- **Tasks (async, trackable)** — bulky or nontrivial: large batch, mixed fields, re-pricing passes, rewrite of many descriptions, anything the owner will want progress on. Create a team task framing the whole update job + at least one agent task addressed to the picked store subagent. Use the `tasks` skill.
+- **Tasks (async, trackable)** — bulky or nontrivial: large batch, mixed fields, re-pricing passes, rewrite of many descriptions, anything the owner will want progress on. Create a team task framing the whole update job + at least one agent task addressed to the picked store subagent. Use the `task-management` skill.
 
 If in doubt, lean toward tasks.
 
