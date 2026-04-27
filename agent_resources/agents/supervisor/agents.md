@@ -31,17 +31,12 @@ Use these when the owner needs work **on a sales channel** (Shopify, eBay, Amazo
 
 **Subagents:** `shopify` (integration `shopify_store`), `ebay` (`ebay_store`); future platforms (`amazon`, ...) plug in the same way. Pick the subagent by the target channel's `platform`.
 
-**Preconditions shared by almost every store management task** — run once before delegating:
+**Storefront product work** — `store-products` skill. Same pattern for any store subagent; choose subagent from the target channel’s `platform`. You can:
 
-1. Resolve the target channel via `sales-channels` skill. Note `platform` — that decides the subagent. Delegate even if the platform integration is inactive or unavailable; the subagent decides how to execute the task.
-2. If the task references products, confirm each with `products` skill.
-
-**Delegable tasks** (same skill for any store subagent; route by `platform`):
-
-- Put products on sale → `store-publish-products` skill
-- Change how products appear → `store-update-products` skill
-- Take products off sale → `store-remove-products` skill
-- See current storefront state → `store-inspect-listings` skill
+- Put products on sale
+- Change how they appear on the shop
+- Take them off sale
+- Inspect what is currently live on the storefront
 
 ### Supply management (sourcing and purchase-side execution)
 
