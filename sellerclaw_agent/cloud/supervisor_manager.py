@@ -71,8 +71,7 @@ def write_bundle_to_disk(
         path = ws_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    # Machine-wide managed skills — runtime hydration copies these into
-    # ``~/.openclaw/skills`` so every agent sees them without per-workspace duplication.
+    # Optional top-level shared-skills (usually empty; skills live under each workspace).
     shared_root = root / "shared-skills"
     if shared_root.exists():
         shutil.rmtree(shared_root)

@@ -225,6 +225,7 @@ def generate_openclaw_config(
     }
 
     config_payload = {
+        "meta": {},
         "logging": {
             "level": OPENCLAW_BUNDLE_LOG_LEVEL,
             "consoleLevel": OPENCLAW_BUNDLE_LOG_LEVEL,

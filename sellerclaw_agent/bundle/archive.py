@@ -59,9 +59,8 @@ def _add_tar_bytes(archive: tarfile.TarFile, arcname: str, payload: bytes) -> No
 class GatewayArchivePayload:
     """Minimal shape for building a gateway tar.gz (matches monolith GatewayBundle fields).
 
-    ``shared_skills`` is unpacked on the runtime side into OpenClaw's managed
-    skills directory (``~/.openclaw/skills``) so one copy is shared across all
-    agents on the machine.
+    ``shared_skills`` may be empty; shared skill files are normally embedded under
+    each agent path in ``workspaces``.
     """
 
     openclaw_config: str

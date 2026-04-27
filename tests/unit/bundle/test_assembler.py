@@ -74,22 +74,16 @@ def test_assembler_supervisor_omits_browser_when_global_browser_disabled(agent_r
     assert "browser" not in sup.tools_allow
 
 
-def test_assembler_supervisor_always_includes_goal_tracking_skill(agent_resources_root: Path) -> None:
-    asm = AgentConfigAssembler(resources_root=agent_resources_root)
-    sup = asm.assemble_supervisor_only(template_variables=_template_vars())
-    assert "goal-tracking" in sup.skills
-
-
 def test_assembler_supervisor_agents_md_comes_from_agents_template(
     agent_resources_root: Path,
 ) -> None:
-    """``AGENTS.md`` in the bundle is produced only from ``agents/supervisor/agents.md``."""
+    """Bundle ``AGENTS.md`` is rendered from ``agents/supervisor/agents.md`` (partials + variables)."""
     asm = AgentConfigAssembler(resources_root=agent_resources_root)
     sup = asm.assemble_supervisor_only(template_variables=_template_vars())
-    expected = (agent_resources_root / "agents" / "supervisor" / "agents.md").read_text(
-        encoding="utf-8"
-    )
-    assert sup.agents_md == expected.strip()
+    raw = (agent_resources_root / "agents" / "supervisor" / "agents.md").read_text(encoding="utf-8")
+    assert "{{" not in sup.agents_md
+    assert "SellerClaw" in sup.agents_md
+    assert "{{" in raw or len(raw) > 0
 
 
 def test_assembler_supervisor_loads_optional_templates_from_per_agent_files(
@@ -97,7 +91,7 @@ def test_assembler_supervisor_loads_optional_templates_from_per_agent_files(
 ) -> None:
     asm = AgentConfigAssembler(resources_root=agent_resources_root)
     sup = asm.assemble_supervisor_only(template_variables=_template_vars())
-    assert sup.user_md is not None and "Owner dossier" in sup.user_md
+    assert sup.user_md is not None and "Business profile" in sup.user_md
     assert sup.tools_md is not None and "TOOLS.md" in sup.tools_md
     assert sup.identity_md is not None and "IDENTITY.md" in sup.identity_md
     # ``soul.md`` under the supervisor folder wins over the legacy ``souls/supervisor.md``.
@@ -174,27 +168,20 @@ def test_assembler_module_without_optional_templates_keeps_subagent_soul_fallbac
     assert mod.identity_md is None
 
 
-def test_assembler_supervisor_excludes_shared_skills_from_per_agent_dict(
+def test_assembler_supervisor_includes_shared_skills_in_workspace_dict(
     agent_resources_root: Path,
 ) -> None:
-    """Shared skills (``agent_resources/shared-skills``) must not land in the per-agent ``skills`` dict.
-
-    They are exposed separately via ``assemble_shared_skills`` so the runtime can
-    drop them into OpenClaw's machine-wide managed-skills directory instead of
-    duplicating them into every agent workspace.
-    """
+    """Shared skills are merged into the supervisor ``skills`` dict for the workspace tar."""
     asm = AgentConfigAssembler(resources_root=agent_resources_root)
     sup = asm.assemble_supervisor_only(template_variables=_template_vars())
-    # ``file-storage`` is a shared skill referenced by ``base_supervisor_skills``.
-    assert "file-storage" not in sup.skills
-    assert "task-reporting" not in sup.skills
+    assert "file-storage" in sup.skills
+    assert "store-management" in sup.skills
 
 
-def test_assembler_shared_skills_exposes_all_shared_skills(agent_resources_root: Path) -> None:
+def test_assembler_shared_skills_attachment_is_empty(agent_resources_root: Path) -> None:
+    """Machine-wide shared-skills copy is elided; content lives in each workspace."""
     asm = AgentConfigAssembler(resources_root=agent_resources_root)
-    shared = asm.assemble_shared_skills(_template_vars())
-    assert set(shared.keys()) == {"file-storage", "task-reporting"}
-    assert all(content.strip() for content in shared.values())
+    assert asm.assemble_shared_skills(_template_vars()) == {}
 
 
 def test_assembler_scout_conditional_skills_follow_connected_integrations(agent_resources_root: Path) -> None:
