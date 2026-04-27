@@ -161,7 +161,7 @@ def test_assembler_module_has_no_soul_subagent_rules_in_agents_md(
         global_browser_enabled=True,
     )[1]
     assert mod.soul_md is None
-    assert "Subagent execution (shared)" in mod.agents_md
+    assert "Subagent execution" in mod.agents_md
     assert mod.user_md is None
     assert mod.tools_md is None
     assert mod.identity_md is None

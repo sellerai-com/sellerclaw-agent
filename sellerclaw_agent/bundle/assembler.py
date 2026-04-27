@@ -79,7 +79,9 @@ class AgentConfigAssembler:
         variables: dict[str, str],
         global_browser_enabled: bool,
     ) -> AssembledAgentConfig:
-        variables = {**variables, "agent_id": "supervisor"}
+        variables = self._template_variables_with_partials(
+            {**variables, "agent_id": "supervisor"},
+        )
 
         agents_md = self._resolve_agents_md(
             agent_id="supervisor",
@@ -151,8 +153,13 @@ class AgentConfigAssembler:
             browser_enabled=module_browser_enabled,
         )
 
-        module_variables = {**variables, "agent_id": module.agent_id}
-        module_variables["capabilities_modes"] = capabilities_modes
+        module_variables = self._template_variables_with_partials(
+            {
+                **variables,
+                "agent_id": module.agent_id,
+                "capabilities_modes": capabilities_modes,
+            },
+        )
 
         agents_md = self._resolve_agents_md(
             agent_id=module.agent_id,
@@ -253,6 +260,25 @@ class AgentConfigAssembler:
             return content
 
         return _PARTIAL_REF_PATTERN.sub(_replace, template)
+
+    def _template_variables_with_partials(self, base: dict[str, str]) -> dict[str, str]:
+        """Merge ``partials/<name>.md`` into the template context.
+
+        Each file stem (e.g. ``common-tools``, ``subagent-execution-rules``) becomes
+        a key whose value is that file after :meth:`_render` (so nested ``{{...}}`` in
+        partials resolve the same as elsewhere). Keys from ``base`` (manifest, derived
+        fields) override the same-named partial on collision.
+        """
+        partial_dir = self.resources_root / "partials"
+        if not partial_dir.is_dir():
+            return dict(base)
+        rendered: dict[str, str] = {}
+        for path in sorted(partial_dir.glob("*.md")):
+            stem = path.stem
+            raw = path.read_text(encoding="utf-8")
+            merged: dict[str, str] = {**base, **rendered}
+            rendered[stem] = self._render(raw, merged)
+        return {**rendered, **base}
 
     def _shared_skills_root(self) -> Path:
         return self.resources_root / "shared-skills"
