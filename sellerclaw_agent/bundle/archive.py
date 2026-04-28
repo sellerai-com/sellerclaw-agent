@@ -49,9 +49,12 @@ def build_gateway_version(
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def _add_tar_bytes(archive: tarfile.TarFile, arcname: str, payload: bytes) -> None:
+def _add_tar_bytes(
+    archive: tarfile.TarFile, arcname: str, payload: bytes, *, mtime: int
+) -> None:
     info = tarfile.TarInfo(name=arcname)
     info.size = len(payload)
+    info.mtime = mtime
     archive.addfile(tarinfo=info, fileobj=io.BytesIO(payload))
 
 
@@ -79,11 +82,12 @@ def build_gateway_archive(payload: GatewayArchivePayload) -> bytes:
                 archive,
                 "openclaw/openclaw.json",
                 payload.openclaw_config.encode("utf-8"),
+                mtime=mtime,
             )
             for relative_path, content in sorted(payload.workspaces.items()):
                 archive_path = f"workspaces/{relative_path.lstrip('/')}"
-                _add_tar_bytes(archive, archive_path, content.encode("utf-8"))
+                _add_tar_bytes(archive, archive_path, content.encode("utf-8"), mtime=mtime)
             for skill_name, content in sorted(payload.shared_skills.items()):
                 archive_path = f"shared-skills/{skill_name}/SKILL.md"
-                _add_tar_bytes(archive, archive_path, content.encode("utf-8"))
+                _add_tar_bytes(archive, archive_path, content.encode("utf-8"), mtime=mtime)
     return buffer.getvalue()
