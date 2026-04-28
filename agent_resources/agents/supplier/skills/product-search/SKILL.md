@@ -145,7 +145,9 @@ Catalog-side operations at a connected supplier — search, product / variant / 
 
 - **Shipping methods** — common: `CJPacket` (preferred for US), `ePacket`, `USPS`. If unsure, start with `CJPacket`; on `422` retry with `ePacket`.
 - **Address shape** — all `shipping_address` fields are required; `province` accepts US two-letter state codes (`CA`, `NY`) and full names for non-US.
-- **Stock** — `quantity` may be omitted on `check-stock`; treat as "available, unverified" and flag it.
+- **Stock** — `quantity` is aggregated across all CJ warehouses (CN/US/EU/…); `available=true` means at least one warehouse has positive inventory. `quantity` may still be missing on rare responses — treat that case as "available, unverified" and flag it.
+- **Variant id format** — CJ's real `variant_id` is a long numeric string (e.g. `1405792589029969920`). The short `CJGX…` / `CJGY…` code returned in product fields is a **product-level SKU**, not a variant id; passing it to `check-stock` will yield `Variant not found` (CJ error `1602000`). Always use the `variant_id` from `get-product` / `get-variants` output.
+- **`Variant not found` (code `1602000`)** — surfaces as an error, not as `available=false`. It means the `variant_id` is invalid; re-fetch variants for the product instead of retrying.
 - **Search relevance** — queries longer than ~3 words drift quickly; prefer 1–2 keywords.
 
 <!-- Add a new `### <Provider name> — <id>` subsection here when another supplier is connected. Cover at minimum: supported shipping method names, address quirks, stock-field quirks, search hints. -->
