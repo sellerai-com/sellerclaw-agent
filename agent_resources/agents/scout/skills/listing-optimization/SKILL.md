@@ -1,6 +1,6 @@
 ---
 name: listing-optimization
-description: "Improve titles, bullets, and tags using search behavior data (autocomplete, PAA, volumes) from DataForSEO."
+description: "Rewrite a marketplace listing (title, bullets, backend search terms) grounded in real search-behaviour data. Use when the user asks to improve, optimize, or rewrite a Shopify/eBay/Amazon listing, or to draft SEO-friendly copy for a new product."
 ---
 
 # Listing Optimization Skill

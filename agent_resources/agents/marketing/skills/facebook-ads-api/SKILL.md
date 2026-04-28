@@ -1,6 +1,6 @@
 ---
 name: facebook-ads-api
-description: "Work with Facebook / Meta Ads through sellerclaw-api endpoints for campaigns, ad sets, ads, audiences, and performance metrics."
+description: "Operate Facebook / Meta Ads for the connected ad account through `sellerclaw-api`: list / create / pause / update campaigns, ad sets, and ads; manage custom and lookalike audiences; pull performance metrics by entity and date range. Use whenever the task targets Facebook or Instagram advertising — the ad account ID is resolved server-side, no manual id needed. For campaign workflow templates (creation, optimization, scaling, A/B, emergency rules) use `campaign-playbook`; for product catalog inputs use `product-data-api`."
 ---
 
 # Facebook Ads API Skill

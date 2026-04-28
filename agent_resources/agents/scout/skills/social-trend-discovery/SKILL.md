@@ -1,6 +1,6 @@
 ---
 name: social-trend-discovery
-description: "Discover product and niche momentum from TikTok, YouTube Shorts, and Reddit via SociaVault-backed sellerclaw-api."
+description: "Surface social-native demand signals that search tools miss — popular and trending TikTok videos/hashtags, YouTube Shorts, and Reddit threads — through the SociaVault-backed `sellerclaw-api` social endpoints. Use when the user asks about viral / trending / momentum, wants to validate a niche on TikTok or Reddit, or needs early signals for products without established search volume. Requires `research_social` to be configured (returns 503 otherwise); for TikTok Shop listings/reviews specifically, use `tiktok-shop-research`."
 ---
 
 # Social Trend Discovery Skill

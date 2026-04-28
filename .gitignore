@@ -16,3 +16,4 @@ __pycache__/
 AGENTS.md
 CLAUDE.md
 docs-internal/
+tmp/

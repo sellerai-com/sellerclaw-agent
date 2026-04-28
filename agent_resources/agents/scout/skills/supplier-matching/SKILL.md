@@ -1,6 +1,6 @@
 ---
 name: supplier-matching
-description: "Find and compare suppliers for shortlisted products using connected supplier APIs via sellerclaw-api."
+description: "Find and rank supplier candidates for a shortlisted product on price, stock, shipping, and quality through a connected supplier provider. Use when you have a product or hero keyword and need real supplier options. Research only — not for purchase, fulfillment, or catalog DB writes."
 ---
 
 # Supplier Matching Skill
@@ -21,7 +21,7 @@ shortlisted product. Compare on price, shipping, stock reliability, and product 
 - Use `exec curl` for HTTP requests.
 - All supplier endpoints follow the pattern: `/suppliers/{provider}/{endpoint}`.
 - **Choose `{provider}`** from the Product Scout core section **Supplier API providers** (`{{available_supplier_providers}}`). Example: if the bundle lists `cj`, use `provider=cj`. If the value is `(none)`, you cannot call supplier catalog endpoints—return a partial result and say supplier API is unavailable.
-- For **CJ** field-level schemas and quirks, read skill **`cj-dropshipping`**.
+- For supplier catalog CLI shapes and per-provider quirks (`sellerclaw suppliers …` search / product / variants / stock / shipping quote), read the supplier subagent skill **`product-search`** (provider-neutral flow + per-provider notes, e.g. CJ).
 
 ## Workflow
 

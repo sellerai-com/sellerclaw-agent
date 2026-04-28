@@ -44,7 +44,7 @@ to the supervisor.
 
 {{result-envelope}}
 
-Supplier catalog **response shapes and CJ quirks**: skill **`supplier-matching`** (workflow) and **`cj-dropshipping`** (CJ fields and endpoints).
+Supplier catalog **response shapes and per-provider quirks**: skill **`supplier-matching`** (workflow); CLI shapes for catalog lookups live in the supplier subagent skill **`product-search`** (provider-neutral flow + per-provider notes).
 
 ### Browser (when API is not enough)
 

@@ -1,6 +1,6 @@
 ---
 name: file-storage
-description: "Upload text and binary files to SellerClaw File Storage API and share download links with the user or other agents."
+description: "Make any artifact you produce — screenshots, reports, exports, charts, rendered documents, in-memory text/binary blobs — actually visible to the user as an HTTPS `download_url`. Prefer the `message` tool's auto-upload shortcut for files already on the container filesystem (e.g. `browser` screenshots under `/home/node/.openclaw/media/...` or `/tmp/...`); use the manual `exec curl` upload to SellerClaw File Storage when you need the URL outside a `message.send` (passing to another agent, embedding in markdown, persisting) or when the content is in-memory. Required reading whenever you want the user to see a file — a local path alone is invisible to the user."
 ---
 
 # File Storage Skill
