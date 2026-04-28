@@ -1,7 +1,7 @@
 ---
-
-## name: orders
-description: "Read and update SellerClaw orders stored in the database: list with filters, fetch one, patch status and supplier or tracking fields. Use when the user asks about orders, order status, queue, purchasing, supplier purchase, tracking, costs, unresolved line items, or pulling fresh orders from a storefront into SellerClaw."
+name: orders
+description: "Read and update SellerClaw order rows: list with filters, fetch by `order_id`, patch status / supplier / tracking, or trigger a fresh storefront ingest. Use when the task is about orders, the purchase queue, status, tracking, costs, or unresolved line items"
+---
 
 # Orders
 

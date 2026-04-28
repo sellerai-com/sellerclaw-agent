@@ -1,6 +1,6 @@
 ---
 name: store-products
-description: "Manage how products appear on a connected storefront (Shopify, eBay, ...): publish to a shop ('push live', 'list on'), update live listings ('change price/title/image', 'rewrite'), remove ('unlist', 'delist', 'take off sale'), or inspect ('what is live', 'check the shop'). Delegates to platform subagents. For DB-only catalog work, use the `products` skill."
+description: "Manage how products appear on a connected storefront (Shopify, eBay, …) by delegating to the platform subagent: publish, update, remove, or inspect listings. Use for any 'push live', 'list on', 'change price/title', 'unlist', or 'what is live' request. For sourcing and catalog DB writes use `source-products`."
 ---
 
 # Routing
@@ -17,6 +17,17 @@ You need the store's `id` (use as `store_id`) and `platform`.
 **Inspect** is always a direct chat message to that subagent. **Publish / update / remove**: small, in-session jobs → chat; large or trackable → `task-management` (team task + agent task to the same subagent). If in doubt, lean toward tasks.
 
 # Storefront product operations
+
+## Precondition for publishing
+
+A product can be **published to a storefront only if it already exists as a row in the SellerClaw catalog DB**. There is **no path** that creates a brand-new product directly on the storefront.
+
+A catalog row, in turn, can be created **only from a real supplier-sourced product** at a connected supplier (e.g. CJ Dropshipping). The chain is fixed and lives in the **`source-products`** skill:
+
+1. **Source + save to catalog** → run the **`source-products`** skill: it briefs the **`supplier`** subagent for sourcing and persists the result via **`agent-products batch-create`**, producing real catalog **`product_id`**s.
+2. **Publish** — only then use *Publish* below with those **`product_ids`**.
+
+If the owner names a product that has no DB row, **STOP** and route to **`source-products`** first — never improvise the chain or skip steps.
 
 ## Publish
 
