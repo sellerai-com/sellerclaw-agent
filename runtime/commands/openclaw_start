@@ -5,14 +5,7 @@ readonly STATE_DIR="/home/node/.openclaw"
 readonly CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${STATE_DIR}/openclaw.json}"
 readonly TEMPLATES_ROOT="/opt/openclaw-workspaces"
 readonly RUNTIME_CONFIG_ROOT="/opt/openclaw-config"
-readonly APP_SKILLS_ROOT="/app/skills"
-# Workaround: OpenClaw may resolve workspace skill <location> to bundled install paths
-# under /app/skills/... instead of per-agent workspace (see openclaw/openclaw#42095).
-# Symlinks don't work — the gateway rejects paths that resolve outside its configured root.
-# Set OPENCLAW_APP_SKILLS_COPIES=1 to copy workspace skills into /app/skills/ instead.
-readonly OPENCLAW_APP_SKILLS_COPIES="${OPENCLAW_APP_SKILLS_COPIES:-0}"
-# Legacy symlink mode — disabled; kept for reference.
-readonly OPENCLAW_APP_SKILLS_ALIASES="${OPENCLAW_APP_SKILLS_ALIASES:-0}"
+readonly SHARED_SKILLS_DIR="${STATE_DIR}/skills"
 readonly EXTENDED_DIAG="${OPENCLAW_EXTENDED_DIAGNOSTICS:-0}"
 AGENT_IDS=()
 
@@ -266,6 +259,16 @@ hydrate_bundle_assets() {
         find "${TEMPLATES_ROOT}" -mindepth 1 -delete
         cp -a "${bundle_workspaces_root}/." "${TEMPLATES_ROOT}/"
     fi
+
+    # Managed skills: OpenClaw auto-discovers ~/.openclaw/skills and exposes
+    # those skills to every agent (see docs/tools/skills.md — "Locations and
+    # precedence"). Drop the bundled shared-skills folder there verbatim.
+    local bundle_shared_skills_root="/opt/config-bundle/shared-skills"
+    mkdir -p "${SHARED_SKILLS_DIR}"
+    find "${SHARED_SKILLS_DIR}" -mindepth 1 -delete
+    if [ -d "${bundle_shared_skills_root}" ]; then
+        cp -a "${bundle_shared_skills_root}/." "${SHARED_SKILLS_DIR}/"
+    fi
 }
 
 cleanup_stale_chrome_locks() {
@@ -380,92 +383,6 @@ sync_skills() {
     fi
 }
 
-sync_skill_compat_copies() {
-    if [ "${OPENCLAW_APP_SKILLS_COPIES}" != "1" ]; then
-        log "App skills copies disabled (OPENCLAW_APP_SKILLS_COPIES=${OPENCLAW_APP_SKILLS_COPIES}); skipping openclaw#42095 copy workaround"
-        return
-    fi
-
-    mkdir -p "${APP_SKILLS_ROOT}"
-
-    local agent_id=""
-    local workspace_dir=""
-    local skill_dir=""
-    local skill_name=""
-    local dest_path=""
-    for agent_id in "${AGENT_IDS[@]}"; do
-        workspace_dir="${STATE_DIR}/workspace-${agent_id}"
-        if [ ! -d "${workspace_dir}/skills" ]; then
-            continue
-        fi
-
-        while IFS= read -r -d '' skill_dir; do
-            skill_name="$(basename "${skill_dir}")"
-            dest_path="${APP_SKILLS_ROOT}/${skill_name}"
-
-            # Preserve built-in OpenClaw skills; only copy workspace-only skills.
-            if [ -d "${dest_path}" ] && [ ! -f "${dest_path}/.openclaw-workspace-copy" ]; then
-                log "Skipping app skills copy for ${skill_name}: ${dest_path} is a built-in skill"
-                continue
-            fi
-
-            rm -rf "${dest_path}"
-            cp -a "${skill_dir}" "${dest_path}"
-            touch "${dest_path}/.openclaw-workspace-copy"
-            log "App skills copy ${dest_path} <- ${skill_dir}"
-        done < <(find "${workspace_dir}/skills" -mindepth 1 -maxdepth 1 -type d -print0)
-    done
-}
-
-sync_skill_compat_aliases() {
-    if [ "${OPENCLAW_APP_SKILLS_ALIASES}" != "1" ]; then
-        return
-    fi
-
-    log "WARNING: OPENCLAW_APP_SKILLS_ALIASES=1 is deprecated; use OPENCLAW_APP_SKILLS_COPIES=1 instead (symlinks are rejected by gateway security check)"
-
-    mkdir -p "${APP_SKILLS_ROOT}"
-
-    local alias_path=""
-    local target=""
-    while IFS= read -r -d '' alias_path; do
-        target="$(readlink "${alias_path}" || true)"
-        case "${target}" in
-            "${STATE_DIR}"/workspace-*/skills/*)
-                if [ ! -e "${target}" ]; then
-                    log "Removing stale app skills symlink ${alias_path} -> ${target}"
-                    rm -f "${alias_path}"
-                fi
-                ;;
-        esac
-    done < <(find "${APP_SKILLS_ROOT}" -mindepth 1 -maxdepth 1 -type l -print0)
-
-    local agent_id=""
-    local workspace_dir=""
-    local skill_dir=""
-    local skill_name=""
-    for agent_id in "${AGENT_IDS[@]}"; do
-        workspace_dir="${STATE_DIR}/workspace-${agent_id}"
-        if [ ! -d "${workspace_dir}/skills" ]; then
-            continue
-        fi
-
-        while IFS= read -r -d '' skill_dir; do
-            skill_name="$(basename "${skill_dir}")"
-            alias_path="${APP_SKILLS_ROOT}/${skill_name}"
-
-            # Preserve built-in OpenClaw skills and only add aliases for workspace-only skills.
-            if [ -e "${alias_path}" ] && [ ! -L "${alias_path}" ]; then
-                log "Skipping app skills alias for ${skill_name}: ${alias_path} exists and is not a symlink"
-                continue
-            fi
-
-            ln -sfn "${skill_dir}" "${alias_path}"
-            log "App skills alias ${alias_path} -> ${skill_dir}"
-        done < <(find "${workspace_dir}/skills" -mindepth 1 -maxdepth 1 -type d -print0)
-    done
-}
-
 sync_agent_workspace() {
     local agent_id="$1"
     local src_workspace="${TEMPLATES_ROOT}/${agent_id}"
@@ -487,8 +404,6 @@ sync_all_workspaces() {
     for agent_id in "${AGENT_IDS[@]}"; do
         sync_agent_workspace "${agent_id}"
     done
-    sync_skill_compat_copies
-    sync_skill_compat_aliases
 }
 
 reset_agent_memory() {

@@ -1,6 +1,6 @@
 ---
 name: product-demand-analysis
-description: Deep-dive a product or niche with marketplace listings, reviews, PAA questions, and sentiment via DataForSEO.
+description: "Validate real demand and customer voice for a specific product or shortlisted niche — marketplace listings, reviews, buyer questions, sentiment. Use after a shortlist exists (SKU, niche name, or hero keyword) and the user wants proof points, review themes, or go/no-go signals. For top-of-funnel niche discovery use `trend-analysis`."
 ---
 
 # Product Demand Analysis Skill

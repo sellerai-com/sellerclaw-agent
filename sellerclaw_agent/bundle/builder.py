@@ -50,15 +50,30 @@ def _resolve_template_variables(
     manifest_variables: dict[str, str],
     *,
     agent_api_base_url: str,
+    global_browser_enabled: bool = True,
+    web_search_enabled: bool = False,
+    primary_channel: str = "sellerclaw-ui",
+    telegram_enabled: bool = False,
+    proxy_url: str = "",
 ) -> dict[str, str]:
-    """Inject the derived ``api_base_url`` into prompt template variables.
+    """Merge manifest ``template_variables`` with derived deployment fields.
 
-    Prompt templates (``SKILL.md`` etc.) reference ``{{ api_base_url }}``; the
-    manifest never ships it directly — the agent always derives it from
-    ``SELLERCLAW_API_URL`` plus the manifest-supplied ``agent_api_base_path``.
+    - ``api_base_url`` is always set from ``SELLERCLAW_API_URL`` + ``agent_api_base_path``
+      (manifest must not ship it; any manifest copy is overwritten).
+    - Boolean toggles are exposed as ``enabled`` / ``disabled`` for prompts (e.g. ``TOOLS.md``).
+    - ``tools_browser_media_root`` / ``tools_temp_exports_root`` default to common OpenClaw
+      paths but can be overridden via manifest ``template_variables``.
     """
     resolved = dict(manifest_variables)
     resolved[_API_BASE_URL_KEY] = agent_api_base_url
+    resolved["global_browser_enabled"] = "enabled" if global_browser_enabled else "disabled"
+    resolved["web_search_enabled"] = "enabled" if web_search_enabled else "disabled"
+    resolved["primary_channel"] = (primary_channel or "sellerclaw-ui").strip() or "sellerclaw-ui"
+    resolved["telegram_enabled"] = "enabled" if telegram_enabled else "disabled"
+    resolved["proxy_configured"] = "yes" if proxy_url.strip() else "no"
+    resolved.setdefault("tools_browser_media_root", "/home/node/.openclaw/media")
+    resolved.setdefault("tools_temp_exports_root", "/tmp")
+    resolved.setdefault("tools_quirks", "")
     return resolved
 
 
@@ -106,6 +121,11 @@ class BundleBuilder:
         template_variables = _resolve_template_variables(
             dict(manifest.template_variables),
             agent_api_base_url=agent_api_base_url,
+            global_browser_enabled=manifest.global_browser_enabled,
+            web_search_enabled=manifest.web_search.enabled,
+            primary_channel=manifest.primary_channel,
+            telegram_enabled=manifest.telegram.enabled,
+            proxy_url=manifest.proxy_url,
         )
         allowed_origins = _resolve_allowed_origins()
 
@@ -117,6 +137,7 @@ class BundleBuilder:
             global_browser_enabled=manifest.global_browser_enabled,
             per_module_browser=manifest.resolved_per_module_browser(),
         )
+        shared_skills = assembler.assemble_shared_skills(template_variables)
         workspaces = build_workspaces_from_assembled(assembled)
         if data_dir is not None:
             agent_api_key = resolve_agent_bearer_token_from_data_dir(data_dir)
@@ -154,11 +175,16 @@ class BundleBuilder:
             web_search_auth_token=web_search_auth_token,
             primary_channel=manifest.primary_channel,
         )
-        version = build_gateway_version(openclaw_config=openclaw_config, workspaces=workspaces)
+        version = build_gateway_version(
+            openclaw_config=openclaw_config,
+            workspaces=workspaces,
+            shared_skills=shared_skills,
+        )
         ts = created_at or datetime.now(tz=UTC)
         return BundleResult(
             openclaw_config=openclaw_config,
             workspaces=workspaces,
+            shared_skills=shared_skills,
             version=version,
             created_at=ts,
         )

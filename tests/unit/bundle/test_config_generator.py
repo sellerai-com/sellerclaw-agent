@@ -72,6 +72,7 @@ def test_generate_openclaw_config_has_gateway_and_models(
         telegram_allowed_group_ids=(),
     )
     payload = json.loads(raw)
+    assert payload["meta"] == {}
     assert payload["gateway"]["auth"]["token"] == "g"
     assert "litellm" in payload["models"]["providers"]
     assert payload["agents"]["list"][0]["id"] == "supervisor"

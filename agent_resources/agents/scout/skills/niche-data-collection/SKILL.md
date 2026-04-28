@@ -1,6 +1,6 @@
 ---
 name: niche-data-collection
-description: Collect structured research data for niche evaluation when delegated by supervisor. Return raw data as JSON — supervisor owns scoring.
+description: "Collect raw research data for a niche-evaluation sub-task and return it as the fixed-schema JSON the supervisor expects. Use only when the supervisor delegates an Agent Task that names this skill or a niche-data sub-task type; never score or summarize."
 ---
 
 # Niche Data Collection Skill

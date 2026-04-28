@@ -161,6 +161,10 @@ def test_start_writes_bundle_and_supervisorctl_start(
     assert (mgr.bundle_volume_path / "openclaw" / "openclaw.json").is_file()
     # runtime.env is written alongside bundle so shell scripts pick manifest values up.
     assert (mgr.bundle_volume_path / "runtime.env").is_file()
+    # Shared skills are embedded under each agent workspace (no separate shared-skills dir).
+    ws_skill = mgr.bundle_volume_path / "workspaces" / "supervisor" / "skills" / "file-storage" / "SKILL.md"
+    assert ws_skill.is_file()
+    assert ws_skill.read_text(encoding="utf-8").strip()
 
 
 def test_write_runtime_env_exports_proxy_url(tmp_path: Path) -> None:

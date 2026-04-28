@@ -1,6 +1,6 @@
 ---
 name: trend-analysis
-description: Query and interpret Google Trends data through sellerclaw-api for demand validation, niche discovery, and seasonal pattern detection.
+description: "Measure demand direction and seasonality for a keyword or niche via Google Trends (and DataForSEO when configured). Use when the user asks whether a niche is rising or declining, has seasonal peaks, or needs demand validation before sourcing or ad spend. For raw search volumes use `keyword-research`."
 ---
 
 # Trend Analysis Skill

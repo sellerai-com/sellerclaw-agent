@@ -2,7 +2,55 @@
   "id": "sellerclaw-ui",
   "name": "SellerClaw UI",
   "description": "Web chat delivery channel for SellerClaw",
+  "kind": "channel",
   "channels": ["sellerclaw-ui"],
+  "channelConfigs": {
+    "sellerclaw-ui": {
+      "label": "SellerClaw UI",
+      "description": "Web chat delivery channel for SellerClaw.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "apiBaseUrl": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Base URL of the SellerClaw API (webhook ingest)."
+          },
+          "userId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "SellerClaw user UUID for outbound messages."
+          },
+          "agentApiKey": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The agent's AGENT_API_KEY (outbound API auth to sellerclaw cloud)."
+          },
+          "internalWebhookSecret": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Local OpenClaw hooks / inbound secret (sellerclaw-agent hooks_token, not used for cloud API)."
+          },
+          "primaryChannel": {
+            "type": "string",
+            "enum": ["sellerclaw-ui", "telegram"],
+            "description": "Preferred channel for owner-facing notifications (matches SellerClaw agent config)."
+          },
+          "localAgentBaseUrl": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Loopback URL used by the plugin to call sellerclaw-agent inside the runtime container."
+          }
+        },
+        "required": ["apiBaseUrl", "userId", "agentApiKey", "internalWebhookSecret"]
+      },
+      "uiHints": {
+        "agentApiKey": { "sensitive": true },
+        "internalWebhookSecret": { "sensitive": true }
+      }
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": true,

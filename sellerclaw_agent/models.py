@@ -220,10 +220,7 @@ class AgentModuleDefinition:
     required_integrations: tuple[IntegrationRequirement, ...]
     tools_allow: tuple[str, ...]
     tools_deny: tuple[str, ...]
-    skills: tuple[str, ...]
     agent_sections: tuple[str, ...]
-    supervisor_delegation_skill: str
-    supervisor_skills: tuple[str, ...]
     recommended_integrations: tuple[IntegrationRequirement, ...] = ()
     conditional_skills: tuple[ConditionalSkill, ...] = ()
 
@@ -243,23 +240,15 @@ class AgentModuleDefinition:
         if not isinstance(self.model_tier, ModelTier):
             raise ValueError("Module model_tier must be a ModelTier enum value.")
 
-        skills = _normalize_items(self.skills)
         agent_sections = _normalize_items(self.agent_sections)
         tools_allow = _normalize_items(self.tools_allow)
         tools_deny = _normalize_items(self.tools_deny)
-        supervisor_skills = _normalize_items(self.supervisor_skills)
-
-        supervisor_delegation_skill = self.supervisor_delegation_skill.strip()
-        if not supervisor_delegation_skill:
-            raise ValueError("Module supervisor delegation skill must not be empty.")
 
         required_integrations = tuple(self.required_integrations)
 
-        _ensure_unique(skills, label="skills")
         _ensure_unique(agent_sections, label="agent_sections")
         _ensure_unique(tools_allow, label="tools_allow")
         _ensure_unique(tools_deny, label="tools_deny")
-        _ensure_unique(supervisor_skills, label="supervisor_skills")
         _ensure_unique(
             [requirement.kind.value for requirement in required_integrations],
             label="required_integrations.kind",
@@ -281,20 +270,13 @@ class AgentModuleDefinition:
         conditional_skills = tuple(self.conditional_skills)
         conditional_skill_names = [skill.skill_name for skill in conditional_skills]
         _ensure_unique(conditional_skill_names, label="conditional_skills")
-        _ensure_unique(
-            list(skills) + conditional_skill_names,
-            label="skills + conditional_skills",
-        )
 
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "description", description)
         object.__setattr__(self, "agent_id", agent_id)
-        object.__setattr__(self, "skills", skills)
         object.__setattr__(self, "agent_sections", agent_sections)
         object.__setattr__(self, "tools_allow", tools_allow)
         object.__setattr__(self, "tools_deny", tools_deny)
-        object.__setattr__(self, "supervisor_skills", supervisor_skills)
-        object.__setattr__(self, "supervisor_delegation_skill", supervisor_delegation_skill)
         object.__setattr__(self, "required_integrations", required_integrations)
         object.__setattr__(self, "recommended_integrations", recommended_integrations)
         object.__setattr__(self, "conditional_skills", conditional_skills)

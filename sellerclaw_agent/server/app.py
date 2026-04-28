@@ -70,8 +70,17 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     configure_agent_logging()
     data_dir = _get_data_dir()
-    storage = ManifestStorage(data_dir)
+    storage = ManifestStorage(data_dir)  # noqa: F841
     get_local_api_key(data_dir)
+
+    # Refresh the sellerclaw-cli config on boot if a token was persisted in a
+    # previous session — save()/clear() handle live lifecycle transitions, this
+    # covers container restarts where neither fires.
+    _existing_creds = CredentialsStorage(data_dir).load()
+    if _existing_creds is not None:
+        from sellerclaw_agent.cloud.cli_config import write_cli_config
+
+        write_cli_config(token=_existing_creds.agent_token)
 
     stop = asyncio.Event()
     background_holders: list[dict[str, Any]] = []
@@ -552,6 +561,7 @@ def download_bundle_archive(
         GatewayArchivePayload(
             openclaw_config=result.openclaw_config,
             workspaces=result.workspaces,
+            shared_skills=result.shared_skills,
             created_at=result.created_at,
         )
     )

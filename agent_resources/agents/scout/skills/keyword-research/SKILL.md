@@ -1,6 +1,6 @@
 ---
 name: keyword-research
-description: Expand and filter keywords for niche or product discovery using DataForSEO autocomplete, volume, and related-keyword APIs.
+description: "Grow a seed term into a ranked keyword list via DataForSEO endpoints exposed through `sellerclaw-api`: autocomplete suggestions, monthly search volume + competition, and related/labs ideas. Use when the user asks for keyword ideas, wants to size demand for terms, needs long-tail or backend search-term lists, or is preparing inputs for listing copy or ad targeting. Requires `research_seo` configured (503 otherwise); for trend direction over time use `trend-analysis`, for listing copy use `listing-optimization`."
 ---
 
 # Keyword Research Skill

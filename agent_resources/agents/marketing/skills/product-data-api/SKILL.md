@@ -1,6 +1,6 @@
 ---
 name: product-data-api
-description: Read product catalog data for ad campaign planning and optimization.
+description: "Read SellerClaw catalog product data (name, description, images, price, stock, variations, status) needed to plan or optimize ad campaigns — list products with `GET /products` or fetch one with `GET /products/{id}`. Use before creating a campaign, scaling spend, or refreshing creative; also use to gate launches/scaling on stock and product status. Read-only — do not use for catalog edits or storefront listing changes."
 ---
 
 # Product Data API Skill

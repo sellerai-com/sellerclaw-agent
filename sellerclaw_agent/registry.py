@@ -31,11 +31,8 @@ SHOPIFY_STORE_MANAGER_MODULE = AgentModuleDefinition(
     ),
     tools_allow=("group:fs", "exec", "process", "web_fetch", "web_search", "browser"),
     tools_deny=("group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"),
-    skills=("store-api", "shopify-api", "shopify-storefront-setup"),
     conditional_skills=(),
     agent_sections=("core",),
-    supervisor_delegation_skill="shopify-delegation",
-    supervisor_skills=("store-reporting",),
 )
 
 EBAY_STORE_MANAGER_MODULE = AgentModuleDefinition(
@@ -55,11 +52,8 @@ EBAY_STORE_MANAGER_MODULE = AgentModuleDefinition(
     ),
     tools_allow=("group:fs", "exec", "process", "web_fetch", "web_search", "browser"),
     tools_deny=("group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"),
-    skills=("store-api", "ebay-api"),
     conditional_skills=(),
     agent_sections=("core",),
-    supervisor_delegation_skill="ebay-delegation",
-    supervisor_skills=("store-reporting",),
 )
 
 DROPSHIPPING_SUPPLIER_MODULE = AgentModuleDefinition(
@@ -77,10 +71,7 @@ DROPSHIPPING_SUPPLIER_MODULE = AgentModuleDefinition(
     ),
     tools_allow=("group:fs", "exec", "process", "web_fetch", "web_search", "browser"),
     tools_deny=("group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"),
-    skills=("cj-dropshipping",),
     agent_sections=("core",),
-    supervisor_delegation_skill="supplier-delegation",
-    supervisor_skills=("catalog-management", "order-orchestration"),
 )
 
 MARKETING_MANAGER_MODULE = AgentModuleDefinition(
@@ -113,11 +104,8 @@ MARKETING_MANAGER_MODULE = AgentModuleDefinition(
         "cron",
         "gateway",
     ),
-    skills=("facebook-ads-api", "google-ads-api", "product-data-api", "campaign-playbook"),
     conditional_skills=(),
     agent_sections=("core",),
-    supervisor_delegation_skill="marketing-delegation",
-    supervisor_skills=("ad-performance-reporting",),
 )
 
 PRODUCT_SCOUT_MODULE = AgentModuleDefinition(
@@ -151,22 +139,11 @@ PRODUCT_SCOUT_MODULE = AgentModuleDefinition(
     ),
     tools_allow=("group:fs", "exec", "process", "web_fetch", "web_search", "browser"),
     tools_deny=("group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"),
-    skills=(
-        "trend-analysis",
-        "niche-data-collection",
-        "competitor-research",
-        "keyword-research",
-        "product-demand-analysis",
-        "listing-optimization",
-        "supplier-matching",
-    ),
     conditional_skills=(
         ConditionalSkill(skill_name="social-trend-discovery", required_integration=IntegrationKind.RESEARCH_SOCIAL),
         ConditionalSkill(skill_name="tiktok-shop-research", required_integration=IntegrationKind.RESEARCH_SOCIAL),
     ),
     agent_sections=("core",),
-    supervisor_delegation_skill="product-scout-delegation",
-    supervisor_skills=("niche-scoring-delegation", "niche-scoring-report"),
 )
 
 MODULE_REGISTRY: dict[AgentModuleId, AgentModuleDefinition] = {

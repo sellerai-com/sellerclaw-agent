@@ -1,6 +1,6 @@
 ---
 name: competitor-research
-description: Analyze competitors via DataForSEO marketplace/SERP APIs when available, with browser-based deep dives as fallback.
+description: "Map competitors for a niche or product: SERP rivals, marketplace listings, active ads, and store deep dives. Use when the user asks who else is selling, how prices compare, or how saturated a niche is. For keyword expansion use `keyword-research`; for review themes use `product-demand-analysis`."
 ---
 
 # Competitor Research Skill

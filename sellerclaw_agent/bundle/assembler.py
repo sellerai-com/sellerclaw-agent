@@ -79,76 +79,39 @@ class AgentConfigAssembler:
         variables: dict[str, str],
         global_browser_enabled: bool,
     ) -> AssembledAgentConfig:
-        variables = {**variables, "agent_id": "supervisor"}
-        has_any_store = self._has_integration(
-            enabled_modules=enabled_modules,
-            kind=IntegrationKind.SHOPIFY_STORE,
-        ) or self._has_integration(
-            enabled_modules=enabled_modules,
-            kind=IntegrationKind.EBAY_STORE,
-        )
-        has_supplier = self._has_integration(
-            enabled_modules=enabled_modules,
-            kind=IntegrationKind.SUPPLIER_CJ,
-        ) or self._has_integration(
-            enabled_modules=enabled_modules,
-            kind=IntegrationKind.SUPPLIER_ANY,
+        variables = self._template_variables_with_partials(
+            {**variables, "agent_id": "supervisor"},
         )
 
-        sections: list[str] = [
-            self._render(self._load_section("agents/supervisor/sections/core"), variables),
-            self._render(
-                self._load_section("agents/supervisor/sections/goal_tracking"),
-                variables,
-            ),
-        ]
-
-        if has_any_store:
-            sections.append(
-                self._render(
-                    self._load_section("agents/supervisor/sections/store_management"), variables
-                )
-            )
-
-        if has_supplier:
-            sections.append(
-                self._render(
-                    self._load_section(
-                        "agents/supervisor/sections/dropshipping_fulfillment",
-                    ),
-                    variables,
-                )
-            )
-
-        agents_md = "\n\n".join(section for section in sections if section.strip())
-
-        soul_md = self._render(self._load_section("souls/supervisor"), variables)
-
-        user_md = self._render(self._load_section("agents/supervisor/user"), variables)
-
-        base_supervisor_skills = ["file-storage", "owner-notifications", "goal-tracking"]
-        supervisor_skill_names = self._deduplicate(
-            [
-                *base_supervisor_skills,
-                *[module.supervisor_delegation_skill for module in enabled_modules],
-                *[
-                    skill_name
-                    for module in enabled_modules
-                    for skill_name in module.supervisor_skills
-                ],
-            ]
-        )
-        if enabled_modules:
-            supervisor_skill_names = self._deduplicate(
-                ["delegation-monitoring", *supervisor_skill_names]
-            )
-        if has_any_store or has_supplier:
-            supervisor_skill_names = self._deduplicate(
-                [*supervisor_skill_names, "domain-reference"]
-            )
-        skills = self._merge_supervisor_skills(
-            supervisor_skill_names=supervisor_skill_names,
+        agents_md = self._resolve_agents_md(
+            agent_id="supervisor",
             variables=variables,
+        )
+        soul_md = self._resolve_optional_template(
+            agent_id="supervisor",
+            filename="soul.md",
+            variables=variables,
+        )
+        user_md = self._resolve_optional_template(
+            agent_id="supervisor",
+            filename="user.md",
+            variables=variables,
+        )
+        tools_md = self._resolve_optional_template(
+            agent_id="supervisor",
+            filename="tools.md",
+            variables=variables,
+        )
+        identity_md = self._resolve_optional_template(
+            agent_id="supervisor",
+            filename="identity.md",
+            variables=variables,
+        )
+
+        skills = self._build_agent_skills(
+            agent_id="supervisor",
+            variables=variables,
+            remove_skill_names=frozenset(),
         )
 
         tools_allow = ["group:web", "web_search", "message", "browser", "cron", "exec"]
@@ -171,6 +134,8 @@ class AgentConfigAssembler:
             memory_md="# Agent memory: supervisor\n",
             soul_md=soul_md,
             user_md=user_md,
+            tools_md=tools_md,
+            identity_md=identity_md,
             skills=skills,
         )
 
@@ -188,38 +153,49 @@ class AgentConfigAssembler:
             browser_enabled=module_browser_enabled,
         )
 
-        module_variables = {**variables, "agent_id": module.agent_id}
-        module_variables["capabilities_modes"] = capabilities_modes
-        task_tracking_raw = (
-            self.resources_root / "partials" / "task-tracking.md"
-        ).read_text(encoding="utf-8")
-        module_variables["task_tracking_section"] = self._render(
-            task_tracking_raw,
-            module_variables,
+        module_variables = self._template_variables_with_partials(
+            {
+                **variables,
+                "agent_id": module.agent_id,
+                "capabilities_modes": capabilities_modes,
+            },
         )
 
-        sections = [
-            self._render(
-                self._load_section(
-                    f"agents/{module.agent_id}/sections/{section_path}",
-                ),
-                module_variables,
-            )
-            for section_path in module.agent_sections
-        ]
-        agents_md = "\n\n".join(section for section in sections if section.strip())
-
-        all_skill_names = list(module.skills)
-        for conditional_skill in module.conditional_skills:
-            if conditional_skill.required_integration in connected_integrations:
-                all_skill_names.append(conditional_skill.skill_name)
-
-        skills = self._merge_module_skills(
+        agents_md = self._resolve_agents_md(
             agent_id=module.agent_id,
-            module_skill_names=all_skill_names,
             variables=module_variables,
         )
-        soul_md = self._render(self._load_section("souls/subagent"), module_variables)
+
+        remove_names = frozenset(
+            cond.skill_name
+            for cond in module.conditional_skills
+            if cond.required_integration not in connected_integrations
+        )
+        skills = self._build_agent_skills(
+            agent_id=module.agent_id,
+            variables=module_variables,
+            remove_skill_names=remove_names,
+        )
+        soul_md = self._resolve_optional_template(
+            agent_id=module.agent_id,
+            filename="soul.md",
+            variables=module_variables,
+        )
+        user_md = self._resolve_optional_template(
+            agent_id=module.agent_id,
+            filename="user.md",
+            variables=module_variables,
+        )
+        tools_md = self._resolve_optional_template(
+            agent_id=module.agent_id,
+            filename="tools.md",
+            variables=module_variables,
+        )
+        identity_md = self._resolve_optional_template(
+            agent_id=module.agent_id,
+            filename="identity.md",
+            variables=module_variables,
+        )
 
         mod_tools = list(module.tools_allow)
         if not module_browser_enabled:
@@ -236,7 +212,9 @@ class AgentConfigAssembler:
             agents_md=agents_md,
             memory_md=f"# Agent memory: {module.agent_id}\n",
             soul_md=soul_md,
-            user_md=None,
+            user_md=user_md,
+            tools_md=tools_md,
+            identity_md=identity_md,
             skills=skills,
         )
 
@@ -283,11 +261,27 @@ class AgentConfigAssembler:
 
         return _PARTIAL_REF_PATTERN.sub(_replace, template)
 
+    def _template_variables_with_partials(self, base: dict[str, str]) -> dict[str, str]:
+        """Merge ``partials/<name>.md`` into the template context.
+
+        Each file stem (e.g. ``common-tools``, ``subagent-execution-rules``) becomes
+        a key whose value is that file after :meth:`_render` (so nested ``{{...}}`` in
+        partials resolve the same as elsewhere). Keys from ``base`` (manifest, derived
+        fields) override the same-named partial on collision.
+        """
+        partial_dir = self.resources_root / "partials"
+        if not partial_dir.is_dir():
+            return dict(base)
+        rendered: dict[str, str] = {}
+        for path in sorted(partial_dir.glob("*.md")):
+            stem = path.stem
+            raw = path.read_text(encoding="utf-8")
+            merged: dict[str, str] = {**base, **rendered}
+            rendered[stem] = self._render(raw, merged)
+        return {**rendered, **base}
+
     def _shared_skills_root(self) -> Path:
         return self.resources_root / "shared-skills"
-
-    def _module_skills_root(self) -> Path:
-        return self.resources_root / "module-skills"
 
     def _iter_shared_skill_names(self) -> list[str]:
         root = self._shared_skills_root()
@@ -308,60 +302,48 @@ class AgentConfigAssembler:
         self._raw_shared_skills_cache = result
         return result
 
-    def _load_all_shared_skills(self, variables: dict[str, str]) -> dict[str, str]:
-        return {
-            name: self._render(raw, variables)
-            for name, raw in self._load_raw_shared_skills().items()
-        }
+    def assemble_shared_skills(self, _variables: dict[str, str]) -> dict[str, str]:
+        """Shared skill markdown is embedded in each agent workspace (see ``_build_agent_skills``).
 
-    def _merge_supervisor_skills(
-        self,
-        *,
-        supervisor_skill_names: list[str],
-        variables: dict[str, str],
-    ) -> dict[str, str]:
-        skills = self._load_all_shared_skills(variables)
-        for name in supervisor_skill_names:
-            agent_path = (
-                self.resources_root / "agents" / "supervisor" / "skills" / name / "SKILL.md"
-            )
-            if agent_path.is_file():
-                skills[name] = self._render(
-                    self._load_skill_markdown(f"agents/supervisor/skills/{name}/SKILL"),
-                    variables,
-                )
-            elif name not in skills:
-                raise FileNotFoundError(
-                    f"Supervisor skill '{name}' not found: neither "
-                    f"agents/supervisor/skills/{name}/SKILL.md nor "
-                    f"shared-skills/{name}/SKILL.md exists."
-                )
-        return skills
+        This hook remains empty: the bundle no longer ships a separate machine-wide
+        ``shared-skills/`` copy to avoid duplicating the same content twice.
+        """
+        return {}
 
-    def _merge_module_skills(
+    def _iter_agent_skill_dir_names(self, agent_id: str) -> list[str]:
+        root = self.resources_root / "agents" / agent_id / "skills"
+        if not root.is_dir():
+            return []
+        return sorted(
+            p.name
+            for p in root.iterdir()
+            if p.is_dir() and (p / "SKILL.md").is_file()
+        )
+
+    def _build_agent_skills(
         self,
         *,
         agent_id: str,
-        module_skill_names: list[str],
         variables: dict[str, str],
+        remove_skill_names: frozenset[str] = frozenset(),
     ) -> dict[str, str]:
-        skills = self._load_all_shared_skills(variables)
-        for name in module_skill_names:
-            agent_path = (
-                self.resources_root / "agents" / agent_id / "skills" / name / "SKILL.md"
+        """Merge shared skills with ``agents/<agent_id>/skills/*/SKILL.md`` (agent wins on name clash).
+
+        Names in ``remove_skill_names`` are dropped after merge (conditional integrations).
+        """
+        skills: dict[str, str] = {}
+        for name, raw in self._load_raw_shared_skills().items():
+            skills[name] = self._render(raw, variables)
+        for name in self._iter_agent_skill_dir_names(agent_id):
+            rel = f"agents/{agent_id}/skills/{name}/SKILL"
+            skills[name] = self._render(self._load_skill_markdown(rel), variables)
+        for name in remove_skill_names:
+            skills.pop(name, None)
+        if not skills:
+            raise FileNotFoundError(
+                f"No skills assembled for agent '{agent_id}': add shared skills under "
+                f"'shared-skills/' and/or 'agents/{agent_id}/skills/<name>/SKILL.md'."
             )
-            module_path = self._module_skills_root() / name / "SKILL.md"
-            if agent_path.is_file():
-                resolved = f"agents/{agent_id}/skills/{name}/SKILL"
-            elif module_path.is_file():
-                resolved = f"module-skills/{name}/SKILL"
-            else:
-                raise FileNotFoundError(
-                    f"Module skill '{name}' for agent '{agent_id}' not found: neither "
-                    f"agents/{agent_id}/skills/{name}/SKILL.md nor "
-                    f"module-skills/{name}/SKILL.md exists."
-                )
-            skills[name] = self._render(self._load_skill_markdown(resolved), variables)
         return skills
 
     def _load_skill_markdown(self, relative_path_without_md: str) -> str:
@@ -373,36 +355,28 @@ class AgentConfigAssembler:
             )
         return path.read_text(encoding="utf-8")
 
-    def _load_section(self, relative_path: str) -> str:
-        """Load a markdown section by path relative to resources root."""
-        path = self.resources_root / f"{relative_path}.md"
-        if not path.exists() or not path.is_file():
-            raise FileNotFoundError(
-                f"Resource section not found: '{relative_path}.md' at '{path}'."
-            )
-        return path.read_text(encoding="utf-8")
-
-    def _has_integration(
+    def _resolve_agents_md(
         self,
         *,
-        enabled_modules: list[AgentModuleDefinition],
-        kind: IntegrationKind,
-    ) -> bool:
-        return any(
-            requirement.kind == kind
-            for module in enabled_modules
-            for requirement in (
-                *module.required_integrations,
-                *module.recommended_integrations,
+        agent_id: str,
+        variables: dict[str, str],
+    ) -> str:
+        agents_path = self.resources_root / "agents" / agent_id / "agents.md"
+        if not agents_path.is_file():
+            raise FileNotFoundError(
+                "Agent AGENTS.md template missing: expected "
+                f"'agents/{agent_id}/agents.md' at '{agents_path}'."
             )
-        )
+        return self._render(agents_path.read_text(encoding="utf-8"), variables)
 
-    def _deduplicate(self, values: list[str]) -> list[str]:
-        unique_values: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            if value in seen:
-                continue
-            seen.add(value)
-            unique_values.append(value)
-        return unique_values
+    def _resolve_optional_template(
+        self,
+        *,
+        agent_id: str,
+        filename: str,
+        variables: dict[str, str],
+    ) -> str | None:
+        path = self.resources_root / "agents" / agent_id / filename
+        if not path.is_file():
+            return None
+        return self._render(path.read_text(encoding="utf-8"), variables)

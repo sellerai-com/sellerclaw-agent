@@ -1,6 +1,6 @@
 ---
 name: google-ads-api
-description: Work with Google Ads through sellerclaw-api endpoints for campaigns, ad groups, metrics, Merchant products, asset groups, and keyword ideas.
+description: "Operate Google Ads (and Performance Max) for the connected account through `sellerclaw-api`: list / create / pause / update campaigns and ad groups, pull performance metrics, manage PMax asset groups, sync Merchant Center products, and pull keyword ideas. Use whenever the task targets Google Ads — Search, Shopping, or Performance Max — for the owner's connected integration; the customer/account is resolved server-side, no GAQL needed. For campaign workflow templates (creation, optimization, scaling, A/B) use `campaign-playbook`; for catalog inputs use `product-data-api`."
 ---
 
 # Google Ads API Skill

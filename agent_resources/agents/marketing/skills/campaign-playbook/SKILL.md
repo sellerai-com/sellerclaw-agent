@@ -1,6 +1,6 @@
 ---
 name: campaign-playbook
-description: "Step-by-step workflows for campaign creation, optimization cycles, A/B testing, budget scaling, and emergency rules. Use when: creating a new campaign, running an optimization check, setting up an A/B test, scaling ad spend, or handling budget/token emergencies."
+description: "Provider-agnostic ad-campaign playbook: standard procedures for creating a new campaign, the periodic optimization cycle (kill / scale / fatigue / saturation rules), A/B tests, budget scaling cadence, and emergency rules (CPA blow-up, weekly-spend cap, token expiry). Use whenever the task is to plan a new campaign, run a routine optimization pass, set up an A/B variant, scale spend, or react to a budget/account emergency — pair with `facebook-ads-api` or `google-ads-api` for the actual API calls, and `product-data-api` for catalog inputs."
 ---
 
 # Campaign playbook
