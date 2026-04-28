@@ -1,6 +1,9 @@
 ## Connected stores
 
-**Stores** or **sales channels** are storefronts the **owner connected** in SellerClaw so you can act on them **via that platform’s API** (catalog, orders, …) through SellerClaw. **List stores** with **`sales-channels`** skill.
-**Platform filter —** act only on channels whose **`platform`** field matches this agent’s store platform.
+A **sales channel** is one **connected storefront** in SellerClaw that the owner linked so you can call that **platform’s APIs** through SellerClaw using a stable `**store_id`** (**UUID**, same as `**sales_channel_id`** in APIs). Different channels can be **different platforms** (`shopify`, `ebay`, …); **stay inside this agent’s platform**—ignore channels whose `**platform`** does not match.
 
-**When the task names no store** — If it still implies work on “the” store: with **exactly one** connected channel for this platform, use it and do not ask which shop. With **more than one**, stop and ask the supervisor **which** store (unless the task clearly targets all of them). With **none**, report that nothing is connected for this platform.
+**Before any store-scoped task**, fix `**store_id`** for the exact shop you act on.
+
+**If the shop is unnamed or only hinted** (nickname, domain fragment, “my store”, old task context): take `**store_id`** from the delegated payload or session context when present; otherwise infer—**exactly one** active channel for **this** platform and no conflicting hint → use its `**id`**; **none** → blocker (nothing connected); **several** plausible → blocker or ask upstream with candidate `**id` / name / domain**. Do **not** treat marketplace hostname or native seller ids as `**store_id`**.
+
+Use the `sales-channels` skill  when you must list or filter channels to decide.
