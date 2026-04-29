@@ -1,24 +1,17 @@
 ---
 name: file-storage
-description: "Make any artifact you produce — screenshots, reports, exports, charts, rendered documents, in-memory text/binary blobs — actually visible to the user as an HTTPS `download_url`. Prefer the `message` tool's auto-upload shortcut for files already on the container filesystem (e.g. `browser` screenshots under `/home/node/.openclaw/media/...` or `/tmp/...`); use the manual `exec curl` upload to SellerClaw File Storage when you need the URL outside a `message.send` (passing to another agent, embedding in markdown, persisting) or when the content is in-memory. Required reading whenever you want the user to see a file — a local path alone is invisible to the user."
+description: "Deliver agent-produced artifacts (screenshots, reports, exports, in-memory blobs) to the user as an HTTPS `download_url`. Two paths: pass a local container path to the `message` tool's `imagePath`/`mediaUrl` for inline auto-upload (default for `browser` screenshots and anything already on disk), or run `sellerclaw agent-files upload|from-url` to mint a URL you need outside the current `message.send` — handing to another agent, embedding in markdown, persisting. A bare local path is never visible to the user."
 ---
 
 # File Storage Skill
 
 ## Goal
-Upload content as files and provide download URLs to the user (owner) or other agents.
 
-**Rule of thumb:** whenever you produce an artifact (screenshot, report, export, chart,
-rendered document) that you want the user to actually *see* or *download* — you MUST
-ensure it reaches the user as an HTTPS `download_url`. A local path on disk (e.g. the
-`mediaUrl` returned by the `browser` tool) is **never** visible to the user on its own.
+Any artifact you produce reaches the user only as an HTTPS `download_url`. A bare local path on the container (e.g. `/home/node/.openclaw/media/...`) is invisible to the user.
 
-## Plugin-native shortcut for local container files (preferred)
+## Path 1 — auto-upload via the `message` tool (preferred for files on disk)
 
-If the file already lives inside the container (typical for `browser` screenshots at
-`/home/node/.openclaw/media/...`, or artifacts you wrote to `/tmp/...`), you do **not**
-need to run `curl` against File Storage yourself. The `message` tool's image params
-auto-upload local paths through the agent's internal proxy:
+The `message` tool uploads a local path through the internal proxy and forwards the resulting HTTPS URL in one call:
 
 ```
 message.send(
@@ -27,107 +20,58 @@ message.send(
 )
 ```
 
-Also accepted for auto-upload: passing a local path (absolute `/...` or `file://...`)
-as `imageUrl`, `mediaUrl`, or `localImagePath`. The plugin strips `file://`, uploads
-the file, and forwards the resulting HTTPS `download_url` to the user.
+Absolute `/...` or `file://...` paths are also accepted via `imageUrl`, `mediaUrl`, or `localImagePath`. Use this whenever the file already exists on disk — no token, no `exec`, no extra step.
 
-Use this shortcut whenever the file is already on the container filesystem — no
-`AGENT_API_KEY`, no `exec curl`, no manual upload step.
+## Path 2 — mint a `download_url` via `sellerclaw agent-files`
 
-Fallback to the manual curl flow below only when:
-- you need the `download_url` for something other than the current `message.send` call
-  (e.g. storing it, passing it to another agent, embedding in a markdown link), or
-- the content is generated in-memory and not yet on disk.
+Use when you need the URL for something other than the current `message.send`: passing to another agent, embedding in markdown, persisting, or starting from a remote URL. All commands return a `CreateFileResponse` JSON with `download_url`.
 
-## Text Upload
+Local file (binary or text) — multipart upload:
 
 ```bash
-curl -s -X POST "{{api_base_url}}/files/" \
-  -H "Authorization: Bearer $AGENT_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"filename": "report.csv", "content": "col1,col2\\nval1,val2\\n"}'
+sellerclaw agent-files upload /tmp/report.csv
+sellerclaw agent-files upload /tmp/raw.bin --filename inventory.json
 ```
 
-Response: `{"file_id":"...","filename":"report.csv","content_type":"text/csv","size_bytes":123,"download_url":"{{api_base_url}}/files/{id}/report.csv","expires_at":"..."}`.
-
-## Binary Upload (images)
+Remote URL — server-side fetch into storage:
 
 ```bash
-curl -s -X POST "{{api_base_url}}/files/upload" \
-  -H "Authorization: Bearer $AGENT_API_KEY" \
-  -F "file=@/path/to/image.png"
+sellerclaw agent-files from-url --url https://example.com/sheet.csv
+sellerclaw agent-files from-url --url https://... --filename custom.csv
 ```
 
-Response: same payload shape as text upload (including `content_type` and `size_bytes`).
+List existing user files:
 
-## Delivering the file to the user
-
-After upload, the response contains `download_url` — a public HTTPS link valid for 7 days.
-Use it in one of two ways:
-
-### 1. Attach as image (preview renders inline in chat)
-
-For images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`). The `message` tool accepts a
-media URL via any of these param names: `mediaUrls`, `imageUrls`, `imageUrl`, `mediaUrl`.
-Pass the `download_url` you just received:
-
-```
-message.send(
-  text="Here is the screenshot you asked for.",
-  mediaUrls=["{download_url from response above}"]
-)
+```bash
+sellerclaw agent-files list --limit 20
 ```
 
-Only HTTPS URLs are forwarded — local file paths are stripped by the runtime and will
-not reach the user.
+For in-memory content, write it to a local path first, then `agent-files upload`. Re-check any subcommand with `sellerclaw agent-files <cmd> --help`.
 
-### 2. Inline markdown link (for any file type)
+Response shape (all three create commands):
 
-Works for all extensions (CSV, JSON, MD, images, …). Put the link in the message body:
-
-```
-Report is ready: [weekly-sales.csv]({download_url})
+```json
+{"file_id":"...","filename":"report.csv","content_type":"text/csv","size_bytes":123,"download_url":"https://.../files/<id>/report.csv","expires_at":"..."}
 ```
 
-## Delivering a browser screenshot — end-to-end
+## Delivering the URL to the user
 
-The `browser` tool's `screenshot` / `snapshot` action returns
-`result.media.mediaUrl` = a **local path inside the container** (e.g.
-`/home/node/.openclaw/media/browser/<uuid>.jpg`). That path is NOT reachable by the user.
-
-**Preferred (plugin-native):** pass the local path straight to the message tool:
+Inline image preview (`.png` / `.jpg` / `.jpeg` / `.webp` / `.gif`):
 
 ```
-message.send(
-  text="Here is the page.",
-  imagePath="${result.media.mediaUrl}"
-)
+message.send(text="...", mediaUrls=["<download_url>"])
 ```
 
-The plugin uploads it and delivers an HTTPS preview in one call.
+Markdown link for any file type:
 
-**Manual curl flow** — use only when you need the `download_url` for something beyond
-the current reply:
+```
+Report is ready: [weekly-sales.csv](<download_url>)
+```
 
-1. Call `browser` to take the screenshot → copy `result.media.mediaUrl` (local path).
-2. Upload it:
-   ```bash
-   curl -s -X POST "{{api_base_url}}/files/upload" \
-     -H "Authorization: Bearer $AGENT_API_KEY" \
-     -F "file=@${mediaUrl}"
-   ```
-   → response contains `download_url`.
-3. Send to user via `message.send(text=..., mediaUrls=[download_url])`.
-
-**Never claim "screenshot sent" / "file attached" without having actually passed a
-local `imagePath` (plugin-native route) or an HTTPS `download_url` to the `message` tool
-in the same reply.** A plain text "done" without delivering the image means the user
-sees nothing.
+Local paths in `mediaUrls` are stripped by the runtime — only HTTPS URLs reach the user. Never claim "file sent" without actually passing `imagePath` (Path 1) or an HTTPS `download_url` (Path 2) in the same reply.
 
 ## Constraints
 
-- Allowed extensions: `.txt`, `.csv`, `.md`, `.json`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`
-- Text upload: UTF-8 only via `POST /files/`
-- Binary upload: `multipart/form-data` via `POST /files/upload`
-- TTL: 168 hours / 7 days (after that the link returns 404)
+- Extensions: `.txt`, `.csv`, `.md`, `.json`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`
+- TTL: 7 days (link 404s after that)
 - Max size: 10 MB

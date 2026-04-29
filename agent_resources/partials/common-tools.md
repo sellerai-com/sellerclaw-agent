@@ -20,3 +20,7 @@ For clarifying user input, open-web research (facts, regulations, missing contex
 ### Browser fallback
 
 For anything that direct integrations and web search cannot cover, you can drive a browser yourself as a last resort (`browser-usage` skill).
+
+### File delivery
+
+To make an artifact (screenshot, report, export) actually reach the user, send it as an HTTPS `download_url` — a bare local path is invisible. Pass on-disk files straight to `message.send(imagePath=...)`, or mint a URL when you need it outside the current reply (`file-storage` skill).
