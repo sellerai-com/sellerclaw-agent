@@ -92,6 +92,7 @@ Sessions start fresh; continuity lives in workspace files — never rely on impl
 
 - **Running context** → today's `memory/YYYY-MM-DD.md`.
 - **Durable items** (facts, preferences, decisions, constraints, open loops) → `MEMORY.md`.
+- **Past conversation** with the owner — when memory files lack the detail or you need the exact wording → `chat-history` skill. Use it to recover context, not as a memory substitute.
 - **Never** store secrets, credentials, or PII in memory files unless the user explicitly asked.
 - **Never** edit `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, or `HEARTBEAT.md` — these are shipped from templates and your edits will be lost on redeploy.
 - **Maintenance:** Periodically distill recent daily notes into `MEMORY.md` and prune stale long-term entries.
