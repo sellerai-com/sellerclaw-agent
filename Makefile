@@ -1,5 +1,6 @@
 .PHONY: install setup up up-stage up-dev down test test_unit test_unit_dirs test_cloud lint \
-	openclaw-skills openclaw-plugins openclaw-measure-gateway-memory openclaw-measure-gateway-memory-cold
+	openclaw-skills openclaw-plugins openclaw-measure-gateway-memory openclaw-measure-gateway-memory-cold \
+	release
 
 UV ?= uv
 LINT_PATHS = sellerclaw_agent tests
@@ -69,6 +70,51 @@ openclaw-measure-gateway-memory:
 		echo "[measure] pid=$$pid interval=$(OPENCLAW_MEASURE_INTERVAL)s samples=$(OPENCLAW_MEASURE_SAMPLES) OPENCLAW_NODE_MAX_OLD_SPACE_SIZE_MB=$${OPENCLAW_NODE_MAX_OLD_SPACE_SIZE_MB:-2048}"; \
 		python -m openclaw_diagnostics cgroup-limits || true; \
 		python -m openclaw_diagnostics monitor-memory --pid "$$pid" --interval $(OPENCLAW_MEASURE_INTERVAL) --max-samples $(OPENCLAW_MEASURE_SAMPLES)'
+
+# Release: create and push a new git tag (default: bump minor, e.g. v0.7.0 -> v0.8.0).
+# Usage:
+#   make release                # bump minor:  v0.7.0 -> v0.8.0
+#   make release PART=patch     # bump patch:  v0.7.0 -> v0.7.1
+#   make release PART=major     # bump major:  v0.7.0 -> v1.0.0
+#   make release VERSION=1.2.3  # explicit version (without leading v)
+# Add ALLOW_DIRTY=1 to skip the clean-working-tree check.
+PART ?= minor
+REMOTE ?= origin
+
+release:
+	@set -eu; \
+	if [ -z "$${ALLOW_DIRTY:-}" ] && [ -n "$$(git status --porcelain)" ]; then \
+	  echo "Working tree is dirty. Commit/stash changes or rerun with ALLOW_DIRTY=1." >&2; \
+	  exit 1; \
+	fi; \
+	git fetch --tags --quiet $(REMOTE); \
+	if [ -n "$${VERSION:-}" ]; then \
+	  new="$$VERSION"; \
+	else \
+	  last=$$(git tag --list 'v*' --sort=-v:refname | head -n1); \
+	  if [ -z "$$last" ]; then last="v0.0.0"; fi; \
+	  base=$${last#v}; \
+	  major=$$(echo "$$base" | cut -d. -f1); \
+	  minor=$$(echo "$$base" | cut -d. -f2); \
+	  patch=$$(echo "$$base" | cut -d. -f3); \
+	  case "$(PART)" in \
+	    major) new="$$((major+1)).0.0" ;; \
+	    minor) new="$$major.$$((minor+1)).0" ;; \
+	    patch) new="$$major.$$minor.$$((patch+1))" ;; \
+	    *) echo "Unknown PART=$(PART) (use major|minor|patch)" >&2; exit 1 ;; \
+	  esac; \
+	fi; \
+	tag="v$$new"; \
+	if git rev-parse -q --verify "refs/tags/$$tag" >/dev/null; then \
+	  echo "Tag $$tag already exists locally." >&2; exit 1; \
+	fi; \
+	if git ls-remote --exit-code --tags $(REMOTE) "refs/tags/$$tag" >/dev/null 2>&1; then \
+	  echo "Tag $$tag already exists on $(REMOTE)." >&2; exit 1; \
+	fi; \
+	echo "Creating annotated tag $$tag and pushing to $(REMOTE)..."; \
+	git tag -a "$$tag" -m "Release $$tag"; \
+	git push $(REMOTE) "$$tag"; \
+	echo "Pushed $$tag. The 'Build Image' workflow will publish the GHCR image and GitHub release."
 
 openclaw-measure-gateway-memory-cold:
 	@echo "[measure] restarting server, then sampling (interval=$(OPENCLAW_MEASURE_INTERVAL)s samples=$(OPENCLAW_MEASURE_SAMPLES))"
