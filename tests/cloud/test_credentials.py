@@ -51,6 +51,33 @@ def test_clear_removes_file(tmp_path: Path) -> None:
     storage.clear()
 
 
+def test_clear_does_not_touch_cli_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Auth-fail handlers call clear(); managed agents still hold a valid AGENT_API_KEY env,
+    so the CLI config must survive ``CredentialsStorage.clear()`` (only an explicit sign-out
+    via :class:`CloudAuthService.disconnect` removes it).
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    from sellerclaw_agent.cloud.cli_config import write_cli_config
+
+    write_cli_config(token="sca_env_token", api_url="https://api.example")
+    cli_path = home / ".config" / "sellerclaw" / "config.toml"
+    assert cli_path.is_file()
+
+    storage = CredentialsStorage(tmp_path)
+    storage.save(
+        user_id=UUID("35922ddf-4020-5179-b163-3d90bcb86b00"),
+        user_email="x@y.z",
+        user_name="",
+        agent_token="sca_x",
+        connected_at="t",
+    )
+    storage.clear()
+
+    assert cli_path.is_file(), "clear() must not remove sellerclaw-cli config"
+
+
 def test_load_invalid_json_raises(tmp_path: Path) -> None:
     storage = CredentialsStorage(tmp_path)
     storage.credentials_path.write_text("not json", encoding="utf-8")

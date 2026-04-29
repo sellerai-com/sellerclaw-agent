@@ -79,9 +79,15 @@ class CredentialsStorage:
             return None
 
     def clear(self) -> None:
+        """Remove the persisted ``agent_token.json``.
+
+        Note: leaves ``sellerclaw-cli`` config alone — an explicit sign-out goes
+        through :class:`CloudAuthService.disconnect`, which removes it directly.
+        Auth-fail handlers in listeners/ping_loop call ``clear()`` to drop a
+        stale file session, but the agent may still be authenticated via
+        ``AGENT_API_KEY`` env (managed hosting), so the CLI config must persist
+        across those drops.
+        """
         path = self.credentials_path
         if path.is_file():
             path.unlink()
-        from sellerclaw_agent.cloud.cli_config import remove_cli_config
-
-        remove_cli_config()

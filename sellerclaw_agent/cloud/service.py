@@ -113,3 +113,8 @@ class CloudAuthService:
                 _log.warning("cloud_disconnect_revoke_failed", error=str(exc))
         self.credentials_storage.clear()
         self.session_storage.clear()
+        # User-initiated sign-out: drop the CLI config too (auth-fail paths in
+        # listeners/ping_loop don't, since env-based AGENT_API_KEY may still be valid).
+        from sellerclaw_agent.cloud.cli_config import remove_cli_config
+
+        remove_cli_config()

@@ -73,14 +73,24 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     storage = ManifestStorage(data_dir)  # noqa: F841
     get_local_api_key(data_dir)
 
-    # Refresh the sellerclaw-cli config on boot if a token was persisted in a
-    # previous session — save()/clear() handle live lifecycle transitions, this
-    # covers container restarts where neither fires.
+    # Refresh the sellerclaw-cli config on boot. Two cases to cover after a
+    # container restart (save()/clear() handle live transitions, this covers
+    # the cold path where neither fires):
+    #   1. interactive sign-in left ``agent_token.json`` on disk;
+    #   2. managed-agent provisioning passed only the ``AGENT_API_KEY`` env var
+    #      (no stored file) — the CLI still needs the same token to talk to the
+    #      API from exec-tool inside the container.
     _existing_creds = CredentialsStorage(data_dir).load()
     if _existing_creds is not None:
         from sellerclaw_agent.cloud.cli_config import write_cli_config
 
         write_cli_config(token=_existing_creds.agent_token)
+    else:
+        _env_token = (os.environ.get("AGENT_API_KEY") or "").strip()
+        if _env_token:
+            from sellerclaw_agent.cloud.cli_config import write_cli_config
+
+            write_cli_config(token=_env_token)
 
     stop = asyncio.Event()
     background_holders: list[dict[str, Any]] = []
