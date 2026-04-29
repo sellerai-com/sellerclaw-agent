@@ -1,19 +1,13 @@
 ---
 name: product-enrichment
-description: "Enrich an incomplete product card (brand, model, or GTIN) with structured data from external catalogs. Use when the user wants to publish a product of a known brand but has only partial info, and you need title, brand, MPN, GTIN, images, price reference, and category. Primary source is the free eBay Browse API, with open-source fallbacks."
+description: "Enrich an incomplete product card (brand, model, or GTIN) with structured data from external catalogs. Use when the user wants to publish a product of a known brand but has only partial info, and you need title, brand, MPN, GTIN, images, price reference, and category. Primary source is the free eBay Browse search via the `sellerclaw` CLI, with open-source fallbacks."
 ---
 
 # Product Enrichment Skill
 
 ## Goal
 
-Turn sparse product input (brand + model, or a barcode) into a publish-ready card: `title`, `brand`, `mpn`, `gtin`, `category_path`, thumbnail URL, and a market-price reference. Default to the free eBay Browse endpoint; use other sources only when eBay's coverage is thin.
-
-## Base URL and authentication
-
-- Base URL: `{{api_base_url}}`
-- Header: `Authorization: Bearer $AGENT_API_KEY`
-- All bodies below are JSON (`Content-Type: application/json`).
+Turn sparse product input (brand + model, or a barcode) into a publish-ready card: `title`, `brand`, `mpn`, `gtin`, `category_path`, thumbnail URL, and a market-price reference. Default to the free eBay Browse search; use other sources only when eBay's coverage is thin.
 
 ## When to use
 
@@ -28,14 +22,14 @@ Turn sparse product input (brand + model, or a barcode) into a publish-ready car
 
 ## Data sources (priority)
 
-1. **eBay Browse API** — built-in endpoint, free, primary source. Broad coverage of mass brands (electronics, apparel, beauty, collectibles).
+1. **eBay Browse** via `sellerclaw research-catalog post-ebay-search` — built-in, free, primary source. Broad coverage of mass brands (electronics, apparel, beauty, collectibles).
 2. **Open barcode databases** (Open Food Facts, Open Products Facts, Wikidata P3962) — fall back when a GTIN is known and eBay returns nothing.
 3. **`web_search` (Brave/Tavily) + `web_fetch` JSON-LD** — universal fallback via a retailer page. Use when the first two are too thin.
 4. **`browser`** — only if JSON-LD is absent on the page. Heavyweight; last resort.
 
-## Primary endpoint: eBay Browse Search
+## Primary command: eBay Browse Search
 
-`POST {{api_base_url}}/research/catalog/ebay/search` — searches eBay by keyword and/or GTIN and returns enriched product identifiers (brand, MPN, GTIN, EPID).
+`sellerclaw research-catalog post-ebay-search -b '<json>'` — searches eBay by keyword and/or GTIN and returns enriched product identifiers (brand, MPN, GTIN, EPID).
 
 ### Request body
 
@@ -47,7 +41,7 @@ Turn sparse product input (brand + model, or a barcode) into a publish-ready car
 | `limit` | `int` | 1–200, default 20. |
 | `condition_new_only` | `bool` | If `true`, drops used/refurbished listings. For new-product publishing, usually `true`. |
 
-At least one of `query` or `gtin` is required.
+At least one of `query` or `gtin` is required. Full schema: `sellerclaw describe post_ebay_search_research_catalog_ebay_search_post`.
 
 ### Response (truncated)
 
@@ -80,18 +74,18 @@ At least one of `query` or `gtin` is required.
 }
 ```
 
-### Error codes
+### Error handling (CLI exit codes)
 
-| Status | When | What to do |
+| Exit / Status | When | What to do |
 |---|---|---|
-| 400 | Neither `query` nor `gtin`; invalid `gtin` | Fix the request. |
-| 502 | eBay returned an API error | Retry without `condition_new_only` or rephrase `query`. If still failing — switch to a fallback source. |
-| 503 | eBay credentials are not configured on the platform | Tell the user the source is unavailable and use a fallback. |
+| 1 / 400 | Neither `query` nor `gtin`; invalid `gtin` | Fix the request. |
+| 2 / 502 | eBay returned an API error | Retry without `condition_new_only` or rephrase `query`. If still failing — switch to a fallback source. |
+| 2 / 503 | eBay credentials are not configured on the platform | Tell the user the source is unavailable and use a fallback. |
 
 ## Recommended pipeline
 
-1. **If GTIN is known** — call with `gtin=<code>`, `condition_new_only=true`, `limit=5`. If 1+ item returns — pick the first one that has non-empty `brand`/`mpn`/`title` and use its fields as the card seed.
-2. **If no GTIN but brand + model** — `query="<brand> <model>"`, `condition_new_only=true`, `limit=10`. Deduplicate by `epid`.
+1. **If GTIN is known** — call with `{"gtin":"<code>","condition_new_only":true,"limit":5}`. If 1+ item returns — pick the first one that has non-empty `brand`/`mpn`/`title` and use its fields as the card seed.
+2. **If no GTIN but brand + model** — `{"query":"<brand> <model>","condition_new_only":true,"limit":10}`. Deduplicate by `epid`.
 3. **Merge.** From the first relevant item take: `title`, `brand`, `mpn`, `gtin`, `category_path`, `thumbnail.url`, `item_web_url` (as a validation reference), `price`/`currency` (as a market-price reference, not MSRP).
 4. **If zero items or fields are thin** — move to fallback sources (Open*Facts, Wikidata, or `web_search` + `web_fetch` on a retailer page with JSON-LD extraction).
 
@@ -100,4 +94,4 @@ At least one of `query` or `gtin` is required.
 - eBay Browse returns **active listings**, not a canonical catalog. If the brand is not sold on eBay, the response will be empty. Do not treat eBay price as MSRP.
 - Requests to eBay Browse are **not billed** and **not cached** on our side — retry if needed.
 - Coverage is generally strong for apparel / electronics / collectibles; weaker for premium beauty / niche B2B — be ready to fall back.
-- Do not confuse with `src/ebay_app/` or seller OAuth — those are for listing products on eBay as a seller. This endpoint uses a platform app token; the user does not need to connect their eBay account.
+- Do not confuse with `src/ebay_app/` or seller OAuth — those are for listing products on eBay as a seller. This command uses a platform app token; the user does not need to connect their eBay account.

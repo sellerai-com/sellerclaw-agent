@@ -1,264 +1,134 @@
 ---
 name: google-ads-api
-description: "Operate Google Ads (and Performance Max) for the connected account through `sellerclaw-api`: list / create / pause / update campaigns and ad groups, pull performance metrics, manage PMax asset groups, sync Merchant Center products, and pull keyword ideas. Use whenever the task targets Google Ads — Search, Shopping, or Performance Max — for the owner's connected integration; the customer/account is resolved server-side, no GAQL needed. For campaign workflow templates (creation, optimization, scaling, A/B) use `campaign-playbook`; for catalog inputs use `product-data-api`."
+description: "Operate Google Ads (and Performance Max) for the connected account through the `sellerclaw` CLI: list / create / pause / update campaigns and ad groups, pull performance metrics, manage PMax asset groups, sync Merchant Center products, and pull keyword ideas. Use whenever the task targets Google Ads — Search, Shopping, or Performance Max — for the owner's connected integration; the customer/account is resolved server-side, no GAQL needed. For campaign workflow templates (creation, optimization, scaling, A/B) use `campaign-playbook`; for catalog inputs use `catalog`."
 ---
 
-# Google Ads API Skill
+# Google Ads (via `sellerclaw` CLI)
 
-## Goal
-Reference guide for `sellerclaw-api` endpoints used to manage Google Ads campaigns.
+All commands are subcommands of `sellerclaw google-ads …`. Output is JSON on stdout; structured errors on stderr with non-zero exit codes (1=user/api, 2=server/network, 3=auth). Customer/Merchant credentials resolve server-side from the connected integration.
 
-## Base URL and Authentication
-- Base URL: `{{api_base_url}}`
-- Auth header: `Authorization: Bearer $AGENT_API_KEY`
-- Do not print token values in logs or messages.
+**Conventions:** money is float in account currency; dates are `YYYY-MM-DD`; bodies are JSON via `-b '<inline>'`, `-b @file.json`, or `-b @-` (stdin).
 
-## Conventions
-- Use `exec curl` for HTTP requests.
-- All request/response bodies are JSON.
-- Google customer/account credentials are resolved server-side from connected integration.
-- Proxy hides GAQL complexity; use simple REST endpoints.
-- Monetary values are returned as floats in account currency.
-- Date format: `YYYY-MM-DD`.
+Pick the section by **task intent**.
 
-## Schemas (high-level)
+---
 
-`GoogleCampaignSchema`
-| Field | Type | Notes |
-|---|---|---|
-| id | string | Google campaign ID |
-| name | string | |
-| status | string | ENABLED, PAUSED, REMOVED |
-| type | string | SHOPPING, PERFORMANCE_MAX, SEARCH, etc. |
-| bidding_strategy | string | MAXIMIZE_CONVERSIONS, TARGET_ROAS, etc. |
-| target_roas | float\|null | Target ROAS value |
-| daily_budget | float | Daily budget |
-| budget_resource_name | string | Internal Google budget resource |
-| warning | string\|null | Optional warning (e.g. PMax learning period) |
+## Browse / inspect
 
-`GoogleAdGroupSchema`
-| Field | Type | Notes |
-|---|---|---|
-| id | string | |
-| campaign_id | string | |
-| name | string | |
-| status | string | ENABLED, PAUSED |
-| cpc_bid | float\|null | Max CPC bid |
+| Intent | Command |
+|---|---|
+| List campaigns | `sellerclaw google-ads get-campaigns [--status ENABLED\|PAUSED\|REMOVED] [--type SHOPPING\|PERFORMANCE_MAX\|SEARCH] [--limit 50]` |
+| One campaign | `sellerclaw google-ads get-campaign <campaign_id>` |
+| Ad groups in campaign | `sellerclaw google-ads get-campaign-groups <campaign_id>` |
+| Asset groups (PMax) | `sellerclaw google-ads get-asset-groups <campaign_id>` |
+| Merchant Center inventory | `sellerclaw google-ads get-products` |
+| Optimization recommendations | `sellerclaw google-ads get-recommendations` |
+| Action log (audit trail) | `sellerclaw google-ads get-action-log [--entity-id <id>] [--days 1..90]` |
 
-`GoogleMetricsSchema`
-| Field | Type | Notes |
-|---|---|---|
-| spend | float | Cost in account currency |
-| impressions | int | |
-| clicks | int | |
-| ctr | float | % |
-| avg_cpc | float | Average CPC |
-| conversions | float | Can be fractional |
-| conversion_value | float | Revenue attributed |
-| cpa | float | Cost per conversion |
-| roas | float | conversion_value / spend |
+---
 
-`GoogleAssetGroupSchema`
-| Field | Type | Notes |
-|---|---|---|
-| id | string | |
-| campaign_id | string | |
-| name | string | |
-| status | string | ENABLED, PAUSED |
-| resource_name | string | Google resource path |
+## Metrics
 
-`MerchantProductSchema`
-| Field | Type | Notes |
-|---|---|---|
-| product_id | string | Merchant product id |
-| offer_id | string | Merchant offer id |
-| title | string | |
-| channel | string | online/local |
-| availability | string | in stock / out of stock |
-| status | string | Destination statuses summary |
-| issues | list | Item-level issues/disapprovals |
+**Command:** `sellerclaw google-ads get-metrics [--level {campaign\|ad_group\|product_group}] [--ids c1,c2] [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--breakdown {none\|day\|device}]`
 
-## Endpoints
+Defaults: last 7 days, `level=campaign`, `breakdown=none`. Always include the resolved date range when reporting numbers.
 
-### GET /ads/google/campaigns
-List campaigns with filters.
+Per-row metrics: `spend`, `impressions`, `clicks`, `ctr`, `avg_cpc`, `conversions`, `conversion_value`, `cpa`, `roas` — full list in `references/data-model.md`.
 
-Query params:
-| Name | Type | Required | Default |
-|---|---|---|---|
-| status | string | no | all |
-| type | string | no | all |
-| limit | int | no | 50 |
+---
 
-Response: `{ "items": GoogleCampaignSchema[] }`
+## Create a campaign (always PAUSED first)
 
-Example:
-```bash
-curl -s "{{api_base_url}}/ads/google/campaigns?status=PAUSED&type=SHOPPING&limit=20" \
-  -H "Authorization: Bearer $AGENT_API_KEY"
-```
+**Command:** `sellerclaw google-ads create-campaign -b '<json>'`
 
-### GET /ads/google/campaigns/{campaign_id}
-Get campaign details.
+Supported `type` values: `SHOPPING`, `PERFORMANCE_MAX`. Server-forced `PAUSED` on create.
 
-Response: `GoogleCampaignSchema`
-
-### POST /ads/google/campaigns
-Create a campaign.
-
-Supported types:
-- `SHOPPING`
-- `PERFORMANCE_MAX`
-
-Guardrails applied by server:
-- Campaign is always created as `PAUSED`.
-- Shopping requires `merchant_id` (from connected credentials or request body).
-- PMax response may include learning warning.
-
-Body (common):
-| Field | Type | Required |
-|---|---|---|
-| name | string | yes |
-| type | string | yes |
-| daily_budget | float | yes |
-| bidding_strategy | string | yes |
-| target_roas | float | no |
-| merchant_id | string | no (SHOPPING only, optional if already connected) |
-| campaign_priority | int | no (SHOPPING only) |
-| asset_group | object | no (PERFORMANCE_MAX) |
+**Required body fields:** `name`, `type`, `daily_budget`, `bidding_strategy`. **Optional:** `target_roas`, `merchant_id` (Shopping only — usually inferred), `campaign_priority` (Shopping, 0–2), `asset_group` (PMax only).
 
 Shopping example:
+
 ```bash
-curl -s -X POST "{{api_base_url}}/ads/google/campaigns" \
-  -H "Authorization: Bearer $AGENT_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Shopping - Spring Sale",
-    "type": "SHOPPING",
-    "daily_budget": 30.0,
-    "bidding_strategy": "MAXIMIZE_CONVERSIONS"
-  }'
+sellerclaw google-ads create-campaign -b '{
+  "name": "Shopping - Spring Sale",
+  "type": "SHOPPING",
+  "daily_budget": 30.0,
+  "bidding_strategy": "MAXIMIZE_CONVERSIONS"
+}'
 ```
 
 Performance Max example:
+
 ```bash
-curl -s -X POST "{{api_base_url}}/ads/google/campaigns" \
-  -H "Authorization: Bearer $AGENT_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "PMax - Summer Promo",
-    "type": "PERFORMANCE_MAX",
-    "daily_budget": 50.0,
-    "bidding_strategy": "MAXIMIZE_CONVERSIONS",
-    "asset_group": {
-      "name": "Main Asset Group",
-      "final_url": "https://store.example.com",
-      "headlines": ["Summer Sale", "Free Shipping", "Best Deals"],
-      "descriptions": ["Shop now", "Top picks this week"],
-      "image_urls": ["https://cdn.example.com/banner.jpg"],
-      "logo_urls": ["https://cdn.example.com/logo.png"]
-    }
-  }'
+sellerclaw google-ads create-campaign -b '{
+  "name": "PMax - Summer Promo",
+  "type": "PERFORMANCE_MAX",
+  "daily_budget": 50.0,
+  "bidding_strategy": "MAXIMIZE_CONVERSIONS",
+  "asset_group": {
+    "name": "Main Asset Group",
+    "final_url": "https://store.example.com",
+    "headlines": ["Summer Sale", "Free Shipping", "Best Deals"],
+    "descriptions": ["Shop now", "Top picks this week"],
+    "image_urls": ["https://cdn.example.com/banner.jpg"],
+    "logo_urls": ["https://cdn.example.com/logo.png"]
+  }
+}'
 ```
 
-### PATCH /ads/google/campaigns/{campaign_id}
-Update campaign fields.
+Activate only after supervisor approval: `sellerclaw google-ads patch-campaign <id> -b '{"status":"ENABLED"}'`.
 
-Supported fields:
-- `name`
-- `status`
-- `daily_budget`
+---
 
-Guardrail:
-- `daily_budget` change must be within 20%.
+## Update / pause campaign or ad group
 
-### GET /ads/google/campaigns/{campaign_id}/adgroups
-List ad groups for a campaign.
+| Intent | Command |
+|---|---|
+| Patch campaign | `sellerclaw google-ads patch-campaign <campaign_id> -b '<json-delta>'` |
+| Patch ad group | `sellerclaw google-ads patch-group <adgroup_id> -b '<json-delta>'` |
+| Patch PMax asset group | `sellerclaw google-ads patch-asset-group <asset_group_id> -b '<json-delta>'` |
 
-Response: `{ "items": GoogleAdGroupSchema[] }`
+Patchable campaign fields: `name`, `status`, `daily_budget`, `bidding_strategy`, `target_roas`. Budget delta hard cap: ±20%.
+Patchable ad-group fields: `name`, `status`, `cpc_bid`.
 
-### POST /ads/google/adgroups
-Create ad group (created as `PAUSED`).
+---
 
-Body:
-| Field | Type | Required |
-|---|---|---|
-| campaign_id | string | yes |
-| name | string | yes |
-| cpc_bid | float | no |
-| status | string | no (ignored, server forces PAUSED) |
+## Create ad group
 
-### PATCH /ads/google/adgroups/{adgroup_id}
-Update ad group fields (`name`, `status`, `cpc_bid`).
+**Command:** `sellerclaw google-ads create-group -b '<json>'`
 
-### GET /ads/google/metrics
-Fetch metrics.
+**Required:** `campaign_id`, `name`. **Optional:** `cpc_bid`. Server forces `PAUSED` on create.
 
-Query params:
-| Name | Type | Required | Default |
-|---|---|---|---|
-| level | string | no | campaign |
-| ids | string | no | all |
-| date_from | string | no | last 7 days |
-| date_to | string | no | today |
-| breakdown | string | no | none |
+---
 
-Level: `campaign`, `ad_group`, `product_group`
-Breakdown: `none`, `day`, `device`
+## Keyword ideas
 
-Response: `{ "items": [{ "id": "...", "name": "...", "date": "...", "metrics": GoogleMetricsSchema }] }`
+**Command:** `sellerclaw google-ads post-keyword-ideas -b '<json>'`
 
-Example:
-```bash
-curl -s "{{api_base_url}}/ads/google/metrics?level=campaign&date_from=2026-03-01&date_to=2026-03-24&breakdown=day" \
-  -H "Authorization: Bearer $AGENT_API_KEY"
-```
+Body: `keywords` (array of seed strings, required), `language` (optional), `geo_target_constants` (optional list of geo constant resource names). Use to seed Search campaigns or audit relevance.
 
-### GET /ads/google/products
-List Merchant Center products.
+---
 
-Response: `{ "items": MerchantProductSchema[] }`
+## Recommended flows
 
-### GET /ads/google/campaigns/{campaign_id}/asset-groups
-List campaign asset groups.
+**Shopping campaign:** verify Merchant inventory (`get-products`) → `create-campaign` (`type=SHOPPING`, PAUSED) → tune ad groups (`create-group` / `patch-group`) → validate early metrics (`get-metrics --breakdown day`) → present to supervisor → activate via `patch-campaign`.
 
-Response: `{ "items": GoogleAssetGroupSchema[] }`
+**Performance Max:** `create-campaign` with `asset_group` payload (PAUSED) → manage assets via `get-asset-groups` / `patch-asset-group` → review `get-recommendations` → wait ~14 days for learning before major budget/strategy changes → activate via `patch-campaign` after approval.
 
-### PATCH /ads/google/asset-groups/{asset_group_id}
-Update asset group fields (`name`, `status`).
-
-### POST /ads/google/keywords/ideas
-Generate keyword ideas.
-
-Body:
-| Field | Type | Required |
-|---|---|---|
-| keywords | list[string] | yes |
-| language | string | no |
-| geo_target_constants | list[string] | no |
-
-### GET /ads/google/recommendations
-Fetch optimization recommendations.
-
-Response: Google recommendations payload.
-
-## Workflow: Shopping Campaign (recommended)
-1. Verify Merchant inventory: `GET /ads/google/products`.
-2. Create campaign as PAUSED: `POST /ads/google/campaigns` with `type=SHOPPING`.
-3. Create or tune ad groups: `POST /ads/google/adgroups` / `PATCH /ads/google/adgroups/{id}`.
-4. Validate early metrics (day breakdown): `GET /ads/google/metrics?...&breakdown=day`.
-5. Present plan/results to supervisor; activate with `PATCH /ads/google/campaigns/{id}` only after approval.
-
-## Workflow: Performance Max (recommended)
-1. Create PMax campaign with asset group payload: `POST /ads/google/campaigns`.
-2. Keep PAUSED until approval.
-3. Manage asset groups via `GET/PATCH /ads/google/.../asset-groups`.
-4. Review recommendations via `GET /ads/google/recommendations`.
-5. Wait for learning period (~14 days) before major budget or strategy changes.
+---
 
 ## Guardrails
-- Campaign and ad group creation is server-forced to `PAUSED`.
-- Budget PATCH is limited to <=20% change.
+
+- Campaign and ad-group creation is server-forced to `PAUSED` — activate only after approval.
+- Budget patches are server-capped at ±20% per call.
 - PMax requires a learning period before meaningful optimization.
-- Mutation routes are rate-limited to reduce accidental burst updates.
-- Never expose OAuth/API tokens in agent outputs.
+- Mutation endpoints are rate-limited; do not burst-update.
+- Retry a failed CLI call at most twice; then return a blocker.
+- Never echo or log auth tokens.
+- Always include the date range when reporting metrics.
+
+---
+
+## Reference
+
+- **Full data models** (campaigns, ad groups, asset groups, metrics, Merchant products — every field): `references/data-model.md`.
+- **OpenAPI source of truth:** `sellerclaw describe <operation_id>`; discover ops via `sellerclaw list-operations --tag google-ads`. Use when this skill or `--help` is not enough.

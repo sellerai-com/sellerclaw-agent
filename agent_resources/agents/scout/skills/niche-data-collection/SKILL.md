@@ -17,18 +17,18 @@ Supervisor delegates focused data-collection Agent Tasks for niche analysis. Eac
 task specifies which data to collect, which tools to use, and the expected return
 format. This skill defines the consistent structure for those returns.
 
-## API parameter quick reference
+## CLI parameter quick reference
 
-Exact parameter names for commonly used endpoints. Full docs in referenced skills.
+Exact flag names for commonly used `sellerclaw` commands. Full docs in referenced skills.
 
-| Endpoint | Method | Key params | Notes |
-|----------|--------|-----------|-------|
-| `/research/trends/interest-over-time` | GET | `keywords` (plural, comma-separated), `timeframe`, `geo` | NOT `keyword` |
-| `/research/trends/related-queries` | GET | `keyword` (singular), `timeframe`, `geo` | NOT `keywords` |
-| `/research/trends/trending` | GET | `geo`, `hours` | |
-| `/suppliers/{provider}/products` | GET | `query`, `page_size` | NOT `q`, NOT `/products/search` |
+| Command | Key flags | Notes |
+|---|---|---|
+| `sellerclaw research-trends get-interest-over-time` | `--keywords` (plural, comma-separated), `--timeframe`, `--geo` | NOT `--keyword` |
+| `sellerclaw research-trends get-related-queries` | `--keyword` (singular), `--timeframe`, `--geo` | NOT `--keywords` |
+| `sellerclaw research-trends get-trending-searches` | `--geo`, `--hours` | |
+| `sellerclaw suppliers search-products <provider>` | `--query`, `--page-size` | NOT `--q` |
 
-**Common mistakes:** `interest-over-time` uses `keywords` (plural); `related-queries` uses `keyword` (singular). Supplier search param is `query` not `q`, endpoint is `/products` not `/products/search`.
+**Common mistakes:** `get-interest-over-time` uses `--keywords` (plural); `get-related-queries` uses `--keyword` (singular). Supplier search flag is `--query` not `--q`.
 
 ## Sub-task types and return formats
 
@@ -96,7 +96,7 @@ Collect SERP competitors, marketplace pricing, ad density, and top competitor pr
 Find suppliers, compare pricing, estimate shipping cost and time.
 
 **Data collection order:**
-1. Supplier API (`/suppliers/{provider}/products`, variants, stock, shipping) — if available
+1. Supplier CLI (`sellerclaw suppliers search-products <provider>`, `get-variants`, `check-stock`, `calculate-shipping`) — if available
 2. Web search for wholesale/dropshipping pricing — fallback
 3. Web search for AliExpress/CJ indexed pages — fallback
 4. Browser for supplier sites — if available
@@ -185,8 +185,8 @@ Fallback chains are defined in each referenced skill: `trend-analysis`, `competi
 
 Every return must include:
 
-- **`data_sources_used`**: list of actual API endpoints or methods called (e.g.
-  `"GET /research/trends/interest-over-time"`, `"web_search"`, `"browser"`)
+- **`data_sources_used`**: list of actual CLI commands or methods called (e.g.
+  `"sellerclaw research-trends get-interest-over-time"`, `"web_search"`, `"browser"`)
 - **`data_gaps`**: list of data points that could not be collected and why (e.g.
   `"search_volume: DataForSEO unavailable, estimated via web search"`)
 
@@ -206,7 +206,7 @@ Follow stated budgets strictly.
 | Browser | Never | Fallback only | Always for verification |
 | Keyword variations | 1-2 seeds | 3-5 seeds | 5-10 seeds + long-tail |
 
-## API call budget per sub-task
+## CLI call budget per sub-task
 
 | Sub-task type | Quick | Standard | Deep |
 |---------------|-------|----------|------|
@@ -219,13 +219,13 @@ Follow stated budgets strictly.
 
 - If exceeding budget, stop and report partial results — supervisor works with
   what is available.
-- Prefer API over web search over browser for speed and structure.
+- Prefer CLI over web search over browser for speed and structure.
 
 ## Progress checkpoints
 
 If the task includes an `agent_task_id`, report progress after completing each
-major section via `POST /goals/agent-tasks/{agent_task_id}/progress`. Include
-concrete data points (not just status labels) so results survive session timeouts.
+major section via `sellerclaw agent-goals add-progress-note <task_id> -b '{"message":"…"}'`.
+Include concrete data points (not just status labels) so results survive session timeouts.
 
 ## Guardrails
 
@@ -233,5 +233,5 @@ concrete data points (not just status labels) so results survive session timeout
   `data_gaps`.
 - Never compute scores — supervisor owns scoring.
 - Never present a summary or recommendation — return raw structured data only.
-- Retry a failed API call at most twice; then mark the data point as unavailable.
+- Retry a failed CLI call at most twice; then mark the data point as unavailable.
 - Follow the return format exactly — supervisor parses JSON from the outcome.

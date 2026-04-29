@@ -1,6 +1,6 @@
 ---
 name: tiktok-shop-research
-description: "Evaluate TikTok Shop as a marketplace for a niche or product: search live TikTok Shop listings, fetch product detail (price, stock, related promotional videos), and pull customer reviews via the SociaVault-backed `sellerclaw-api`. Use when the user asks about TikTok Shop pricing, competition, virality of a product on TikTok Shop, or wants TikTok-Shop-specific review themes. Requires `research_social` configured (503 otherwise); for broader TikTok/Reddit/Shorts trend mining use `social-trend-discovery`."
+description: "Evaluate TikTok Shop as a marketplace for a niche or product: search live TikTok Shop listings, fetch product detail (price, stock, related promotional videos), and pull customer reviews via the SociaVault-backed `sellerclaw` CLI. Use when the user asks about TikTok Shop pricing, competition, virality of a product on TikTok Shop, or wants TikTok-Shop-specific review themes. Requires `research_social` configured (exit 2 / 503 otherwise); for broader TikTok/Reddit/Shorts trend mining use `social-trend-discovery`."
 ---
 
 # TikTok Shop Research Skill
@@ -9,33 +9,27 @@ description: "Evaluate TikTok Shop as a marketplace for a niche or product: sear
 
 Evaluate **TikTok Shop as a marketplace**: product discovery, pricing/stock signals, related promotional videos, and review themes. Requires `research_social` (SociaVault).
 
-## Base URL and authentication
+All commands are subcommands of `sellerclaw research-social …`. JSON on stdout; the `response` field carries the raw SociaVault payload alongside `provider`, `available_providers`, `credits_used`, `cost_usd`.
 
-- Base URL: `{{api_base_url}}`
-- Auth header: `Authorization: Bearer $AGENT_API_KEY`
+## Commands
 
-## Endpoints (POST JSON)
+| Command | Body fields | Purpose |
+|---|---|---|
+| `sellerclaw research-social post-tiktok-shop-search -b '<json>'` | `query` (required), optional `page`, `region` | Search TikTok Shop by query |
+| `sellerclaw research-social post-tiktok-shop-product -b '<json>'` | `url` (required), optional `get_related_videos`, `region` | Product details + linked videos |
+| `sellerclaw research-social post-tiktok-shop-reviews -b '<json>'` | `url` and/or `product_id`, optional `page` | Customer reviews |
 
-| Endpoint | Purpose |
-|----------|---------|
-| `POST .../research/social/tiktok-shop-search` | Search TikTok Shop by query (`query`, optional `page`, `region`) |
-| `POST .../research/social/tiktok-shop-product` | Product details (`url` required; optional `get_related_videos`, `region`) |
-| `POST .../research/social/tiktok-shop-reviews` | Product reviews (`url` and/or `product_id`, optional `page`) |
-
-## Response shape
-
-- `provider`, `available_providers`, `credits_used`, `cost_usd`, `response` (vendor JSON).
-- Parse fields from `response` / nested `data` per SociaVault docs (titles, price, stock, linked videos, review text).
+Body schemas: `sellerclaw describe <op_id>` (e.g. `post_tiktok_shop_search_research_social_tiktok_shop_search_post`).
 
 ## Workflow
 
-1. `tiktok-shop-search` with the niche or product keyword.
-2. Pick candidates; call `tiktok-shop-product` for depth (related videos, stock hints).
-3. `tiktok-shop-reviews` for customer voice and recurring complaints.
+1. `post-tiktok-shop-search` with the niche or product keyword.
+2. Pick candidates; call `post-tiktok-shop-product` for depth (related videos, stock hints).
+3. `post-tiktok-shop-reviews` for customer voice and recurring complaints.
 4. Compare with Amazon / Google Shopping signals from `product-demand-analysis` when available.
 
 ## Guardrails
 
-- Respect `503` when SociaVault is not configured.
+- If the CLI exits with `503`, SociaVault is not configured — say so explicitly.
 - Summarize reviews; avoid dumping PII or full review bodies unless necessary.
 - Mention spend only when the owner asks (`cost_usd`).

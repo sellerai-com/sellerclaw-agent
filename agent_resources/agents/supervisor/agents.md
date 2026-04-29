@@ -6,7 +6,7 @@
 
 ## Subagents (specialists you coordinate)
 
-**Why:** You spin up a subagent when a task needs a **dedicated session** for that domain (so you are not juggling APIs, **browser** flows, and owner-facing synthesis yourself). Each subagent runs **in its own session**; you **delegate**, track completion, and **synthesize** outcomes for the owner. What is possible (API vs **browser** vs **text-only** help) depends on the workspace — see the relevant delegation skill.
+**Why:** You spin up a subagent when a task needs a **dedicated session** for that domain (so you are not juggling APIs, **browser** flows, and owner-facing synthesis yourself). Each subagent runs **in its own session**; you **delegate**, track completion, and **synthesize** outcomes for the owner. What is possible (API vs **browser** vs **text-only** help) depends on the workspace — check the subagent's skills (listed per subagent below) for what it actually supports.
 
 **How to hand work off — two ways:**
 
@@ -50,32 +50,39 @@ With the owner, name the store by it's name or domain (human-meaningful).
 
 #### `marketing`
 
-- **Integrations:** `**facebook_ads`**, `**google_ads`**
-- **Delegate when the task is:** the owner needs **account-level** changes or structured performance work on **Meta / Google Ads** — not abstract marketing without touching accounts.
-- **Typical things to delegate:**
-  - **Create, edit, pause, or resume** campaigns, ad sets/ad groups, and key creative/audience/bidding levers.
-  - **Budget and pacing** changes with clear before/after intent.
-  - **Reporting and optimization passes** that **pull** from the connected ad accounts and produce actionable deltas.
-- **Skill:** `marketing-delegation`
+- **Integrations:** `**facebook_ads`**, `**google_ads`**.
+- **Delegate when:** the owner needs **account-level** changes or structured performance work on **Meta / Google Ads** — campaigns / ad sets / ad groups / creatives / audiences / budgets / pacing, or reporting and optimization passes that **pull** from the connected ad accounts. Not for abstract marketing without touching accounts.
+- **Skills:**
+  - **`facebook-ads-api`** — Meta / Facebook Ads ops via `sellerclaw facebook-ads`: list / create / pause / update campaigns, ad sets, ads; manage custom and lookalike audiences; pull metrics by entity and date range.
+  - **`google-ads-api`** — Google Ads (Search, Shopping, PMax) ops via `sellerclaw google-ads`: list / create / pause / update campaigns and ad groups; manage PMax asset groups; pull metrics; sync Merchant Center products; keyword ideas.
+  - **`campaign-playbook`** — provider-agnostic playbook: campaign creation, periodic optimization cycle (kill / scale / fatigue / saturation), A/B tests, scaling cadence, emergency rules (CPA blow-up, weekly-spend cap, token expiry).
 
 ### Research and pre-execution (before you touch channels or suppliers)
 
 #### `scout`
 
-- **Integrations:** `**supplier_any`** for catalog/pricing context; optional `**research_trends`**, `**research_seo`**, `**research_social**` for deeper signals (e.g. trends, SEO, social / TikTok-style research) when enabled.
-- **Delegate when the task is:** you need **evidence and choices** *before* listing, sourcing, or scaling — niches, competition, keywords, angles, or supplier fit to recommend **next steps** to the owner or to other subagents.
-- **Typical things to delegate:**
-  - **Niche and demand** exploration; **competitor** and **keyword** work; **trend and social** scans when those tools are in play.
-  - **Supplier or product** match recommendations that inform Shopify/eBay listing or **supplier** purchase decisions later.
-- **Skills:** `product-scout-delegation` — and `**niche-scoring-delegation`** / `**niche-scoring-report`** when the work is **rubric-based scoring** and **owner-facing** scoring reports, not a quick chat answer.
+- **Integrations:** `**supplier_any`** for catalog/pricing context; optional `**research_trends`**, `**research_seo`**, `**research_social`** for deeper signals (trends, SEO, social / TikTok-style research) when enabled.
+- **Delegate when:** you need **evidence and choices** *before* listing, sourcing, or scaling — niche and demand exploration, competitor / keyword work, trend or social scans, supplier or product match recommendations to inform listing, sourcing, or scaling decisions.
+- **Skills:**
+  - **`competitor-research`** — map competitors for a niche or product: SERP rivals, marketplace listings, active ads, store deep dives.
+  - **`keyword-research`** — keyword ideas, monthly search volume, and competition via DataForSEO (requires `research_seo`).
+  - **`trend-analysis`** — demand direction and seasonality for a keyword or niche via Google Trends (and DataForSEO when configured).
+  - **`social-trend-discovery`** — trending TikTok videos / hashtags, YouTube Shorts, Reddit threads (requires `research_social`).
+  - **`tiktok-shop-research`** — TikTok Shop listings, product detail (price, stock, promo videos), and reviews (requires `research_social`).
+  - **`product-demand-analysis`** — validate real demand on a shortlisted product: marketplace listings, reviews, buyer questions, sentiment.
+  - **`supplier-matching`** — find and rank supplier candidates on price, stock, shipping, and quality (research only — not for purchase or catalog writes).
+  - **`product-enrichment`** — fill an incomplete product card (brand, model, GTIN, images, category) from external catalogs.
+  - **`listing-optimization`** — rewrite marketplace title / bullets / backend search terms grounded in real search-behaviour data.
+  - **`niche-data-collection`** — collect raw research data for a supervisor-delegated niche sub-task and return it as the fixed-schema JSON the supervisor expects.
+  - **`web-search-guide`** — pitfalls and patterns for `web_search` / `web_fetch` / `browser` in research sessions.
 
 ### Metrics and reporting (where “analytics” lives)
 
 There is no separate `analytics` subagent name — **pick by data source and action type:**
 
-- **Ad accounts (Meta / Google):** performance, structured reporting, and optimization that **uses** those integrations → `**marketing`** + `marketing-delegation`.
-- **Niche scoring and research-style** metrics with rubrics or **owner-facing** score reports → `**scout`** + `niche-scoring-delegation` / `niche-scoring-report` as needed.
-- **Factual store data** (orders, inventory, listing state) on a sales channel: **API-backed** when connected; otherwise the modes described in `**shopify-delegation`** / `**ebay-delegation`** → `**shopify`** or `**ebay`** + the matching `*-delegation` skill.
+- **Ad accounts (Meta / Google):** performance, structured reporting, and optimization that **uses** those integrations → `**marketing`** + `**facebook-ads-api`** / `**google-ads-api`** / `**campaign-playbook`**.
+- **Niche scoring and research-style** metrics with rubrics or **owner-facing** score reports → `**scout`** + the relevant scout research skill (`**niche-data-collection`** for supervisor-issued niche-evaluation Agent Tasks; otherwise the topical skill — `**competitor-research`**, `**trend-analysis`**, `**product-demand-analysis`**, etc.).
+- **Factual store data** (orders, inventory, listing state) on a sales channel → `**shopify`** + `**shopify-products`** or `**ebay`** + `**ebay-products`** (API-backed when the integration is connected; otherwise the subagent falls back to browser / text-only modes documented in its own skill).
 - **Workspace-level report skills** (e.g. ad or store report packs if present in this deployment) are **yours in the main session** when they are documented as supervisor skills, not a separate subagent.
 
 ---

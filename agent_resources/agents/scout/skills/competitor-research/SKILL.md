@@ -7,38 +7,35 @@ description: "Map competitors for a niche or product: SERP rivals, marketplace l
 
 ## Goal
 
-Gather competitive intelligence in a target niche: prefer **autonomous API** calls
-(DataForSEO, SociaVault) for SERP, marketplace, and ad-library signals; use **browser** for store
-deep dives when allowed.
+Gather competitive intelligence in a target niche: prefer **autonomous CLI** calls (`sellerclaw research-seo …`, `sellerclaw research-social …`) for SERP, marketplace, and ad-library signals; use **browser** for store deep dives when allowed.
 
 ## Modes
 
-- **Autonomous (DataForSEO)**: `POST {{api_base_url}}/research/seo/serp-competitors`,
-  `POST .../product-search` (Google Shopping), `POST .../amazon-products` — JSON in/out.
-- **Autonomous (SociaVault)**: `POST .../research/social/ad-library-search`,
-  `POST .../research/social/ad-library-company-ads` when `research_social` is active — JSON in/out.
+- **Autonomous (DataForSEO)**: `sellerclaw research-seo post-serp-competitors`, `… post-product-search` (Google Shopping), `… post-amazon-products` — body via `-b '<json>'`.
+- **Autonomous (SociaVault)**: `sellerclaw research-social post-ad-library-search`, `… post-ad-library-company-ads` when `research_social` is active.
 - **Assisted**: browser as below when proxy/browser is enabled.
-- **Advisory**: high-level guidance if neither APIs nor browser are available.
+- **Advisory**: high-level guidance if neither CLI nor browser is available.
 
-## Ad Library research (SociaVault API)
+## Ad Library research (SociaVault)
 
-Use when `research_social` integration is active (see capabilities / 503 handling). Prefer these
-**before** opening Meta or Google ad library UIs in the browser.
+Use when `research_social` integration is active (CLI exit `2`/`503` otherwise). Prefer these **before** opening Meta or Google ad library UIs in the browser.
 
-| Endpoint | Use for |
+| Command | Use for |
 |---|---|
-| `POST .../research/social/ad-library-search` | Keyword search (`platform`: `facebook` or `google`, `query`) |
-| `POST .../research/social/ad-library-company-ads` | Ads for a company (`platform`, `page_id`/`company_name` for Facebook; `domain`/`advertiser_id` for Google) |
+| `sellerclaw research-social post-ad-library-search -b '<json>'` | Keyword search (`platform`: `facebook` or `google`, `query`) |
+| `sellerclaw research-social post-ad-library-company-ads -b '<json>'` | Ads for a company (`platform`, `page_id`/`company_name` for Facebook; `domain`/`advertiser_id` for Google) |
 
-## API research (DataForSEO)
+## SERP research (DataForSEO)
 
-Use when `research_seo` integration is active (see capabilities / 503 handling).
+Use when `research_seo` integration is active.
 
-| Endpoint | Use for |
+| Command | Use for |
 |---|---|
-| `/research/seo/serp-competitors` | Domains competing on overlapping keywords |
-| `/research/seo/product-search` | Google Shopping titles, prices, sellers |
-| `/research/seo/amazon-products` | Amazon listing landscape for a query |
+| `sellerclaw research-seo post-serp-competitors -b '<json>'` | Domains competing on overlapping keywords |
+| `sellerclaw research-seo post-product-search -b '<json>'` | Google Shopping titles, prices, sellers |
+| `sellerclaw research-seo post-amazon-products -b '<json>'` | Amazon listing landscape for a query |
+
+Body schemas: `sellerclaw describe <op_id>`.
 
 ## Research sources (via browser)
 
@@ -84,8 +81,7 @@ Check presence of similar products on:
 - TikTok Shop trending.
 - AliExpress Hot Products / orders count.
 
-Multi-platform presence confirms demand. Absence may indicate untapped opportunity
-or genuinely low demand — use trend data to disambiguate.
+Multi-platform presence confirms demand. Absence may indicate untapped opportunity or genuinely low demand — use trend data to disambiguate.
 
 ## Analysis framework
 
@@ -138,24 +134,21 @@ Recommended positioning: {strategy}
 
 ## Progress checkpoints
 
-If the task includes an `agent_task_id`, report progress via
-`POST /goals/agent-tasks/{agent_task_id}/progress` after:
+If the task includes an `agent_task_id`, report progress via `sellerclaw agent-goals add-progress-note <task_id> -b '{"message":"…"}'` after:
 
-1. **API / search phase** — list discovered competitor stores/domains with source (SERP, Shopping, Ad Library).
+1. **CLI / search phase** — list discovered competitor stores/domains with source (SERP, Shopping, Ad Library).
 2. **Deep-dive phase** — per-store analysis summaries (strengths, weaknesses, ad status).
 
-Include concrete data (URLs, product counts, price ranges) so results survive session
-timeouts.
+Include concrete data (URLs, product counts, price ranges) so results survive session timeouts.
 
 ## Scope limits by effort
 
-Read the effort level from the Agent Task instructions (`Effort: QUICK/STANDARD/DEEP`).
-If not stated, use Standard.
+Read the effort level from the Agent Task instructions (`Effort: QUICK/STANDARD/DEEP`). If not stated, use Standard.
 
 | Limit | Quick | Standard | Deep |
 |-------|-------|----------|------|
 | Competitor deep-dives | 0 | 3 | 5-8 |
-| Competitor surface scans | 0-3 (from web search) | 5 (from API/web search) | 10-15 (API + browser) |
+| Competitor surface scans | 0-3 (web search) | 5 (CLI/web search) | 10-15 (CLI + browser) |
 | Ad library checks | 0 | 1 platform | Both Facebook + Google |
 | Browser store visits | 0 | 0 (fallback only) | 5-8 (always for verification) |
 | Price data sources | 1 | 1-2 | 3-4 (Amazon + Shopping + eBay + TikTok Shop) |
@@ -180,8 +173,7 @@ If not stated, use Standard.
 2. `web_search`: "{niche} advertising spend ecommerce" — industry reports.
 3. Browser fallback: facebook.com/ads/library, adstransparency.google.com.
 
-When using web search fallbacks, note `"web_search"` in `data_sources_used` and
-describe which data points are estimates vs verified in `data_gaps`.
+When using web search fallbacks, note `"web_search"` in `data_sources_used` and describe which data points are estimates vs verified in `data_gaps`.
 
 ## Guardrails
 
