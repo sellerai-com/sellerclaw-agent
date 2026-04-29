@@ -5,6 +5,15 @@ UV ?= uv
 LINT_PATHS = sellerclaw_agent tests
 
 DOCKER_COMPOSE ?= docker compose
+
+# Agent version reported to sellerclaw on connect/ping. Single source of
+# truth: git tags (e.g. v0.7.0). Stripped of the leading "v"; falls back to
+# "0.0.0+unknown" outside a git checkout (e.g. tarball install).
+SELLERCLAW_AGENT_VERSION ?= $(shell git describe --tags --dirty --always --match 'v*' 2>/dev/null | sed -E 's/^v//')
+ifeq ($(strip $(SELLERCLAW_AGENT_VERSION)),)
+SELLERCLAW_AGENT_VERSION := 0.0.0+unknown
+endif
+export SELLERCLAW_AGENT_VERSION
 OPENCLAW_MEASURE_INTERVAL ?= 1
 OPENCLAW_MEASURE_SAMPLES ?= 120
 # Optional second env file (gitignored); omit if you rely on auto-generated local API key only.

@@ -1,6 +1,6 @@
 [project]
 name = "sellerclaw-agent"
-version = "0.1.0"
+dynamic = ["version"]
 description = "SellerClaw edge agent (OpenClaw wrapper) with CLI onboarding"
 requires-python = ">=3.12"
 dependencies = [
@@ -46,8 +46,14 @@ extraPaths = ["runtime/commands"]
 sellerclaw-agent = "sellerclaw_agent.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "sellerclaw_agent/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sellerclaw_agent"]

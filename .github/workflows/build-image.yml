@@ -76,6 +76,8 @@ jobs:
           file: sellerclaw-agent/runtime/Dockerfile
           target: staging
           push: true
+          build-args: |
+            SELLERCLAW_AGENT_VERSION=${{ needs.resolve.outputs.version }}
           tags: |
             ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
             ${{ needs.resolve.outputs.image }}:latest

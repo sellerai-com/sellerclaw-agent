@@ -4,6 +4,8 @@ services:
       context: ..
       dockerfile: sellerclaw-agent/runtime/Dockerfile
       target: staging
+      args:
+        SELLERCLAW_AGENT_VERSION: "${SELLERCLAW_AGENT_VERSION:-0.0.0+unknown}"
     ports:
       - "127.0.0.1:8001:8001"
       - "${OPENCLAW_PORT_GATEWAY:-7788}:7788"

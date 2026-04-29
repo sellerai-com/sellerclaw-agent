@@ -153,6 +153,13 @@ RUN npm run build
 # ---- Staging: SellerClaw agent API + OpenClaw runtime in one image ----
 FROM base AS staging
 
+# Agent self-reported version (sent to sellerclaw on connect/ping).
+# Computed from `git describe --tags` by setup.sh / Makefile / CI and forwarded
+# here as a build-arg; baked into ENV so the image carries its own version
+# even when started via plain `docker run` without an env-file.
+ARG SELLERCLAW_AGENT_VERSION=0.0.0+unknown
+ENV SELLERCLAW_AGENT_VERSION=${SELLERCLAW_AGENT_VERSION}
+
 COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
 COPY sellerclaw-agent/pyproject.toml sellerclaw-agent/uv.lock /tmp/proj/
 # Debian bookworm Python is PEP 668 "externally managed"; allow system install in this image only.

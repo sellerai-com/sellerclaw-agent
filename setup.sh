@@ -311,6 +311,21 @@ if (( NEED_ENV_FILE )); then
 fi
 
 # ---------------------------------------------------------------------------
+# Resolve agent version from git tags (single source of truth, no hardcode).
+# Forwarded to docker-compose as the SELLERCLAW_AGENT_VERSION build-arg and
+# baked into the runtime image as ENV. Non-fatal: if git or tags are missing,
+# the Dockerfile default ("0.0.0+unknown") will be used instead.
+# ---------------------------------------------------------------------------
+
+if [[ -z "${SELLERCLAW_AGENT_VERSION:-}" ]] && have_cmd git && [[ -d "$SCRIPT_DIR/.git" ]]; then
+  agent_version="$(git -C "$SCRIPT_DIR" describe --tags --dirty --always --match 'v*' 2>/dev/null || true)"
+  agent_version="${agent_version#v}"
+  if [[ -n "$agent_version" ]]; then
+    export SELLERCLAW_AGENT_VERSION="$agent_version"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Hand off to the CLI.
 # ---------------------------------------------------------------------------
 
