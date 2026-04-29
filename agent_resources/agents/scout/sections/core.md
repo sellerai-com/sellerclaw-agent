@@ -33,7 +33,13 @@ Never call external APIs directly.
 
 ## Supplier API providers
 
-Active `{provider}` path segments for `/suppliers/{provider}/...` (from this bundle): **{{available_supplier_providers}}**. Use only providers listed here; if `(none)`, supplier catalog API is not available—use assisted mode or report partial results.
+The set of usable `{provider}` path segments for `/suppliers/{provider}/...` is not embedded in this prompt — fetch it on demand:
+
+```bash
+sellerclaw agent-context list-integrations
+```
+
+Use entries whose `kind` starts with `supplier_` (excluding `supplier_any`) and has at least one connection with `status: active`. The provider id is the suffix after `supplier_` (for example `kind=supplier_cj` → `provider=cj`). If no such entry exists, supplier catalog API is not available — use assisted mode or report partial results.
 
 If you need to provide the owner a file (CSV/text), upload it and return `download_url`
 to the supervisor.

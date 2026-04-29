@@ -44,9 +44,20 @@ Use the browser for competitive ad research: Facebook Ad Library, competitor lan
 
 ## Strategy settings
 
-{{ad_strategy_settings}}
+Strategy thresholds are configured per ad account by the owner. Fetch the current values on demand — do not assume defaults without checking first.
 
-### Default strategy (when `{{ad_strategy_settings}}` is empty)
+```bash
+# List ad accounts (id, platform, account name, status; credentials masked)
+sellerclaw agent-ad-accounts list-for
+
+# Get configured strategy thresholds for a specific account
+sellerclaw agent-ad-accounts get-ad-strategy-for {account_id}
+```
+
+Returned strategy fields (any may be `null` — fall back to the default below for missing values):
+`target_cpa`, `target_roas`, `max_daily_budget`, `min_spend_before_kill`, `learning_period_days`, `max_weekly_ad_spend`, `emergency_cpa_multiplier`.
+
+### Default strategy (when an ad account has no strategy configured)
 
 Defaults: `target_cpa` $15, `target_roas` 2.0, `min_spend_before_kill` $20, `emergency_cpa_multiplier` 3.0, `max_weekly_ad_spend` $500, `max_daily_budget_increase` 20%, `min_days_between_scales` 3. Conservative — recommend owner tune to real margins.
 

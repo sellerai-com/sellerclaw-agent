@@ -20,11 +20,6 @@ from sellerclaw_agent.models import IntegrationKind, ModelTier
 _DEFAULT_TEMPLATE_VARIABLES: dict[str, str] = {
     "user_name": "Test",
     "config_generated_at": "2026-01-01 00:00 UTC",
-    "available_supplier_providers": "",
-    "stores_list": "_No stores connected._\n",
-    "suppliers_list": "_No supplier accounts connected._\n",
-    "subagents_list": "none",
-    "ad_strategy_settings": "No strategy settings configured -- use defaults.\n",
     "telegram_group_id": "",
 }
 

@@ -15,11 +15,6 @@ def _template_vars() -> dict[str, str]:
         "api_base_url": "http://x/agent",
         "user_name": "U",
         "config_generated_at": "now",
-        "available_supplier_providers": "",
-        "stores_list": "",
-        "suppliers_list": "",
-        "subagents_list": "",
-        "ad_strategy_settings": "",
         "telegram_group_id": "",
         "global_browser_enabled": "enabled",
         "web_search_enabled": "disabled",
@@ -43,7 +38,7 @@ def test_assembler_supervisor_tools_md_expands_template_variables(agent_resource
     asm = AgentConfigAssembler(resources_root=agent_resources_root)
     sup = asm.assemble_supervisor_only(template_variables=_template_vars())
     assert sup.tools_md is not None
-    assert "http://x/agent" in sup.tools_md
+    assert "sellerclaw-ui" in sup.tools_md
     assert "{{" not in sup.tools_md
 
 

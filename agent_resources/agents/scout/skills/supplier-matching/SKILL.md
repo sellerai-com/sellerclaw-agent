@@ -20,7 +20,7 @@ shortlisted product. Compare on price, shipping, stock reliability, and product 
 
 - Use `exec curl` for HTTP requests.
 - All supplier endpoints follow the pattern: `/suppliers/{provider}/{endpoint}`.
-- **Choose `{provider}`** from the Product Scout core section **Supplier API providers** (`{{available_supplier_providers}}`). Example: if the bundle lists `cj`, use `provider=cj`. If the value is `(none)`, you cannot call supplier catalog endpoints—return a partial result and say supplier API is unavailable.
+- **Choose `{provider}`** by fetching `sellerclaw agent-context list-integrations` and picking an entry whose `kind` starts with `supplier_` (excluding `supplier_any`) with at least one active connection. The provider id is the `kind` suffix (e.g. `supplier_cj` → `provider=cj`). If no such entry is returned, you cannot call supplier catalog endpoints — return a partial result and say supplier API is unavailable.
 - For supplier catalog CLI shapes and per-provider quirks (`sellerclaw suppliers …` search / product / variants / stock / shipping quote), read the supplier subagent skill **`product-search`** (provider-neutral flow + per-provider notes, e.g. CJ).
 
 ## Workflow
@@ -32,7 +32,7 @@ prices, stock status) so results survive session timeouts.
 
 ### Step 0 — Resolve provider
 
-Set `provider` to a single id from `{{available_supplier_providers}}` (e.g. `cj`). If multiple ids are listed, prefer the one that best matches the product source requested by the supervisor; otherwise use the first listed.
+Run `sellerclaw agent-context list-integrations` and pick one provider id (the suffix after `supplier_`) from an entry with an active connection — e.g. `cj` from `supplier_cj`. If multiple are returned, prefer the one that best matches the product source requested by the supervisor; otherwise use the first listed.
 
 ### Step 1 — Search for product matches
 
@@ -145,7 +145,7 @@ If not stated, use Standard.
 
 ## Fallback when Supplier API is unavailable
 
-If `{{available_supplier_providers}}` is `(none)` or API returns errors:
+If `sellerclaw agent-context list-integrations` returns no active `supplier_*` connection (other than `supplier_any`) or supplier API calls return errors:
 
 1. `web_search`: "{product} wholesale price dropshipping" — supplier cost estimates.
 2. `web_search`: "{product} site:aliexpress.com" — AliExpress as cost proxy.
