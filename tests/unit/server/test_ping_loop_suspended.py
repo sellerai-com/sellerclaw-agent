@@ -37,7 +37,7 @@ async def test_ping_loop_suspended_uses_long_sleep_and_keeps_session(
     session_storage.load = MagicMock(return_value=_Sess())
     session_storage.clear = MagicMock()
     creds_storage = MagicMock()
-    creds_storage.load = MagicMock(return_value=object())
+    creds_storage.load = MagicMock(return_value=MagicMock(agent_token="test_agent_token"))
 
     mock_client = MagicMock()
     mock_client.connect = AsyncMock(

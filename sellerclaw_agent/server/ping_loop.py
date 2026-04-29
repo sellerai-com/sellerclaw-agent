@@ -17,6 +17,7 @@ from sellerclaw_agent.async_backoff import (
     ping_interval_when_suspended,
     sleep_until,
 )
+from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
@@ -81,8 +82,7 @@ async def run_edge_ping_loop(
 
     while not stop.is_set():
         sleep_seconds = ping_interval_success()
-        creds = creds_storage.load()
-        if creds is None:
+        if resolve_agent_bearer_token(creds_storage) is None:
             await sleep_until(stop, sleep_seconds)
             continue
 

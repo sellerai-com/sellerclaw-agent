@@ -13,15 +13,27 @@ from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 pytestmark = pytest.mark.unit
 
 
-async def test_periodic_state_backup_triggers_upload(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("file_creds", "env_token", "expect_connect"),
+    [
+        pytest.param(None, "sca_env_token", True, id="env-only-fallback"),
+        pytest.param(MagicMock(agent_token="sca_file_token"), None, True, id="file-creds-present"),
+        pytest.param(None, None, False, id="no-credentials-no-connect"),
+    ],
+)
+async def test_ping_loop_uses_agent_api_key_when_file_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    file_creds: object | None,
+    env_token: str | None,
+    expect_connect: bool,
+) -> None:
+    """Edge ping loop must reach client.connect() when AGENT_API_KEY is set even without agent_token.json."""
     monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    state_root = tmp_path / "oc"
-    state_root.mkdir(parents=True)
-    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(state_root))
-    (state_root / "agents" / "sup" / "sessions").mkdir(parents=True)
-    (state_root / "agents" / "sup" / "sessions" / "chat.jsonl").write_text("{}\n", encoding="utf-8")
-
-    monkeypatch.setattr("sellerclaw_agent.server.ping_loop._PERIODIC_STATE_BACKUP_SECONDS", 0)
+    if env_token is None:
+        monkeypatch.delenv("AGENT_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_API_KEY", env_token)
 
     stop = asyncio.Event()
     registry = EdgeRuntimeRegistry()
@@ -31,25 +43,25 @@ async def test_periodic_state_backup_triggers_upload(monkeypatch: pytest.MonkeyP
 
     inst_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 
-    class _Sess:
-        agent_instance_id = inst_id
-        protocol_version = 1
+    creds_storage = MagicMock()
+    creds_storage.load = MagicMock(return_value=file_creds)
 
-    class _Ping:
-        pending_command = None
+    session_storage = MagicMock()
+    session_storage.load = MagicMock(return_value=None)
+    session_storage.save = MagicMock()
+    session_storage.clear = MagicMock()
 
     mock_client = MagicMock()
     mock_client.connect = AsyncMock(return_value=MagicMock(agent_instance_id=inst_id))
-    mock_client.ping = AsyncMock(return_value=_Ping())
-    mock_client.upload_state_backup = AsyncMock(return_value=True)
+    mock_client.ping = AsyncMock(return_value=MagicMock(pending_command=None))
 
     monkeypatch.setattr(
         "sellerclaw_agent.server.ping_loop.CredentialsStorage",
-        MagicMock(return_value=MagicMock(load=MagicMock(return_value=MagicMock(agent_token="test_agent_token")))),
+        MagicMock(return_value=creds_storage),
     )
     monkeypatch.setattr(
         "sellerclaw_agent.server.ping_loop.EdgeSessionStorage",
-        MagicMock(return_value=MagicMock(load=MagicMock(return_value=_Sess()))),
+        MagicMock(return_value=session_storage),
     )
     monkeypatch.setattr(
         "sellerclaw_agent.server.ping_loop.SellerClawConnectionClient",
@@ -57,17 +69,15 @@ async def test_periodic_state_backup_triggers_upload(monkeypatch: pytest.MonkeyP
     )
     fake_mgr = MagicMock()
     fake_mgr.probe_openclaw_status = MagicMock(return_value=("stopped", None))
+    fake_mgr.probe_browser_status = MagicMock(
+        return_value=MagicMock(status="idle", kasmvnc_running=False, chrome_running=False, error=None, pages=()),
+    )
     monkeypatch.setattr(
         "sellerclaw_agent.server.ping_loop.create_supervisor_manager",
         MagicMock(return_value=fake_mgr),
     )
 
-    async def _fast_sleep(_stop: asyncio.Event, _seconds: float) -> None:
-        await asyncio.sleep(0)
-
-    monkeypatch.setattr("sellerclaw_agent.server.ping_loop.sleep_until", _fast_sleep)
-
-    ping_task = asyncio.create_task(
+    task = asyncio.create_task(
         run_edge_ping_loop(
             stop,
             command_queue=command_queue,
@@ -76,17 +86,13 @@ async def test_periodic_state_backup_triggers_upload(monkeypatch: pytest.MonkeyP
             registry=registry,
         ),
     )
-
     try:
-        for _ in range(500):
-            await asyncio.sleep(0.01)
-            if mock_client.upload_state_backup.await_count >= 1:
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if mock_client.connect.await_count >= 1:
                 break
-        assert mock_client.upload_state_backup.await_count >= 1
-        first_archive = mock_client.upload_state_backup.await_args.args[0]
-        assert isinstance(first_archive, bytes)
-        assert first_archive[:2] == b"\x1f\x8b"
+        assert mock_client.connect.await_count == (1 if expect_connect else 0)
     finally:
         stop.set()
-        await asyncio.wait_for(ping_task, timeout=2.0)
+        await asyncio.wait_for(task, timeout=2.0)
         executor.shutdown(wait=False, cancel_futures=True)

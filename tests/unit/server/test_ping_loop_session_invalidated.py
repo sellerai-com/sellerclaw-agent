@@ -37,7 +37,7 @@ async def test_ping_loop_session_invalidated_clears_session_keeps_creds(
     session_storage.load = MagicMock(return_value=_Sess())
     session_storage.clear = MagicMock()
     creds_storage = MagicMock()
-    creds_storage.load = MagicMock(return_value=object())
+    creds_storage.load = MagicMock(return_value=MagicMock(agent_token="test_agent_token"))
     creds_storage.clear = MagicMock()
 
     mock_client = MagicMock()

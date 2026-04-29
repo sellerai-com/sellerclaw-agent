@@ -61,7 +61,7 @@ async def test_ping_loop_enqueues_command_and_executor_fills_result_store(
 
     monkeypatch.setattr(
         "sellerclaw_agent.server.ping_loop.CredentialsStorage",
-        MagicMock(return_value=MagicMock(load=MagicMock(return_value=object()))),
+        MagicMock(return_value=MagicMock(load=MagicMock(return_value=MagicMock(agent_token="test_agent_token")))),
     )
     monkeypatch.setattr(
         "sellerclaw_agent.server.ping_loop.EdgeSessionStorage",
@@ -90,7 +90,7 @@ async def test_ping_loop_enqueues_command_and_executor_fills_result_store(
     )
     monkeypatch.setattr(
         "sellerclaw_agent.server.edge_commands.CredentialsStorage",
-        MagicMock(return_value=MagicMock(load=MagicMock(return_value=object()))),
+        MagicMock(return_value=MagicMock(load=MagicMock(return_value=MagicMock(agent_token="test_agent_token")))),
     )
 
     async def _fast_sleep(_stop: asyncio.Event, _seconds: float) -> None:
