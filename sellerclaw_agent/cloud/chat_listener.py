@@ -304,9 +304,8 @@ async def run_edge_chat_sse_loop(
             await sleep_until(stop, 2.0)
             backoff = 2.0
             continue
-        except CloudAuthError:
-            _log.warning("chat_sse_unauthorized_clearing_local_auth")
-            creds_storage.clear()
+        except CloudAuthError as exc:
+            _log.warning("chat_sse_unauthorized_clearing_session", error=str(exc))
             session_storage.clear()
             await sleep_until(stop, 10.0)
             backoff = 2.0

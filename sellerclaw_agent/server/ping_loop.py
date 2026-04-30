@@ -106,7 +106,6 @@ async def run_edge_ping_loop(
             ok = await _flush_command_ack(
                 pending_ack=pending_ack,
                 client=client,
-                credentials_storage=creds_storage,
                 session_storage=session_storage,
                 result_store=result_store,
                 container_mgr=container_mgr,
@@ -186,8 +185,7 @@ async def run_edge_ping_loop(
             continue
         except CloudAuthError as exc:
             if getattr(exc, "status_code", None) == 401:
-                _log.warning("edge_session_unauthorized_clearing_local_session")
-                creds_storage.clear()
+                _log.warning("edge_session_unauthorized_clearing_session", error=str(exc))
                 session_storage.clear()
             consecutive_errors += 1
             registry.mark_ping_error(str(exc))
@@ -249,7 +247,6 @@ async def _flush_command_ack(
     *,
     pending_ack: CompletedRemoteCommand,
     client: SellerClawConnectionClient,
-    credentials_storage: CredentialsStorage,
     session_storage: EdgeSessionStorage,
     result_store: CommandResultStore,
     container_mgr: SupervisorContainerManager,
@@ -294,7 +291,6 @@ async def _flush_command_ack(
         return False
     except CloudAuthError as exc:
         if getattr(exc, "status_code", None) == 401:
-            credentials_storage.clear()
             session_storage.clear()
             await result_store.clear_pending_ack()
         _log.warning("edge_ping_ack_auth_error", error=str(exc))
