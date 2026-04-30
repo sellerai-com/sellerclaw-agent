@@ -31,7 +31,12 @@ PING_FRESH_S = 30
 PING_WARN_S = 120
 FUTURE_SKEW_TOLERANCE_S = 5
 
-_TASK_ERROR_PRIORITY: tuple[str, ...] = ("ping_loop", "chat_sse", "hooks_sse", "command_executor")
+_TASK_ERROR_PRIORITY: tuple[str, ...] = ("ping_loop", "chat_sse", "hooks_sse")
+# command_executor errors are surfaced via the dedicated `Last command` row,
+# so we keep them out of the generic `Last error` aggregation to avoid
+# duplicate noise (the command-level row carries richer context — type,
+# outcome, age — than the bare error string).
+_TASK_ERRORS_EXCLUDED: tuple[str, ...] = ("command_executor",)
 
 WATCH_STOPPED_HINT = (
     "[hint]Watch stopped. Container keeps running. "
@@ -47,6 +52,7 @@ _LABEL_MODULES = "Active modules"
 _LABEL_INTEGRATIONS = "Integrations"
 _LABEL_WEB_SEARCH = "Web search"
 _LABEL_TELEGRAM = "Telegram"
+_LABEL_LAST_COMMAND = "Last command"
 _LABEL_ERROR = "Last error"
 
 # Manifest enum → human label. Order matters: it's the rendering order.
@@ -171,9 +177,47 @@ def _format_uptime(seconds: float | int | None) -> str:
     return f"{days}d {hours}h"
 
 
+def _format_last_command(
+    last_command: dict[str, Any] | None, *, now: float
+) -> tuple[str, str] | None:
+    """Render a (text, style) pair for the ``Last command`` row, or None to hide it.
+
+    We always show the most recent command if present — a successful start is
+    reassuring, a failed one tells the user *why* the agent isn't running
+    (e.g. server-side manifest error invisible from the ping loop's
+    perspective).
+    """
+    if not isinstance(last_command, dict):
+        return None
+    cmd_type = last_command.get("command_type")
+    outcome = last_command.get("outcome")
+    if not isinstance(cmd_type, str) or not isinstance(outcome, str):
+        return None
+    finished_iso = last_command.get("finished_at")
+    age = _parse_last_success_ago(last_success_at=finished_iso, now=now) if isinstance(finished_iso, str) else None
+    when = ""
+    if age is not None:
+        if age < 60:
+            when = f" ({age}s ago)"
+        elif age < 3600:
+            when = f" ({age // 60}m ago)"
+        else:
+            when = f" ({age // 3600}h ago)"
+    if outcome == "completed":
+        return f"{cmd_type} succeeded{when}", "green"
+    err = last_command.get("error")
+    err_str = _truncate_error(err) if isinstance(err, str) and err.strip() else ""
+    suffix = f": {err_str}" if err_str else ""
+    style = "bold red" if outcome == "failed" else "yellow"
+    return f"{cmd_type} {outcome}{when}{suffix}", style
+
+
 def _first_task_last_error(tasks: dict[str, Any]) -> str | None:
     ordered: list[str] = [name for name in _TASK_ERROR_PRIORITY if name in tasks]
-    ordered += [name for name in sorted(tasks) if name not in _TASK_ERROR_PRIORITY]
+    ordered += [
+        name for name in sorted(tasks)
+        if name not in _TASK_ERROR_PRIORITY and name not in _TASK_ERRORS_EXCLUDED
+    ]
     for name in ordered:
         t = tasks.get(name)
         if not isinstance(t, dict):
@@ -296,6 +340,7 @@ def _cloud_row(snapshot: dict[str, Any] | None, *, now: float) -> tuple[str, str
     session = snapshot.get("session") if isinstance(snapshot.get("session"), dict) else {}
     assert isinstance(session, dict)
     connected = session.get("connected")
+    signed_in = session.get("signed_in")
     ping: dict[str, Any] = {}
     tasks = snapshot.get("tasks")
     if isinstance(tasks, dict):
@@ -311,6 +356,12 @@ def _cloud_row(snapshot: dict[str, Any] | None, *, now: float) -> tuple[str, str
             return f"{prefix} ({sync_text})", "green"
         return f"{prefix} ({sync_text})", sync_style
     if connected is False:
+        # Distinguish "no credentials yet" (user must sign in) from "credentials
+        # present but server keeps rejecting the session" (agent retries
+        # automatically; user only needs to act if Last error indicates a
+        # permanent token revocation).
+        if signed_in is True:
+            return "signed in — reconnecting (see `Last error` for details)", "yellow"
         return "not signed in — run `./setup.sh` to connect", "bold red"
     return "unknown", "dim"
 
@@ -319,7 +370,11 @@ def _is_signed_in(snapshot: dict[str, Any] | None) -> bool:
     if not isinstance(snapshot, dict):
         return False
     session = snapshot.get("session")
-    return isinstance(session, dict) and session.get("connected") is True
+    if not isinstance(session, dict):
+        return False
+    if session.get("signed_in") is True:
+        return True
+    return session.get("connected") is True
 
 
 def _agent_row(
@@ -467,6 +522,12 @@ def render_status_panel(
         tg_enabled = tg.get("enabled") if isinstance(tg, dict) else None
         tg_text, tg_style = _bool_onoff(tg_enabled)
         table.add_row(_LABEL_TELEGRAM, Text(tg_text, style=tg_style))
+
+    if isinstance(snapshot, dict):
+        last_command_row = _format_last_command(snapshot.get("last_command"), now=now)
+        if last_command_row is not None:
+            text, style = last_command_row
+            table.add_row(_LABEL_LAST_COMMAND, Text(text, style=style))
 
     err_source: str | None = fetch_error
     if err_source is None and isinstance(snapshot, dict):

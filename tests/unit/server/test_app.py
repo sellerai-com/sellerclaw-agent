@@ -242,6 +242,7 @@ def test_get_health_edge_ping_disabled(
     assert "openclaw" in body
     assert body["openclaw"]["status"] == "stopped"
     assert body["session"]["connected"] is False
+    assert body["session"]["signed_in"] is False
 
 
 def test_get_health_unhealthy_when_ping_not_alive(
@@ -313,9 +314,43 @@ def test_get_health_degraded_when_command_executor_dead(
             assert body["status"] == "degraded"
             assert body["edge_ping_enabled"] is True
             assert body["session"]["connected"] is True
+            assert body["session"]["signed_in"] is True
             assert body["tasks"]["ping_loop"]["alive"] is True
             assert body["tasks"]["chat_sse"]["alive"] is True
             assert body["tasks"]["command_executor"]["alive"] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_get_health_signed_in_but_session_lost(
+    tmp_path,
+    monkeypatch,
+    openclaw_manager_mock: MagicMock,
+) -> None:
+    """Credentials on disk, no session yet (server keeps rejecting connect):
+    health must report signed_in=True so the watch can show "reconnecting"
+    instead of misleading "not signed in".
+    """
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_EDGE_PING", "0")
+
+    uid = UUID("11111111-1111-4111-8111-111111111111")
+    CredentialsStorage(tmp_path).save(
+        user_id=uid,
+        user_email="a@example.com",
+        user_name="u",
+        agent_token="sca_unit_test_token",
+        connected_at=datetime.now(tz=UTC).isoformat(),
+    )
+
+    app.dependency_overrides[get_storage] = lambda: ManifestStorage(tmp_path)
+    app.dependency_overrides[get_openclaw_manager] = lambda: openclaw_manager_mock
+
+    try:
+        with TestClient(app) as client:
+            body = client.get("/health").json()
+            assert body["session"]["connected"] is False
+            assert body["session"]["signed_in"] is True
     finally:
         app.dependency_overrides.clear()
 

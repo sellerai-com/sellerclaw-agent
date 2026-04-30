@@ -30,6 +30,14 @@ class TaskRuntimeState:
 
 
 @dataclass
+class LastCommandState:
+    command_type: str
+    outcome: str
+    error: str | None
+    finished_at: datetime
+
+
+@dataclass
 class EdgeRuntimeRegistry:
     """Thread-safe snapshot of edge background task health (ping, executor, SSE)."""
 
@@ -43,6 +51,7 @@ class EdgeRuntimeRegistry:
         },
     )
     _last_dispatched_command_id: UUID | None = field(default=None, repr=False)
+    _last_command: LastCommandState | None = field(default=None, repr=False)
 
     def mark_task_alive(self, name: str, *, alive: bool) -> None:
         with self._lock:
@@ -68,6 +77,37 @@ class EdgeRuntimeRegistry:
             self._tasks["command_executor"].current_command_id = (
                 str(command_id) if command_id is not None else None
             )
+
+    def mark_command_finished(
+        self,
+        *,
+        command_type: str,
+        outcome: str,
+        error: str | None,
+    ) -> None:
+        """Record the outcome of the most recently executed remote command.
+
+        Surfaces command-level failures (e.g. server-side manifest errors) to
+        the status panel — otherwise they live only in ``command_history.jsonl``
+        and the user has no clue why the agent didn't start.
+        """
+        finished_at = datetime.now(tz=UTC)
+        with self._lock:
+            self._last_command = LastCommandState(
+                command_type=command_type,
+                outcome=outcome,
+                error=(error[:500] if error else None),
+                finished_at=finished_at,
+            )
+            executor = self._tasks["command_executor"]
+            if outcome == "completed":
+                executor.last_error = None
+                executor.last_success_at = finished_at
+            else:
+                executor.last_error = (
+                    f"{command_type} {outcome}"
+                    + (f": {error[:400]}" if error else "")
+                )
 
     def mark_sse_connected(self, connected: bool) -> None:
         with self._lock:
@@ -105,3 +145,15 @@ class EdgeRuntimeRegistry:
                     else None,
                 }
             return out
+
+    def snapshot_last_command(self) -> dict[str, Any] | None:
+        with self._lock:
+            lc = self._last_command
+            if lc is None:
+                return None
+            return {
+                "command_type": lc.command_type,
+                "outcome": lc.outcome,
+                "error": lc.error,
+                "finished_at": lc.finished_at.isoformat(),
+            }

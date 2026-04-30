@@ -170,6 +170,11 @@ async def run_edge_command_executor_loop(
             registry.mark_executor_command(command_id=None)
 
         executed_at = datetime.now(UTC).isoformat()
+        registry.mark_command_finished(
+            command_type=work.command_type,
+            outcome=outcome,
+            error=err,
+        )
         _log.info(
             "edge_command_finished",
             command_id=str(work.command_id),

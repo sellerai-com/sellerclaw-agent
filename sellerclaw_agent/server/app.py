@@ -240,13 +240,17 @@ async def health() -> dict[str, Any]:
 
     registry = get_runtime_registry()
     data_dir = _get_data_dir()
+    from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
+
     creds = CredentialsStorage(data_dir).load()
     sess = EdgeSessionStorage(data_dir).load()
+    bearer = resolve_agent_bearer_token_from_data_dir(data_dir)
     mgr = get_openclaw_manager()
     detail = await asyncio.to_thread(mgr.get_status_detail)
 
     session_payload = {
         "connected": creds is not None and sess is not None,
+        "signed_in": bearer is not None,
         "agent_instance_id": str(sess.agent_instance_id) if sess else None,
     }
     openclaw_payload = {
@@ -262,9 +266,11 @@ async def health() -> dict[str, Any]:
             "tasks": {},
             "openclaw": openclaw_payload,
             "session": session_payload,
+            "last_command": None,
         }
 
     tasks = registry.snapshot_tasks()
+    last_command = registry.snapshot_last_command()
     ping_alive = bool(tasks.get("ping_loop", {}).get("alive", True))
     exec_alive = bool(tasks.get("command_executor", {}).get("alive", True))
     chat_alive = bool(tasks.get("chat_sse", {}).get("alive", True))
@@ -283,6 +289,7 @@ async def health() -> dict[str, Any]:
         "tasks": tasks,
         "openclaw": openclaw_payload,
         "session": session_payload,
+        "last_command": last_command,
     }
 
 

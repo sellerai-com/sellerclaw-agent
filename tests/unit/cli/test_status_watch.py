@@ -58,6 +58,7 @@ def _iso(*, offset_s: float) -> str:
 def _health_snapshot(  # noqa: PLR0913
     *,
     session_connected: bool | None = True,
+    session_signed_in: bool | None = None,
     ping_last_success_at: str | None = None,
     chat_connected: bool | None = True,
     chat_last_error: str | None = None,
@@ -66,11 +67,18 @@ def _health_snapshot(  # noqa: PLR0913
     openclaw_status: str | None = "running",
     openclaw_uptime_seconds: float | int | None = 8054,
     openclaw_error: str | None = None,
+    last_command: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if session_signed_in is None:
+        session_signed_in = bool(session_connected)
     return {
         "status": "healthy",
         "edge_ping_enabled": True,
-        "session": {"connected": session_connected, "agent_instance_id": "x"},
+        "session": {
+            "connected": session_connected,
+            "signed_in": session_signed_in,
+            "agent_instance_id": "x",
+        },
         "tasks": {
             "chat_sse": {"connected": chat_connected, "last_error": chat_last_error},
             "command_executor": {"last_error": command_last_error},
@@ -84,6 +92,7 @@ def _health_snapshot(  # noqa: PLR0913
             "uptime_seconds": openclaw_uptime_seconds,
             "error": openclaw_error,
         },
+        "last_command": last_command,
     }
 
 
@@ -220,6 +229,25 @@ def test_panel_when_not_signed_in_prompts_user() -> None:
     text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None))
     assert "not signed in" in text
     assert "./setup.sh" in text
+
+
+def test_panel_when_signed_in_but_session_lost_says_reconnecting() -> None:
+    """Server keeps rejecting bearer (e.g. its DB was wiped on restart): we still
+    have credentials, ping loop keeps retrying. Status must NOT tell the user
+    "not signed in" — that's misleading and implies re-running setup.sh is the
+    only fix. Show the retry state and let `Last error` explain.
+    """
+    snap = _health_snapshot(
+        session_connected=False,
+        session_signed_in=True,
+        ping_last_success_at=None,
+        ping_last_error="Invalid bearer token",
+    )
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=None))
+    assert "signed in" in text
+    assert "reconnecting" in text
+    assert "not signed in" not in text
+    assert "invalid bearer token" in text
 
 
 def test_chat_when_signed_in_without_manifest_says_will_connect_on_start() -> None:
@@ -422,6 +450,71 @@ def test_first_task_error_prefers_ping_loop() -> None:
         "ping_loop": {"last_error": "ping dead"},
     }
     assert _first_task_last_error(tasks) == "ping dead"
+
+
+def test_first_task_error_excludes_command_executor() -> None:
+    """command_executor errors are surfaced via the dedicated Last command row;
+    aggregating them under Last error too produces duplicate, less informative
+    noise (no command type, no age).
+    """
+    tasks = {
+        "command_executor": {"last_error": "start failed: x"},
+    }
+    assert _first_task_last_error(tasks) is None
+
+
+def test_panel_shows_last_command_failure_with_error() -> None:
+    """A failed remote command (e.g. server returned 400 for edge-manifest) must
+    be visible to the user — otherwise they have no clue why the agent didn't
+    start.
+    """
+    snap = _health_snapshot(
+        ping_last_success_at=_iso(offset_s=-1.0),
+        openclaw_status="stopped",
+        openclaw_uptime_seconds=None,
+        last_command={
+            "command_type": "start",
+            "outcome": "failed",
+            "error": "Complex model gpt-5.4 is not available.",
+            "finished_at": _iso(offset_s=-3.0),
+        },
+    )
+    text = _render_to_text(
+        render_status_panel(snap, now=REF_TS, manifest=_full_manifest())
+    )
+    assert "last command" in text
+    assert "start failed" in text
+    assert "complex model gpt-5.4 is not available" in text
+
+
+def test_panel_shows_last_command_success_in_green() -> None:
+    """A successful command is reassuring context — show it too, just in a
+    non-alarming style.
+    """
+    snap = _health_snapshot(
+        ping_last_success_at=_iso(offset_s=-1.0),
+        last_command={
+            "command_type": "start",
+            "outcome": "completed",
+            "error": None,
+            "finished_at": _iso(offset_s=-30.0),
+        },
+    )
+    text = _render_to_text(
+        render_status_panel(snap, now=REF_TS, manifest=_full_manifest())
+    )
+    assert "start succeeded" in text
+
+
+def test_panel_no_last_command_row_when_absent() -> None:
+    snap = _health_snapshot(
+        ping_last_success_at=_iso(offset_s=-1.0),
+        last_command=None,
+    )
+    text = _render_to_text(
+        render_status_panel(snap, now=REF_TS, manifest=_full_manifest())
+    )
+    assert "last command" not in text
 
 
 def test_clock_skew_beyond_tolerance_is_null() -> None:
