@@ -88,11 +88,27 @@ async def run_edge_ping_loop(
 
         pending_ack = await result_store.get_pending_ack()
         if pending_ack is not None:
+            sess_for_ack = session_storage.load()
+            if (
+                sess_for_ack is None
+                or sess_for_ack.agent_instance_id != pending_ack.work.instance_id
+            ):
+                _log.info(
+                    "edge_command_ack_dropped_session_lost",
+                    command_id=str(pending_ack.work.command_id),
+                    command_type=pending_ack.work.command_type,
+                )
+                await result_store.clear_pending_ack()
+                dispatched_command_id = None
+                registry.set_last_dispatched_command_id(None)
+                continue
+
             ok = await _flush_command_ack(
                 pending_ack=pending_ack,
                 client=client,
                 credentials_storage=creds_storage,
                 session_storage=session_storage,
+                result_store=result_store,
                 container_mgr=container_mgr,
                 loop=loop,
                 supervisor_executor=supervisor_executor,
@@ -235,21 +251,13 @@ async def _flush_command_ack(
     client: SellerClawConnectionClient,
     credentials_storage: CredentialsStorage,
     session_storage: EdgeSessionStorage,
+    result_store: CommandResultStore,
     container_mgr: SupervisorContainerManager,
     loop: asyncio.AbstractEventLoop,
     supervisor_executor: ThreadPoolExecutor,
     registry: EdgeRuntimeRegistry,
 ) -> bool:
-    sess = session_storage.load()
-    if sess is None:
-        _log.warning("edge_command_ack_skipped_no_session")
-        return False
-
     instance_id = pending_ack.work.instance_id
-    if sess.agent_instance_id != instance_id:
-        _log.warning("edge_command_ack_skipped_session_mismatch")
-        return False
-
     openclaw_status, openclaw_error = await loop.run_in_executor(
         supervisor_executor,
         container_mgr.probe_openclaw_status,
@@ -281,12 +289,14 @@ async def _flush_command_ack(
     except CloudSessionInvalidatedError as exc:
         _log.warning("edge_ping_ack_session_invalidated", error=str(exc))
         session_storage.clear()
+        await result_store.clear_pending_ack()
         registry.mark_ping_error(str(exc))
         return False
     except CloudAuthError as exc:
         if getattr(exc, "status_code", None) == 401:
             credentials_storage.clear()
             session_storage.clear()
+            await result_store.clear_pending_ack()
         _log.warning("edge_ping_ack_auth_error", error=str(exc))
         registry.mark_ping_error(str(exc))
         return False
