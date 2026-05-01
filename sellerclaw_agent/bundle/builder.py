@@ -152,6 +152,7 @@ class BundleBuilder:
                 "Sign in to SellerClaw (agent_token.json under SELLERCLAW_DATA_DIR) or set AGENT_API_KEY."
             )
         web_search_auth_token = agent_api_key if manifest.web_search.enabled else ""
+        ts = created_at or datetime.now(tz=UTC)
         openclaw_config = generate_openclaw_config(
             assembled_agents=assembled,
             gateway_token=gateway_token,
@@ -163,6 +164,7 @@ class BundleBuilder:
             litellm_base_url=manifest.litellm_base_url,
             litellm_api_key=manifest.litellm_api_key,
             model_name_prefix=model_name_prefix,
+            created_at=ts,
             telegram_enabled=manifest.telegram.enabled,
             telegram_bot_token=manifest.telegram.bot_token,
             telegram_allowed_user_ids=manifest.telegram.allowed_user_ids,
@@ -178,7 +180,6 @@ class BundleBuilder:
             workspaces=workspaces,
             shared_skills=shared_skills,
         )
-        ts = created_at or datetime.now(tz=UTC)
         return BundleResult(
             openclaw_config=openclaw_config,
             workspaces=workspaces,

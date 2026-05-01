@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sellerclaw_agent.bundle.protocols import AssembledAgentLike
@@ -124,6 +125,7 @@ def generate_openclaw_config(
     litellm_base_url: str,
     litellm_api_key: str,
     model_name_prefix: str | None = None,
+    created_at: datetime | None = None,
     telegram_enabled: bool,
     telegram_bot_token: str,
     telegram_allowed_user_ids: tuple[str, ...],
@@ -244,8 +246,13 @@ def generate_openclaw_config(
         "localAgentBaseUrl": OPENCLAW_LOCAL_AGENT_BASE_URL,
     }
 
+    # OpenClaw treats `meta` as the marker that the file came from a trusted writer:
+    # if `lastKnownGood` had `lastTouchedVersion`/`lastTouchedAt` but our new file
+    # doesn't, OpenClaw flags `missing-meta-vs-last-good` and silently restores the
+    # previous backup, dropping every fresh value (including the rotated agentApiKey).
+    last_touched_at = (created_at or datetime.now(tz=UTC)).astimezone(UTC).isoformat().replace("+00:00", "Z")
     config_payload = {
-        "meta": {},
+        "meta": {"lastTouchedAt": last_touched_at},
         "logging": {
             "level": OPENCLAW_BUNDLE_LOG_LEVEL,
             "consoleLevel": OPENCLAW_BUNDLE_LOG_LEVEL,

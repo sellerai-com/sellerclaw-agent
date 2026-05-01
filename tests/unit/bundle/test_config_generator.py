@@ -73,7 +73,10 @@ def test_generate_openclaw_config_has_gateway_and_models(
         telegram_allowed_group_ids=(),
     )
     payload = json.loads(raw)
-    assert payload["meta"] == {}
+    # OpenClaw refuses to load configs without `meta.lastTouched*`: it flags them
+    # as "missing-meta-vs-last-good" and silently restores the previous backup.
+    assert isinstance(payload["meta"]["lastTouchedAt"], str)
+    assert payload["meta"]["lastTouchedAt"].endswith("Z")
     assert payload["gateway"]["auth"]["token"] == "g"
     assert "litellm" in payload["models"]["providers"]
     assert payload["agents"]["list"][0]["id"] == "supervisor"
