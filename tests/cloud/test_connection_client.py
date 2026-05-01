@@ -146,6 +146,7 @@ async def test_disconnect_success(tmp_path: Path) -> None:
         assert request.url.path == "/agent/connection/disconnect"
         body = _json_body(request)
         assert body["agent_instance_id"] == instance
+        assert body["revoke_tokens"] is True
         return httpx.Response(200, json={"status": "ok"})
 
     storage = _write_creds(tmp_path)
@@ -155,6 +156,26 @@ async def test_disconnect_success(tmp_path: Path) -> None:
         transport=httpx.MockTransport(handler),
     )
     await client.disconnect(agent_instance_id=UUID(instance))
+
+
+@pytest.mark.asyncio
+async def test_disconnect_keeps_tokens_when_revoke_false(tmp_path: Path) -> None:
+    instance = "66666666-6666-4666-8666-666666666666"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/agent/connection/disconnect"
+        body = _json_body(request)
+        assert body["agent_instance_id"] == instance
+        assert body["revoke_tokens"] is False
+        return httpx.Response(200, json={"status": "ok"})
+
+    storage = _write_creds(tmp_path)
+    client = SellerClawConnectionClient(
+        credentials_storage=storage,
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    await client.disconnect(agent_instance_id=UUID(instance), revoke_tokens=False)
 
 
 @pytest.mark.asyncio

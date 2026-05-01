@@ -274,11 +274,19 @@ class SellerClawConnectionClient:
             ),
         )
 
-    async def disconnect(self, *, agent_instance_id: UUID) -> None:
+    async def disconnect(
+        self,
+        *,
+        agent_instance_id: UUID,
+        revoke_tokens: bool = True,
+    ) -> None:
         status, data = await self._request_json(
             "POST",
             "/agent/connection/disconnect",
-            json_body={"agent_instance_id": str(agent_instance_id)},
+            json_body={
+                "agent_instance_id": str(agent_instance_id),
+                "revoke_tokens": revoke_tokens,
+            },
         )
         if status == 401:
             raise CloudAuthError(self._detail_message(data), status_code=401)

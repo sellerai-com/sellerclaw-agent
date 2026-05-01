@@ -164,6 +164,12 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Best-effort: notify the cloud that this agent is going offline so the UI
+        # marks the connection as disconnected immediately (chat becomes unavailable)
+        # instead of waiting for the ping-timeout sweep. Tokens are kept so the next
+        # `./setup.sh start` can reconnect without re-login.
+        await _notify_cloud_going_offline(data_dir)
+
         stop.set()
         from sellerclaw_agent.server.runtime_registry import install_runtime_registry
 
@@ -176,6 +182,40 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
                     await task
         if supervisor_executor is not None:
             supervisor_executor.shutdown(wait=False, cancel_futures=True)
+
+
+_GOING_OFFLINE_TIMEOUT_SECONDS = 5.0
+
+
+async def _notify_cloud_going_offline(data_dir: Path) -> None:
+    """Send a graceful disconnect to the cloud so the agent shows offline immediately.
+
+    Best-effort: any failure is logged and swallowed so it can't block shutdown.
+    """
+    import structlog
+
+    log = structlog.get_logger(__name__)
+    try:
+        session = EdgeSessionStorage(data_dir).load()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("edge_going_offline_session_load_failed", error=str(exc))
+        return
+    if session is None:
+        return
+    try:
+        from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
+
+        client = SellerClawConnectionClient(credentials_storage=CredentialsStorage(data_dir))
+        await asyncio.wait_for(
+            client.disconnect(
+                agent_instance_id=session.agent_instance_id,
+                revoke_tokens=False,
+            ),
+            timeout=_GOING_OFFLINE_TIMEOUT_SECONDS,
+        )
+        log.info("edge_going_offline_notified", agent_instance_id=str(session.agent_instance_id))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("edge_going_offline_notify_failed", error=str(exc))
 
 
 def _get_data_dir() -> Path:

@@ -703,3 +703,87 @@ def test_auth_local_bootstrap_docker_sibling_container_forbidden(monkeypatch, tm
     with pytest.raises(HTTPException) as exc_info:
         auth_local_bootstrap(req)
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_notify_cloud_going_offline_sends_disconnect_without_revoke(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Lifespan shutdown notifies the cloud so the UI marks the agent offline immediately.
+
+    Tokens must be kept (revoke_tokens=False) so the next start can reconnect without re-login.
+    """
+    instance_id = UUID("99999999-9999-4999-8999-999999999999")
+    EdgeSessionStorage(tmp_path).save(agent_instance_id=instance_id, protocol_version=2)
+
+    captured: dict[str, object] = {}
+
+    class _StubClient:
+        def __init__(self, *, credentials_storage):  # noqa: ANN001
+            captured["creds_dir"] = credentials_storage._data_dir
+
+        async def disconnect(self, *, agent_instance_id, revoke_tokens=True):  # noqa: ANN001
+            captured["agent_instance_id"] = agent_instance_id
+            captured["revoke_tokens"] = revoke_tokens
+
+    monkeypatch.setattr(
+        "sellerclaw_agent.cloud.connection_client.SellerClawConnectionClient",
+        _StubClient,
+    )
+
+    await srv_app._notify_cloud_going_offline(tmp_path)
+
+    assert captured["agent_instance_id"] == instance_id
+    assert captured["revoke_tokens"] is False
+    assert captured["creds_dir"] == tmp_path
+
+
+@pytest.mark.asyncio
+async def test_notify_cloud_going_offline_no_session_is_noop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """No stored session → no HTTP call (e.g. agent never connected)."""
+    called = False
+
+    class _StubClient:
+        def __init__(self, *, credentials_storage):  # noqa: ANN001
+            nonlocal called
+            called = True
+
+        async def disconnect(self, **_kwargs):  # noqa: ANN001
+            nonlocal called
+            called = True
+
+    monkeypatch.setattr(
+        "sellerclaw_agent.cloud.connection_client.SellerClawConnectionClient",
+        _StubClient,
+    )
+
+    await srv_app._notify_cloud_going_offline(tmp_path)
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_notify_cloud_going_offline_swallows_errors(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Network/auth errors during shutdown must not block the lifespan."""
+    instance_id = UUID("88888888-8888-4888-8888-888888888888")
+    EdgeSessionStorage(tmp_path).save(agent_instance_id=instance_id, protocol_version=2)
+
+    class _BoomClient:
+        def __init__(self, *, credentials_storage):  # noqa: ANN001
+            pass
+
+        async def disconnect(self, **_kwargs):  # noqa: ANN001
+            raise RuntimeError("network is down")
+
+    monkeypatch.setattr(
+        "sellerclaw_agent.cloud.connection_client.SellerClawConnectionClient",
+        _BoomClient,
+    )
+
+    await srv_app._notify_cloud_going_offline(tmp_path)
