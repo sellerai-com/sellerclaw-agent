@@ -162,8 +162,6 @@ class BundleBuilder:
             sellerclaw_agent_api_base_url=agent_api_base_url,
             litellm_base_url=manifest.litellm_base_url,
             litellm_api_key=manifest.litellm_api_key,
-            model_complex=manifest.model_complex,
-            model_simple=manifest.model_simple,
             model_name_prefix=model_name_prefix,
             telegram_enabled=manifest.telegram.enabled,
             telegram_bot_token=manifest.telegram.bot_token,

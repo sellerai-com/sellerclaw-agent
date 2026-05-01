@@ -22,24 +22,6 @@ def _minimal_valid_bundle_mapping() -> dict[str, object]:
         "user_id": "11111111-1111-4111-8111-111111111111",
         "litellm_base_url": "http://litellm",
         "litellm_api_key": "k",
-        "models": {
-            "complex": {
-                "id": "c",
-                "name": "C",
-                "reasoning": True,
-                "input": ["text"],
-                "context_window": 100,
-                "max_tokens": 50,
-            },
-            "simple": {
-                "id": "s",
-                "name": "S",
-                "reasoning": False,
-                "input": ["text"],
-                "context_window": 100,
-                "max_tokens": 50,
-            },
-        },
         "template_variables": {},
     }
 
@@ -51,9 +33,19 @@ def test_bundle_manifest_to_save_manifest_mapping_roundtrip(make_manifest) -> No
     assert again.user_id == manifest.user_id
     assert "gateway_token" not in mapping
     assert "hooks_token" not in mapping
-    assert again.model_complex.id == manifest.model_complex.id
+    assert "models" not in mapping
     assert again.connected_integrations == manifest.connected_integrations
     assert again.proxy_url == manifest.proxy_url
+
+
+def test_bundle_manifest_from_mapping_ignores_legacy_models_block() -> None:
+    mapping = _minimal_valid_bundle_mapping()
+    mapping["models"] = {
+        "complex": {"id": "legacy", "name": "L", "context_window": 1, "max_tokens": 2},
+        "simple": {"id": "legacy2", "name": "S", "context_window": 1, "max_tokens": 2},
+    }
+    loaded = bundle_manifest_from_mapping(mapping)
+    assert loaded.user_id == UUID("11111111-1111-4111-8111-111111111111")
 
 
 def test_bundle_manifest_from_mapping_ignores_legacy_gateway_hooks() -> None:
@@ -152,24 +144,6 @@ def test_bundle_manifest_yaml_roundtrip(tmp_path: Path, make_manifest) -> None:
         "user_id": str(manifest.user_id),
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": manifest.litellm_api_key,
-        "models": {
-            "complex": {
-                "id": manifest.model_complex.id,
-                "name": manifest.model_complex.name,
-                "reasoning": manifest.model_complex.reasoning,
-                "input": list(manifest.model_complex.input),
-                "context_window": manifest.model_complex.context_window,
-                "max_tokens": manifest.model_complex.max_tokens,
-            },
-            "simple": {
-                "id": manifest.model_simple.id,
-                "name": manifest.model_simple.name,
-                "reasoning": manifest.model_simple.reasoning,
-                "input": list(manifest.model_simple.input),
-                "context_window": manifest.model_simple.context_window,
-                "max_tokens": manifest.model_simple.max_tokens,
-            },
-        },
         "enabled_modules": [],
         "connected_integrations": [],
         "template_variables": manifest.template_variables,
@@ -178,7 +152,6 @@ def test_bundle_manifest_yaml_roundtrip(tmp_path: Path, make_manifest) -> None:
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     loaded = BundleManifest.from_yaml_file(path, expand_env=False)
     assert loaded.user_id == manifest.user_id
-    assert loaded.model_complex.id == manifest.model_complex.id
 
 
 def test_bundle_manifest_from_yaml_expands_env_vars(tmp_path: Path, make_manifest) -> None:
@@ -187,24 +160,6 @@ def test_bundle_manifest_from_yaml_expands_env_vars(tmp_path: Path, make_manifes
         "user_id": str(manifest.user_id),
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": "${BUNDLE_TEST_LITELLM_KEY}",
-        "models": {
-            "complex": {
-                "id": manifest.model_complex.id,
-                "name": manifest.model_complex.name,
-                "reasoning": manifest.model_complex.reasoning,
-                "input": list(manifest.model_complex.input),
-                "context_window": manifest.model_complex.context_window,
-                "max_tokens": manifest.model_complex.max_tokens,
-            },
-            "simple": {
-                "id": manifest.model_simple.id,
-                "name": manifest.model_simple.name,
-                "reasoning": manifest.model_simple.reasoning,
-                "input": list(manifest.model_simple.input),
-                "context_window": manifest.model_simple.context_window,
-                "max_tokens": manifest.model_simple.max_tokens,
-            },
-        },
         "enabled_modules": [],
         "connected_integrations": [],
         "template_variables": manifest.template_variables,
@@ -222,8 +177,7 @@ def test_bundle_manifest_from_yaml_expands_env_vars(tmp_path: Path, make_manifes
 @pytest.mark.parametrize(
     ("bad_data", "match"),
     [
-        pytest.param({}, "models", id="missing-root-keys"),
-        pytest.param({"user_id": "x", "models": {}}, "models.complex", id="empty-models"),
+        pytest.param({}, "user_id", id="missing-root-keys"),
         pytest.param(
             {**_minimal_valid_bundle_mapping(), "telegram": "not-a-mapping"},
             "telegram must be a mapping",
@@ -252,24 +206,6 @@ def test_bundle_manifest_minimal_yaml_defaults_nested_sections(tmp_path: Path, m
         "user_id": str(manifest.user_id),
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": "k",
-        "models": {
-            "complex": {
-                "id": "c",
-                "name": "C",
-                "reasoning": True,
-                "input": ["text"],
-                "context_window": 1,
-                "max_tokens": 2,
-            },
-            "simple": {
-                "id": "s",
-                "name": "S",
-                "reasoning": False,
-                "input": ["text"],
-                "context_window": 1,
-                "max_tokens": 2,
-            },
-        },
         "enabled_modules": [],
         "connected_integrations": [],
         "template_variables": manifest.template_variables,
@@ -299,24 +235,6 @@ def test_bundle_manifest_connected_integrations_from_yaml(tmp_path: Path, make_m
         "user_id": str(manifest.user_id),
         "litellm_base_url": manifest.litellm_base_url,
         "litellm_api_key": manifest.litellm_api_key,
-        "models": {
-            "complex": {
-                "id": "c",
-                "name": "C",
-                "reasoning": True,
-                "input": ["text"],
-                "context_window": 1,
-                "max_tokens": 2,
-            },
-            "simple": {
-                "id": "s",
-                "name": "S",
-                "reasoning": False,
-                "input": ["text"],
-                "context_window": 1,
-                "max_tokens": 2,
-            },
-        },
         "enabled_modules": [],
         "connected_integrations": ["shopify_store", "ebay_store"],
         "template_variables": manifest.template_variables,

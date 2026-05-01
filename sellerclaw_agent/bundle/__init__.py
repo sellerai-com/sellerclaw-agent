@@ -4,7 +4,6 @@ from sellerclaw_agent.bundle.archive import GatewayArchivePayload, build_gateway
 from sellerclaw_agent.bundle.builder import BundleBuilder
 from sellerclaw_agent.bundle.manifest import (
     BundleManifest,
-    ModelSpec,
     TelegramManifest,
     WebSearchManifest,
     bundle_manifest_from_mapping,
@@ -16,7 +15,6 @@ __all__ = [
     "BundleManifest",
     "BundleResult",
     "GatewayArchivePayload",
-    "ModelSpec",
     "TelegramManifest",
     "WebSearchManifest",
     "build_gateway_archive",

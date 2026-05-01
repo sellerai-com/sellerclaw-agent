@@ -198,7 +198,7 @@ def test_get_manifest_after_save_returns_content(
     assert body["manifest"]["user_id"] == "11111111-1111-4111-8111-111111111111"
     assert "gateway_token" not in body["manifest"]
     assert "hooks_token" not in body["manifest"]
-    assert body["manifest"]["models"]["complex"]["id"] == "c1"
+    assert body["manifest"]["litellm_base_url"] == "http://litellm"
 
 
 def test_get_manifest_strips_tokens_if_reintroduced_on_disk(

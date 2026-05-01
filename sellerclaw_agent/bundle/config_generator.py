@@ -4,7 +4,6 @@ import json
 from collections.abc import Sequence
 from uuid import UUID
 
-from sellerclaw_agent.bundle.manifest import ModelSpec
 from sellerclaw_agent.bundle.protocols import AssembledAgentLike
 from sellerclaw_agent.models import ModelTier
 
@@ -18,6 +17,15 @@ def _agent_tier_value(agent: AssembledAgentLike) -> str:
     return val if isinstance(val, str) else str(tier)
 
 _LITELLM_OPENCLAW_PROVIDER = "litellm"
+
+# Canonical OpenClaw metadata for LiteLLM virtual model groups `{prefix}complex` / `{prefix}simple`.
+# Routing to concrete provider models is configured on the LiteLLM side.
+_OPENCLAW_LITELLM_COMPLEX_DISPLAY_NAME = "Frontier (auto)"
+_OPENCLAW_LITELLM_SIMPLE_DISPLAY_NAME = "Mini (auto)"
+_OPENCLAW_LITELLM_GROUP_REASONING = False
+_OPENCLAW_LITELLM_GROUP_INPUT: tuple[str, ...] = ("text", "image")
+_OPENCLAW_LITELLM_CONTEXT_WINDOW = 128000
+_OPENCLAW_LITELLM_MAX_TOKENS = 8192
 
 # OpenClaw gateway logging in generated config (not user/manifest input).
 OPENCLAW_BUNDLE_LOG_LEVEL = "warn"
@@ -41,15 +49,29 @@ def _openclaw_litellm_model_ref(group_model_name: str) -> str:
     return f"{_LITELLM_OPENCLAW_PROVIDER}/{group_model_name}"
 
 
-def _build_group_model_entry(*, model_name: str, source: ModelSpec) -> dict[str, object]:
-    return {
-        "id": model_name,
-        "name": source.name,
-        "reasoning": source.reasoning,
-        "input": list(source.input),
-        "contextWindow": source.context_window,
-        "maxTokens": source.max_tokens,
-    }
+def _build_litellm_openclaw_model_groups(
+    *,
+    complex_group: str,
+    simple_group: str,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "id": complex_group,
+            "name": _OPENCLAW_LITELLM_COMPLEX_DISPLAY_NAME,
+            "reasoning": _OPENCLAW_LITELLM_GROUP_REASONING,
+            "input": list(_OPENCLAW_LITELLM_GROUP_INPUT),
+            "contextWindow": _OPENCLAW_LITELLM_CONTEXT_WINDOW,
+            "maxTokens": _OPENCLAW_LITELLM_MAX_TOKENS,
+        },
+        {
+            "id": simple_group,
+            "name": _OPENCLAW_LITELLM_SIMPLE_DISPLAY_NAME,
+            "reasoning": _OPENCLAW_LITELLM_GROUP_REASONING,
+            "input": list(_OPENCLAW_LITELLM_GROUP_INPUT),
+            "contextWindow": _OPENCLAW_LITELLM_CONTEXT_WINDOW,
+            "maxTokens": _OPENCLAW_LITELLM_MAX_TOKENS,
+        },
+    ]
 
 
 def _build_telegram_groups(*, group_ids: list[str]) -> dict[str, dict[str, bool]]:
@@ -101,8 +123,6 @@ def generate_openclaw_config(
     sellerclaw_agent_api_base_url: str | None = None,
     litellm_base_url: str,
     litellm_api_key: str,
-    model_complex: ModelSpec,
-    model_simple: ModelSpec,
     model_name_prefix: str | None = None,
     telegram_enabled: bool,
     telegram_bot_token: str,
@@ -117,10 +137,10 @@ def generate_openclaw_config(
     """Build OpenClaw JSON config from assembled agents and flat parameters."""
     complex_group = f"{model_name_prefix}complex" if model_name_prefix else "complex"
     simple_group = f"{model_name_prefix}simple" if model_name_prefix else "simple"
-    litellm_models = [
-        _build_group_model_entry(model_name=complex_group, source=model_complex),
-        _build_group_model_entry(model_name=simple_group, source=model_simple),
-    ]
+    litellm_models = _build_litellm_openclaw_model_groups(
+        complex_group=complex_group,
+        simple_group=simple_group,
+    )
 
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)

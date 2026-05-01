@@ -6,22 +6,6 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ManifestModelSpec(BaseModel):
-    """LiteLLM logical model group (matches YAML `models.complex` / `models.simple`)."""
-
-    id: str
-    name: str
-    reasoning: bool = False
-    input: list[str] | str = Field(default_factory=lambda: ["text"])
-    context_window: int
-    max_tokens: int
-
-
-class ManifestModels(BaseModel):
-    complex: ManifestModelSpec
-    simple: ManifestModelSpec
-
-
 class ManifestTelegram(BaseModel):
     enabled: bool = False
     bot_token: str = ""
@@ -131,7 +115,6 @@ class SaveManifestRequest(BaseModel):
     user_id: UUID
     litellm_base_url: str
     litellm_api_key: str
-    models: ManifestModels
     template_variables: dict[str, str] = Field(default_factory=dict)
     enabled_modules: list[str] = Field(default_factory=list)
     connected_integrations: list[str] = Field(default_factory=list)
@@ -144,31 +127,12 @@ class SaveManifestRequest(BaseModel):
     model_name_prefix: str = ""
     agent_api_base_path: str = ""
 
-    def _model_spec_mapping(self, spec: ManifestModelSpec) -> dict[str, Any]:
-        inp: list[str] | str
-        if isinstance(spec.input, str):
-            inp = spec.input
-        else:
-            inp = list(spec.input)
-        return {
-            "id": spec.id,
-            "name": spec.name,
-            "reasoning": spec.reasoning,
-            "input": inp,
-            "context_window": spec.context_window,
-            "max_tokens": spec.max_tokens,
-        }
-
     def to_mapping(self) -> dict[str, object]:
         """Plain dict for `bundle_manifest_from_mapping` / JSON persistence."""
         return {
             "user_id": str(self.user_id),
             "litellm_base_url": self.litellm_base_url,
             "litellm_api_key": self.litellm_api_key,
-            "models": {
-                "complex": self._model_spec_mapping(self.models.complex),
-                "simple": self._model_spec_mapping(self.models.simple),
-            },
             "template_variables": dict(self.template_variables),
             "enabled_modules": list(self.enabled_modules),
             "connected_integrations": list(self.connected_integrations),

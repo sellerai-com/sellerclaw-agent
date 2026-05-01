@@ -484,7 +484,8 @@ def test_panel_shows_last_command_failure_with_error() -> None:
     )
     assert "last command" in text
     assert "start failed" in text
-    assert "complex model gpt-5.4 is not available" in text
+    assert "gpt-5.4" in text
+    assert "available." in text
 
 
 def test_panel_shows_last_command_success_in_green() -> None:

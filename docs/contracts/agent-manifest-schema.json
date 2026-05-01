@@ -2,27 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sellerclaw.ai/contracts/agent-manifest-v1.json",
   "title": "SellerClaw edge agent manifest (POST /manifest body)",
-  "description": "Wire format aligned with sellerclaw-agent SaveManifestRequest / BundleManifest.to_save_manifest_mapping().",
+  "description": "Wire format aligned with sellerclaw-agent SaveManifestRequest / BundleManifest.to_save_manifest_mapping(). OpenClaw LiteLLM model metadata is generated in-code, not from this payload.",
   "type": "object",
   "additionalProperties": true,
   "required": [
     "user_id",
     "litellm_base_url",
-    "litellm_api_key",
-    "models"
+    "litellm_api_key"
   ],
   "properties": {
     "user_id": { "type": "string", "format": "uuid" },
     "litellm_base_url": { "type": "string" },
     "litellm_api_key": { "type": "string" },
-    "models": {
-      "type": "object",
-      "required": ["complex", "simple"],
-      "properties": {
-        "complex": { "$ref": "#/$defs/modelSpec" },
-        "simple": { "$ref": "#/$defs/modelSpec" }
-      }
-    },
     "agent_api_base_path": {
       "type": "string",
       "description": "Path segment appended to `SELLERCLAW_API_URL` to form the agent API base URL (e.g. `/agent`). The agent derives `SELLERCLAW_AGENT_API_BASE_URL = SELLERCLAW_API_URL + agent_api_base_path` and uses it both as the `{{api_base_url}}` prompt template variable and as the `baseUrl` for the `sellerclaw-web-search` OpenClaw plugin."
@@ -87,24 +78,5 @@
     "primary_channel": { "type": "string" },
     "proxy_url": { "type": "string" },
     "model_name_prefix": { "type": "string" }
-  },
-  "$defs": {
-    "modelSpec": {
-      "type": "object",
-      "required": ["id", "name", "context_window", "max_tokens"],
-      "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
-        "reasoning": { "type": "boolean" },
-        "input": {
-          "oneOf": [
-            { "type": "string" },
-            { "type": "array", "items": { "type": "string" } }
-          ]
-        },
-        "context_window": { "type": "integer" },
-        "max_tokens": { "type": "integer" }
-      }
-    }
   }
 }

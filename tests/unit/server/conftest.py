@@ -5,28 +5,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from sellerclaw_agent.server.schemas import (
-    ManifestModels,
-    ManifestModelSpec,
-    SaveManifestRequest,
-)
-
-_DEFAULT_MODEL = {
-    "id": "c1",
-    "name": "C",
-    "reasoning": True,
-    "input": ["text"],
-    "context_window": 100,
-    "max_tokens": 50,
-}
-_DEFAULT_SIMPLE_MODEL = {
-    "id": "s1",
-    "name": "S",
-    "reasoning": False,
-    "input": ["text"],
-    "context_window": 100,
-    "max_tokens": 50,
-}
+from sellerclaw_agent.server.schemas import SaveManifestRequest
 
 
 @pytest.fixture()
@@ -38,10 +17,6 @@ def make_manifest_data() -> Callable[..., dict[str, Any]]:
             "user_id": "11111111-1111-4111-8111-111111111111",
             "litellm_base_url": "http://litellm",
             "litellm_api_key": "k",
-            "models": {
-                "complex": dict(_DEFAULT_MODEL),
-                "simple": dict(_DEFAULT_SIMPLE_MODEL),
-            },
             "template_variables": {},
             "agent_api_base_path": "/agent",
             "enabled_modules": [],
@@ -62,10 +37,6 @@ def make_save_manifest_request() -> Callable[..., SaveManifestRequest]:
             "user_id": UUID("11111111-1111-4111-8111-111111111111"),
             "litellm_base_url": "http://litellm",
             "litellm_api_key": "k",
-            "models": ManifestModels(
-                complex=ManifestModelSpec(**_DEFAULT_MODEL),
-                simple=ManifestModelSpec(**_DEFAULT_SIMPLE_MODEL),
-            ),
             "template_variables": {"x": "y"},
             "agent_api_base_path": "/agent",
             "enabled_modules": [],

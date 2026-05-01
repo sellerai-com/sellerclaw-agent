@@ -23,20 +23,6 @@ export const AGENT_MODULE_IDS = [
 
 export type AgentModuleId = (typeof AGENT_MODULE_IDS)[number]
 
-export interface ManifestModelSpec {
-  id: string
-  name: string
-  reasoning?: boolean
-  input?: string[] | string
-  context_window: number
-  max_tokens: number
-}
-
-export interface ManifestModels {
-  complex: ManifestModelSpec
-  simple: ManifestModelSpec
-}
-
 export interface ManifestTelegram {
   enabled?: boolean
   bot_token?: string
@@ -53,7 +39,6 @@ export interface SaveManifestRequest {
   user_id: string
   litellm_base_url: string
   litellm_api_key: string
-  models: ManifestModels
   template_variables?: Record<string, string>
   enabled_modules?: AgentModuleId[] | string[]
   connected_integrations?: IntegrationKind[] | string[]

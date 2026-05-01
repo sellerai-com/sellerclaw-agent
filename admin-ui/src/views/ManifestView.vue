@@ -3,13 +3,11 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { extractErrorMessage, getManifest, saveManifest } from '../api/agent'
 import { getAuthStatus } from '../api/auth'
 import { manifestTemplate } from '../manifestTemplate'
-import ModelSpecFields from '../components/ModelSpecFields.vue'
 import {
   AGENT_MODULE_IDS,
   INTEGRATION_KINDS,
   type AgentModuleId,
   type IntegrationKind,
-  type ManifestModelSpec,
   type ManifestTelegram,
   type ManifestWebSearch,
   type SaveManifestRequest,
@@ -92,20 +90,6 @@ function ensureWebSearch(value: ManifestWebSearch | undefined): ManifestWebSearc
   }
 }
 
-function ensureModelSpec(
-  value: ManifestModelSpec | undefined,
-  fallback: ManifestModelSpec,
-): ManifestModelSpec {
-  return {
-    id: value?.id ?? fallback.id,
-    name: value?.name ?? fallback.name,
-    reasoning: value?.reasoning ?? fallback.reasoning ?? false,
-    input: value?.input ?? fallback.input ?? ['text'],
-    context_window: value?.context_window ?? fallback.context_window,
-    max_tokens: value?.max_tokens ?? fallback.max_tokens,
-  }
-}
-
 function rowsFromRecord(record: Record<string, string> | undefined): KVRow[] {
   return Object.entries(record ?? {}).map(([key, value]) => ({ key, value: String(value) }))
 }
@@ -159,11 +143,6 @@ function loadIntoForm(data: Record<string, unknown>): void {
     typeof raw.agent_api_base_path === 'string'
       ? raw.agent_api_base_path
       : (tpl.agent_api_base_path ?? '')
-
-  form.models = {
-    complex: ensureModelSpec(raw.models?.complex, tpl.models.complex),
-    simple: ensureModelSpec(raw.models?.simple, tpl.models.simple),
-  }
 
   form.enabled_modules = Array.isArray(raw.enabled_modules)
     ? [...(raw.enabled_modules as string[])]
@@ -263,8 +242,6 @@ function removeBrowserRow(index: number): void {
 }
 
 function buildPayload(): SaveManifestRequest {
-  const complex = form.models.complex
-  const simple = form.models.simple
   return {
     user_id: form.user_id.trim(),
     litellm_base_url: form.litellm_base_url,
@@ -272,10 +249,6 @@ function buildPayload(): SaveManifestRequest {
     primary_channel: form.primary_channel,
     global_browser_enabled: form.global_browser_enabled,
     agent_api_base_path: (form.agent_api_base_path ?? '').trim(),
-    models: {
-      complex: { ...complex, input: normalizeInput(complex.input) },
-      simple: { ...simple, input: normalizeInput(simple.input) },
-    },
     enabled_modules: [...(form.enabled_modules ?? [])],
     connected_integrations: [...(form.connected_integrations ?? [])],
     template_variables: recordFromRows(templateVarsRows.value),
@@ -292,20 +265,10 @@ function buildPayload(): SaveManifestRequest {
   }
 }
 
-function normalizeInput(input: string[] | string | undefined): string[] {
-  if (input === undefined) return ['text']
-  if (typeof input === 'string') return [input]
-  return input.length > 0 ? [...input] : ['text']
-}
-
 const rawJsonPreview = computed(() => JSON.stringify(buildPayload(), null, 2))
 
 function validate(): string | null {
   if (!form.user_id || !form.user_id.trim()) return 'User ID is required.'
-  if (form.models.complex.context_window <= 0) return 'Complex.context_window must be > 0.'
-  if (form.models.complex.max_tokens <= 0) return 'Complex.max_tokens must be > 0.'
-  if (form.models.simple.context_window <= 0) return 'Simple.context_window must be > 0.'
-  if (form.models.simple.max_tokens <= 0) return 'Simple.max_tokens must be > 0.'
   return null
 }
 
@@ -335,13 +298,6 @@ async function submit(): Promise<void> {
   } finally {
     saving.value = false
   }
-}
-
-function updateComplexModel(value: ManifestModelSpec): void {
-  form.models.complex = value
-}
-function updateSimpleModel(value: ManifestModelSpec): void {
-  form.models.simple = value
 }
 
 onMounted(refresh)
@@ -446,22 +402,6 @@ onMounted(refresh)
               </button>
             </div>
           </label>
-        </div>
-      </fieldset>
-
-      <fieldset class="space-y-3 rounded-lg border border-slate-800 bg-slate-900/60 p-5">
-        <legend class="px-2 text-sm font-medium text-slate-200">Models</legend>
-        <div class="grid gap-3 md:grid-cols-2">
-          <ModelSpecFields
-            :model-value="form.models.complex"
-            title="Complex"
-            @update:model-value="updateComplexModel"
-          />
-          <ModelSpecFields
-            :model-value="form.models.simple"
-            title="Simple"
-            @update:model-value="updateSimpleModel"
-          />
         </div>
       </fieldset>
 

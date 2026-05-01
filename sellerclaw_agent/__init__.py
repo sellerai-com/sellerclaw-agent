@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """SellerClaw Agent: OpenClaw bundle builder and agent resources."""
+
+from __future__ import annotations
 
 import os
 

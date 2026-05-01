@@ -32,18 +32,6 @@ def _expand_env_recursive(obj: object) -> object:
 
 
 @dataclass(frozen=True)
-class ModelSpec:
-    """LiteLLM logical model group metadata for OpenClaw config."""
-
-    id: str
-    name: str
-    reasoning: bool
-    input: tuple[str, ...]
-    context_window: int
-    max_tokens: int
-
-
-@dataclass(frozen=True)
 class TelegramManifest:
     enabled: bool = False
     bot_token: str = ""
@@ -65,8 +53,6 @@ class BundleManifest:
     user_id: UUID
     litellm_base_url: str
     litellm_api_key: str
-    model_complex: ModelSpec
-    model_simple: ModelSpec
     template_variables: dict[str, str]
     enabled_module_ids: tuple[str, ...] = ()
     connected_integrations: frozenset[IntegrationKind] = field(default_factory=frozenset)
@@ -94,24 +80,10 @@ class BundleManifest:
     def to_save_manifest_mapping(self) -> dict[str, object]:
         """Shape accepted by ``bundle_manifest_from_mapping`` / agent ``POST /manifest``."""
 
-        def _spec(m: ModelSpec) -> dict[str, object]:
-            return {
-                "id": m.id,
-                "name": m.name,
-                "reasoning": m.reasoning,
-                "input": list(m.input),
-                "context_window": m.context_window,
-                "max_tokens": m.max_tokens,
-            }
-
         return {
             "user_id": str(self.user_id),
             "litellm_base_url": self.litellm_base_url,
             "litellm_api_key": self.litellm_api_key,
-            "models": {
-                "complex": _spec(self.model_complex),
-                "simple": _spec(self.model_simple),
-            },
             "template_variables": dict(self.template_variables),
             "enabled_modules": list(self.enabled_module_ids),
             "connected_integrations": sorted(k.value for k in self.connected_integrations),
@@ -154,36 +126,8 @@ def _tuple_str(v: object) -> tuple[str, ...]:
     raise TypeError(f"Expected list or str, got {type(v)}")
 
 
-def _model_spec_from_mapping(m: object, *, label: str) -> ModelSpec:
-    if not isinstance(m, dict):
-        raise ValueError(f"{label} must be a mapping")
-    inp = m.get("input", ["text"])
-    if isinstance(inp, str):
-        input_tuple = (inp,)
-    else:
-        input_tuple = tuple(str(x) for x in inp)
-    return ModelSpec(
-        id=str(m["id"]),
-        name=str(m["name"]),
-        reasoning=bool(m.get("reasoning", False)),
-        input=input_tuple,
-        context_window=int(m["context_window"]),
-        max_tokens=int(m["max_tokens"]),
-    )
-
-
 def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
     """Build BundleManifest from a plain dict (e.g. after yaml.safe_load)."""
-    models = data["models"]
-    if not isinstance(models, dict):
-        raise ValueError("models must be a mapping")
-    complex_m = models.get("complex")
-    simple_m = models.get("simple")
-    if not isinstance(complex_m, dict) or not isinstance(simple_m, dict):
-        raise ValueError("models.complex and models.simple are required")
-    model_complex = _model_spec_from_mapping(complex_m, label="models.complex")
-    model_simple = _model_spec_from_mapping(simple_m, label="models.simple")
-
     tg_raw = data.get("telegram") or {}
     if not isinstance(tg_raw, dict):
         raise ValueError("telegram must be a mapping")
@@ -225,8 +169,6 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
         user_id=UUID(str(data["user_id"])),
         litellm_base_url=str(data["litellm_base_url"]),
         litellm_api_key=str(data["litellm_api_key"]),
-        model_complex=model_complex,
-        model_simple=model_simple,
         template_variables=template_variables,
         enabled_module_ids=enabled_ids,
         connected_integrations=connected,

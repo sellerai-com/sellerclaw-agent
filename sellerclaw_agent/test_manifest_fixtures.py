@@ -11,7 +11,6 @@ import pytest
 from sellerclaw_agent.assembly import AssembledAgentConfig
 from sellerclaw_agent.bundle.manifest import (
     BundleManifest,
-    ModelSpec,
     TelegramManifest,
     WebSearchManifest,
 )
@@ -33,39 +32,12 @@ def agent_resources_root() -> Path:
 
 
 @pytest.fixture
-def make_model_spec() -> Callable[..., ModelSpec]:
-    def _build(
-        *,
-        id: str = "gpt-5.4",
-        name: str = "GPT-5.4",
-        reasoning: bool = True,
-        input: tuple[str, ...] = ("text", "image"),
-        context_window: int = 200000,
-        max_tokens: int = 8192,
-    ) -> ModelSpec:
-        return ModelSpec(
-            id=id,
-            name=name,
-            reasoning=reasoning,
-            input=input,
-            context_window=context_window,
-            max_tokens=max_tokens,
-        )
-
-    return _build
-
-
-@pytest.fixture
-def make_manifest(
-    make_model_spec: Callable[..., ModelSpec],
-) -> Callable[..., BundleManifest]:
+def make_manifest() -> Callable[..., BundleManifest]:
     def _build(
         *,
         user_id: UUID | None = None,
         litellm_base_url: str = "http://litellm:4000",
         litellm_api_key: str = "key",
-        model_complex: ModelSpec | None = None,
-        model_simple: ModelSpec | None = None,
         template_variables: dict[str, str] | None = None,
         enabled_module_ids: tuple[str, ...] = (),
         connected_integrations: frozenset[IntegrationKind] | None = None,
@@ -78,14 +50,6 @@ def make_manifest(
         model_name_prefix: str = "",
         agent_api_base_path: str = _DEFAULT_AGENT_API_BASE_PATH,
     ) -> BundleManifest:
-        mc = model_complex or make_model_spec()
-        ms = model_simple or make_model_spec(
-            id="gpt-5.4-mini",
-            name="GPT-5.4 Mini",
-            reasoning=False,
-            context_window=128000,
-            max_tokens=4096,
-        )
         tv = dict(_DEFAULT_TEMPLATE_VARIABLES)
         if template_variables is not None:
             tv.update(template_variables)
@@ -95,8 +59,6 @@ def make_manifest(
             user_id=user_id or UUID("11111111-1111-4111-8111-111111111111"),
             litellm_base_url=litellm_base_url,
             litellm_api_key=litellm_api_key,
-            model_complex=mc,
-            model_simple=ms,
             template_variables=tv,
             enabled_module_ids=enabled_module_ids,
             connected_integrations=conn,

@@ -17,7 +17,6 @@ from sellerclaw_agent.bundle.config_generator import (
     SELLERCLAW_WEB_SEARCH_PLUGIN_ID,
     generate_openclaw_config,
 )
-from sellerclaw_agent.bundle.manifest import ModelSpec
 from sellerclaw_agent.models import ModelTier
 
 pytestmark = pytest.mark.unit
@@ -25,15 +24,20 @@ pytestmark = pytest.mark.unit
 _USER_ID = UUID("11111111-1111-4111-8111-111111111111")
 _AGENT_API_KEY = "test-sca-agent-key"
 
-
-def _base_specs() -> tuple[ModelSpec, ModelSpec]:
-    mc = ModelSpec(
-        id="c1", name="C", reasoning=True, input=("text",), context_window=100, max_tokens=50
-    )
-    ms = ModelSpec(
-        id="s1", name="S", reasoning=False, input=("text",), context_window=100, max_tokens=50
-    )
-    return mc, ms
+_CANONICAL_COMPLEX = {
+    "name": "Frontier (auto)",
+    "reasoning": False,
+    "input": ["text", "image"],
+    "contextWindow": 128000,
+    "maxTokens": 8192,
+}
+_CANONICAL_SIMPLE = {
+    "name": "Mini (auto)",
+    "reasoning": False,
+    "input": ["text", "image"],
+    "contextWindow": 128000,
+    "maxTokens": 8192,
+}
 
 
 def _supervisor_only(
@@ -54,7 +58,6 @@ def _supervisor_only(
 def test_generate_openclaw_config_has_gateway_and_models(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -64,8 +67,6 @@ def test_generate_openclaw_config_has_gateway_and_models(
         sellerclaw_api_url="http://api/",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
         telegram_enabled=False,
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
@@ -100,10 +101,9 @@ def test_generate_openclaw_config_has_gateway_and_models(
     )
 
 
-def test_generate_openclaw_config_telegram_channel_and_bindings(
+def test_generate_openclaw_config_litellm_models_use_canonical_metadata(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -113,8 +113,31 @@ def test_generate_openclaw_config_telegram_channel_and_bindings(
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
+        model_name_prefix="u:abc/",
+        telegram_enabled=False,
+        telegram_bot_token="",
+        telegram_allowed_user_ids=(),
+        telegram_allowed_group_ids=(),
+    )
+    by_id = {
+        m["id"]: m for m in json.loads(raw)["models"]["providers"]["litellm"]["models"]
+    }
+    assert by_id["u:abc/complex"] == {"id": "u:abc/complex", **_CANONICAL_COMPLEX}
+    assert by_id["u:abc/simple"] == {"id": "u:abc/simple", **_CANONICAL_SIMPLE}
+
+
+def test_generate_openclaw_config_telegram_channel_and_bindings(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    raw = generate_openclaw_config(
+        assembled_agents=_supervisor_only(make_assembled_agent),
+        gateway_token="g",
+        hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
+        user_id=_USER_ID,
+        sellerclaw_api_url="http://api",
+        litellm_base_url="http://litellm",
+        litellm_api_key="k",
         telegram_enabled=True,
         telegram_bot_token="bot-secret",
         telegram_allowed_user_ids=("123",),
@@ -133,7 +156,6 @@ def test_generate_openclaw_config_telegram_channel_and_bindings(
 def test_generate_openclaw_config_web_search_enabled_wires_sellerclaw_plugin(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -144,8 +166,6 @@ def test_generate_openclaw_config_web_search_enabled_wires_sellerclaw_plugin(
         sellerclaw_agent_api_base_url="http://api/agent",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
         telegram_enabled=False,
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
@@ -173,7 +193,6 @@ def test_generate_openclaw_config_web_search_baseurl_falls_back_to_sellerclaw_ap
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
     """When no derived URL is passed, the plugin baseUrl defaults to the bare host."""
-    mc, ms = _base_specs()
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -183,8 +202,6 @@ def test_generate_openclaw_config_web_search_baseurl_falls_back_to_sellerclaw_ap
         sellerclaw_api_url="http://api/",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
         telegram_enabled=False,
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
@@ -200,7 +217,6 @@ def test_generate_openclaw_config_web_search_baseurl_falls_back_to_sellerclaw_ap
 def test_generate_openclaw_config_web_search_disabled_has_no_plugin_or_provider(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -210,8 +226,6 @@ def test_generate_openclaw_config_web_search_disabled_has_no_plugin_or_provider(
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
         telegram_enabled=False,
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
@@ -227,7 +241,6 @@ def test_generate_openclaw_config_web_search_disabled_has_no_plugin_or_provider(
 def test_generate_openclaw_config_browser_disabled(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -237,8 +250,6 @@ def test_generate_openclaw_config_browser_disabled(
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
         telegram_enabled=False,
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
@@ -251,7 +262,6 @@ def test_generate_openclaw_config_browser_disabled(
 def test_generate_openclaw_config_allowed_origins_in_control_ui(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -261,8 +271,6 @@ def test_generate_openclaw_config_allowed_origins_in_control_ui(
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
         telegram_enabled=False,
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
@@ -282,7 +290,6 @@ def test_generate_openclaw_config_allowed_origins_in_control_ui(
 def test_generate_openclaw_config_model_name_prefix_on_litellm_groups(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -292,8 +299,6 @@ def test_generate_openclaw_config_model_name_prefix_on_litellm_groups(
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
         model_name_prefix="u:abc/",
         telegram_enabled=False,
         telegram_bot_token="",
@@ -319,7 +324,6 @@ def test_generate_openclaw_config_agent_model_maps_tier(
     tier: ModelTier,
     expected_suffix: str,
 ) -> None:
-    mc, ms = _base_specs()
     assembled = [
         make_assembled_agent(
             agent_id="worker",
@@ -354,8 +358,6 @@ def test_generate_openclaw_config_agent_model_maps_tier(
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
         telegram_enabled=False,
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
@@ -369,7 +371,6 @@ def test_generate_openclaw_config_agent_model_maps_tier(
 def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -379,8 +380,6 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
         sellerclaw_api_url="http://api",
         litellm_base_url="http://litellm",
         litellm_api_key="k",
-        model_complex=mc,
-        model_simple=ms,
         telegram_enabled=False,
         telegram_bot_token="",
         telegram_allowed_user_ids=(),
@@ -394,7 +393,6 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
 def test_generate_openclaw_config_web_search_enabled_requires_auth_token(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     with pytest.raises(ValueError, match="auth token"):
         generate_openclaw_config(
             assembled_agents=_supervisor_only(make_assembled_agent),
@@ -405,8 +403,6 @@ def test_generate_openclaw_config_web_search_enabled_requires_auth_token(
             sellerclaw_api_url="http://api/",
             litellm_base_url="http://litellm",
             litellm_api_key="k",
-            model_complex=mc,
-            model_simple=ms,
             telegram_enabled=False,
             telegram_bot_token="",
             telegram_allowed_user_ids=(),
@@ -419,7 +415,6 @@ def test_generate_openclaw_config_web_search_enabled_requires_auth_token(
 def test_generate_openclaw_config_web_search_enabled_requires_api_base_url(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    mc, ms = _base_specs()
     with pytest.raises(ValueError, match="SELLERCLAW_API_URL"):
         generate_openclaw_config(
             assembled_agents=_supervisor_only(make_assembled_agent),
@@ -430,8 +425,6 @@ def test_generate_openclaw_config_web_search_enabled_requires_api_base_url(
             sellerclaw_api_url="   ",
             litellm_base_url="http://litellm",
             litellm_api_key="k",
-            model_complex=mc,
-            model_simple=ms,
             telegram_enabled=False,
             telegram_bot_token="",
             telegram_allowed_user_ids=(),
