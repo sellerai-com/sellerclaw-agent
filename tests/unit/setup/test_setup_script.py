@@ -36,8 +36,8 @@ SYSBIN_TOOLS = (
     "tee",
     "true",
     "false",
-    # `uname` runs unconditionally in setup.sh. Tests that care about the OS
-    # override it with a stub in bin/; otherwise the real Linux uname is fine.
+    # `uname` runs unconditionally in setup.sh. The fixture installs a Linux
+    # stub by default; tests that care about the OS override it in bin/.
     "uname",
 )
 
@@ -60,6 +60,10 @@ def _write_stub(bin_dir: Path, name: str, body: str) -> None:
     path = bin_dir / name
     path.write_text(f"#!/bin/bash\nset -e\n{body}\n")
     path.chmod(0o755)
+
+
+def _write_uname_stub(bin_dir: Path, os_name: str = "Linux") -> None:
+    _write_stub(bin_dir, "uname", f'echo "{os_name}"')
 
 
 @dataclass
@@ -90,6 +94,7 @@ def sandbox(tmp_path: Path) -> Sandbox:
     shutil.copy(SETUP_SH, work / "setup.sh")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    _write_uname_stub(bin_dir)
     sysbin = tmp_path / "sysbin"
     _populate_sysbin(sysbin)
     home = tmp_path / "home"
@@ -105,6 +110,9 @@ def _run(
     stdin_input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {**sandbox.env, **(env_overrides or {})}
+    meminfo_path = sandbox.work / "meminfo"
+    if meminfo_path.exists() and "SETUP_MEMINFO_PATH" not in env:
+        env["SETUP_MEMINFO_PATH"] = str(meminfo_path)
     return subprocess.run(
         ["/bin/bash", str(sandbox.work / "setup.sh"), *args],
         cwd=sandbox.work,
@@ -121,12 +129,28 @@ def _write_env_file(sandbox: Sandbox, profile: str, body: str = "") -> None:
 
 
 def _install_uname(sandbox: Sandbox, os_name: str = "Linux") -> None:
-    _write_stub(sandbox.bin, "uname", f'echo "{os_name}"')
+    _write_uname_stub(sandbox.bin, os_name=os_name)
 
 
 def _install_awk(sandbox: Sandbox, ram_mb: int) -> None:
     ram_kb = ram_mb * 1024
+    (sandbox.work / "meminfo").write_text(f"MemTotal: {ram_kb} kB\n")
     _write_stub(sandbox.bin, "awk", f'echo "{ram_kb}"')
+
+
+def _install_sysctl_memsize(sandbox: Sandbox, ram_mb: int) -> None:
+    mem_bytes = ram_mb * 1024 * 1024
+    _write_stub(
+        sandbox.bin,
+        "sysctl",
+        textwrap.dedent(f"""
+            if [[ "${{1:-}}" == "-n" && "${{2:-}}" == "hw.memsize" ]]; then
+                echo "{mem_bytes}"
+                exit 0
+            fi
+            exit 1
+        """).strip(),
+    )
 
 
 def _install_docker(
@@ -329,12 +353,11 @@ def test_subcommands_that_do_not_need_env_file_succeed_without_one(
 @pytest.mark.parametrize(
     "os_name",
     [
-        pytest.param("Darwin", id="macos"),
         pytest.param("FreeBSD", id="freebsd"),
         pytest.param("MINGW64_NT", id="windows-git-bash"),
     ],
 )
-def test_installer_rejects_non_linux_os(
+def test_installer_rejects_unsupported_os(
     sandbox: Sandbox, os_name: str
 ) -> None:
     _write_env_file(sandbox, "production")
@@ -343,8 +366,26 @@ def test_installer_rejects_non_linux_os(
     result = _run(sandbox, [])
 
     assert result.returncode != 0
-    assert "This installer supports Linux only" in result.stderr
+    assert "This installer supports Linux and macOS only" in result.stderr
     assert os_name in result.stderr
+
+
+def test_installer_accepts_macos(
+    sandbox: Sandbox,
+) -> None:
+    _write_env_file(sandbox, "production")
+    _install_uname(sandbox, os_name="Darwin")
+    _install_sysctl_memsize(sandbox, ram_mb=8192)
+    _install_docker(sandbox)
+    capture = sandbox.work / "uv_args.txt"
+    _install_uv(sandbox, capture_file=capture)
+
+    result = _run(sandbox, [])
+
+    assert result.returncode == 0, result.stderr
+    assert "RAM: 8192 MB" in result.stdout
+    forwarded = capture.read_text().splitlines()
+    assert forwarded == ["run", "--quiet", "sellerclaw-agent", "setup"]
 
 
 def test_non_installer_subcommand_does_not_enforce_linux(

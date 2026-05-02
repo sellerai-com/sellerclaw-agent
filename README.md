@@ -28,7 +28,7 @@ In practice the agent is a small, boring runtime wrapper: a **CLI** for onboardi
 
 ### Prerequisites
 
-- **Docker** and **Docker Compose v2** (`docker compose version` must succeed).
+- **Docker** and **Docker Compose v2** (`docker compose version` must succeed). On macOS, install/start Docker Desktop.
 - **Python 3.12+** (only for the CLI itself — services run inside Docker).
 - [uv](https://docs.astral.sh/uv/) is recommended for managing the Python side.
 
@@ -40,7 +40,7 @@ From the `sellerclaw-agent/` directory:
 ./setup.sh
 ```
 
-This checks for Docker, installs Python dependencies (via `uv` or `pip`), brings up the Docker stack, and runs the interactive sign-in — all in one step.
+This checks for Docker, installs Python dependencies with `uv`, brings up the Docker stack, and runs the interactive sign-in — all in one step. On macOS the installer can use Homebrew to install Docker Desktop if it is available.
 
 Alternatives:
 

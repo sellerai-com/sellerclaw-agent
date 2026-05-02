@@ -6,7 +6,7 @@ This page covers installation, environments, every CLI command, and common failu
 
 ## Requirements
 
-- **Docker** and **Docker Compose v2** (`docker compose version` must succeed).
+- **Docker** and **Docker Compose v2** (`docker compose version` must succeed). On macOS, install/start Docker Desktop.
 - **Python 3.12+** (only for running the CLI itself; the agent services run inside Docker).
 - **Combined runtime image** — `docker compose` builds a single image (OpenClaw browser stack + SellerClaw agent) from `runtime/Dockerfile` target `staging`.
 
@@ -23,7 +23,7 @@ cd sellerclaw-agent
 ./setup.sh
 ```
 
-This script checks for Docker, installs Python dependencies (via `uv` or `pip`), brings up the Docker stack, and starts the interactive sign-in — all in a single step.
+This script checks for Docker, installs Python dependencies with `uv`, brings up the Docker stack, and starts the interactive sign-in — all in a single step. On macOS, it can install Docker Desktop through Homebrew when Homebrew is available.
 
 Alternatively, if you already have [uv](https://docs.astral.sh/uv/) installed:
 
@@ -70,7 +70,7 @@ export AGENT_ENV=staging
 uv run sellerclaw-agent status
 ```
 
-When `AGENT_ENV` is not set, `.env.local` is used by default (see `setup.sh`).
+When `AGENT_ENV` is not set, `.env.production` is used by default (see `setup.sh`).
 
 ### Creating a custom profile
 
@@ -156,6 +156,7 @@ To publish to a registry (for example GHCR), tag the result with your `ghcr.io/<
 ### First-run failures
 
 - **`Docker Compose v2 not found`** — install the Compose plugin and verify `docker compose version`. On Linux the plugin ships as the `docker-compose-plugin` package; on macOS it is bundled with Docker Desktop.
+- **macOS: `Docker daemon is not reachable`** — open Docker Desktop and wait until it finishes starting, then rerun `./setup.sh`.
 - **`permission denied while trying to connect to the Docker daemon`** — add your user to the `docker` group (`sudo usermod -aG docker $USER`) and start a new shell, or run `docker` with `sudo` temporarily.
 - **First `setup` takes a very long time** — the runtime image is large (~1.5 GB). The initial `docker compose up --build` pulls the OpenClaw base image and installs Chromium, KasmVNC, supervisord, and Playwright. Subsequent runs are fast.
 

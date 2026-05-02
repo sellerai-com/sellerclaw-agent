@@ -11,8 +11,9 @@
 #   ./setup.sh logout                — disconnect from your account
 #   ./setup.sh help                  — show CLI help
 #
-# The full installer (no subcommand / 'setup') runs system checks and
-# installs missing host dependencies (docker, docker compose v2, uv).
+# The full installer (no subcommand / 'setup') runs system checks and installs
+# missing host dependencies where practical (Linux: docker/compose/uv; macOS:
+# Docker Desktop via Homebrew when available, uv).
 # Every other subcommand expects these to be present and just forwards to the CLI.
 set -euo pipefail
 
@@ -158,6 +159,9 @@ fi
 
 apt_update_done=0
 pkg_install() {
+  if [[ "$OS_NAME" != "Linux" ]]; then
+    die "Automatic package installation is only supported on Linux. Install manually: $*"
+  fi
   case "$DISTRO_ID" in
     ubuntu|debian)
       if (( apt_update_done == 0 )); then
@@ -195,15 +199,34 @@ install_docker_via_official_script() {
   rm -f "$tmp"
 }
 
+install_docker_desktop_via_homebrew() {
+  have_cmd brew || die "Docker is not installed. Install Docker Desktop for Mac from https://docs.docker.com/desktop/setup/install/mac-install/ and rerun ./setup.sh."
+  log_warn "Installing Docker Desktop via Homebrew"
+  brew install --cask docker
+  if have_cmd open; then
+    log_warn "Starting Docker Desktop"
+    open -a Docker || true
+  fi
+}
+
 ensure_docker_installed() {
   if have_cmd docker; then
     return 0
   fi
   if (( NEED_INSTALLER )); then
-    confirm_install "Docker Engine"
-    install_docker_via_official_script
-    have_cmd docker || die "Docker installation failed."
+    if [[ "$OS_NAME" == "Darwin" ]]; then
+      confirm_install "Docker Desktop"
+      install_docker_desktop_via_homebrew
+      have_cmd docker || die "Docker Desktop installation did not put 'docker' on PATH. Restart your terminal or install Docker Desktop manually."
+    else
+      confirm_install "Docker Engine"
+      install_docker_via_official_script
+      have_cmd docker || die "Docker installation failed."
+    fi
   else
+    if [[ "$OS_NAME" == "Darwin" ]]; then
+      die "Docker is not installed. Install Docker Desktop for Mac, then run ./setup.sh again."
+    fi
     die "Docker is not installed. Run ./setup.sh first to install it."
   fi
 }
@@ -213,12 +236,20 @@ ensure_docker_compose_installed() {
     return 0
   fi
   if (( NEED_INSTALLER )); then
-    confirm_install "Docker Compose v2 plugin"
-    case "$DISTRO_ID" in
-      arch|manjaro|endeavouros) pkg_install docker-compose ;;
-      *)                         pkg_install docker-compose-plugin ;;
-    esac
-    docker compose version &>/dev/null || die "Docker Compose v2 installation failed."
+    if [[ "$OS_NAME" == "Darwin" ]]; then
+      confirm_install "Docker Desktop (includes Docker Compose v2)"
+      if ! have_cmd docker; then
+        install_docker_desktop_via_homebrew
+      fi
+      docker compose version &>/dev/null || die "Docker Compose v2 was not found. Upgrade/reinstall Docker Desktop for Mac, then rerun ./setup.sh."
+    else
+      confirm_install "Docker Compose v2 plugin"
+      case "$DISTRO_ID" in
+        arch|manjaro|endeavouros) pkg_install docker-compose ;;
+        *)                         pkg_install docker-compose-plugin ;;
+      esac
+      docker compose version &>/dev/null || die "Docker Compose v2 installation failed."
+    fi
   else
     die "Docker Compose v2 is not installed. Run ./setup.sh first."
   fi
@@ -232,6 +263,19 @@ ensure_docker_daemon_running() {
     log_warn "Starting docker service (systemctl)"
     sudo_cmd systemctl enable --now docker || true
   fi
+  if (( NEED_INSTALLER )) && [[ "$OS_NAME" == "Darwin" ]] && have_cmd open; then
+    log_warn "Starting Docker Desktop"
+    open -a Docker || true
+    for _ in {1..90}; do
+      if docker info &>/dev/null; then
+        return 0
+      fi
+      sleep 2
+    done
+  fi
+  if [[ "$OS_NAME" == "Darwin" ]]; then
+    die "Docker daemon is not reachable. Start Docker Desktop and wait until it finishes starting."
+  fi
   docker info &>/dev/null || die "Docker daemon is not reachable. Try: sudo systemctl start docker"
 }
 
@@ -241,7 +285,14 @@ ensure_uv_installed() {
   fi
   if (( NEED_INSTALLER )); then
     confirm_install "uv (Python package manager)"
-    have_cmd curl || pkg_install curl ca-certificates
+    if ! have_cmd curl; then
+      if [[ "$OS_NAME" == "Darwin" ]]; then
+        have_cmd brew || die "curl is required to install uv. Install curl or Homebrew, then rerun ./setup.sh."
+        brew install curl
+      else
+        pkg_install curl ca-certificates
+      fi
+    fi
     curl -LsSf https://astral.sh/uv/install.sh | sh
     for cand in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
       if [[ -x "$cand/uv" ]]; then
@@ -260,21 +311,43 @@ ensure_uv_installed() {
 # ---------------------------------------------------------------------------
 
 if (( NEED_INSTALLER )); then
-  if [[ "$OS_NAME" != "Linux" ]]; then
-    die "This installer supports Linux only (detected '$OS_NAME'). Install docker, docker compose v2, and uv manually."
-  fi
+  case "$OS_NAME" in
+    Linux|Darwin) ;;
+    *) die "This installer supports Linux and macOS only (detected '$OS_NAME'). Install docker, docker compose v2, and uv manually." ;;
+  esac
 
   log_step "Checking hardware"
-  if [[ -r /proc/meminfo ]]; then
-    MEM_KB="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo || echo 0)"
-    MEM_MB=$(( MEM_KB / 1024 ))
-    if (( MEM_MB <= MIN_RAM_MB )); then
-      die "Not enough RAM: detected ${MEM_MB} MB, SellerClaw requires more than ${MIN_RAM_MB} MB."
-    fi
-    log_ok "RAM: ${MEM_MB} MB (> ${MIN_RAM_MB} MB required)"
-  else
-    log_warn "Cannot read /proc/meminfo; skipping RAM check."
-  fi
+  case "$OS_NAME" in
+    Linux)
+      MEMINFO_PATH="${SETUP_MEMINFO_PATH:-/proc/meminfo}"
+      if [[ -r "$MEMINFO_PATH" ]]; then
+        MEM_KB="$(awk '/^MemTotal:/ {print $2; exit}' "$MEMINFO_PATH" || echo 0)"
+        MEM_MB=$(( MEM_KB / 1024 ))
+        if (( MEM_MB <= MIN_RAM_MB )); then
+          die "Not enough RAM: detected ${MEM_MB} MB, SellerClaw requires more than ${MIN_RAM_MB} MB."
+        fi
+        log_ok "RAM: ${MEM_MB} MB (> ${MIN_RAM_MB} MB required)"
+      else
+        log_warn "Cannot read ${MEMINFO_PATH}; skipping RAM check."
+      fi
+      ;;
+    Darwin)
+      if have_cmd sysctl; then
+        MEM_BYTES="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+        if [[ "$MEM_BYTES" =~ ^[0-9]+$ ]] && (( MEM_BYTES > 0 )); then
+          MEM_MB=$(( MEM_BYTES / 1024 / 1024 ))
+          if (( MEM_MB <= MIN_RAM_MB )); then
+            die "Not enough RAM: detected ${MEM_MB} MB, SellerClaw requires more than ${MIN_RAM_MB} MB."
+          fi
+          log_ok "RAM: ${MEM_MB} MB (> ${MIN_RAM_MB} MB required)"
+        else
+          log_warn "Cannot read macOS memory size via sysctl; skipping RAM check."
+        fi
+      else
+        log_warn "sysctl not found; skipping RAM check."
+      fi
+      ;;
+  esac
 
   log_step "Checking Docker"
   ensure_docker_installed
