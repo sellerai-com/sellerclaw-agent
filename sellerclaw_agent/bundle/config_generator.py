@@ -222,6 +222,7 @@ def generate_openclaw_config(
 
     agents_list: list[dict[str, object]] = []
     default_primary = _openclaw_litellm_model_ref(complex_group)
+    simple_primary = _openclaw_litellm_model_ref(simple_group)
     for agent in assembled_agents:
         group = complex_group if _agent_tier_value(agent) == ModelTier.COMPLEX.value else simple_group
         agent_model = _openclaw_litellm_model_ref(group)
@@ -306,8 +307,14 @@ def generate_openclaw_config(
                 },
                 "compaction": {
                     "reserveTokensFloor": 20000,
-                    "memoryFlush": {"enabled": True, "softThresholdTokens": 10000},
+                    "model": simple_primary,
+                    "memoryFlush": {
+                        "enabled": True,
+                        "softThresholdTokens": 10000,
+                        "model": simple_primary,
+                    },
                 },
+                "heartbeat": {"model": simple_primary},
                 "subagents": {
                     "runTimeoutSeconds": 600,
                 },

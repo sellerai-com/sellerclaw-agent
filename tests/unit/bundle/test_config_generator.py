@@ -371,6 +371,41 @@ def test_generate_openclaw_config_agent_model_maps_tier(
     assert by_id["worker"]["model"] == f"litellm/{expected_suffix}"
 
 
+@pytest.mark.parametrize(
+    ("prefix", "expected_simple_ref"),
+    [
+        pytest.param(None, "litellm/simple", id="no-prefix"),
+        pytest.param("u:abc/", "litellm/u:abc/simple", id="user-prefix"),
+    ],
+)
+def test_generate_openclaw_config_system_runs_use_simple_model(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+    prefix: str | None,
+    expected_simple_ref: str,
+) -> None:
+    """Heartbeat / compaction / memory-flush use the simple LiteLLM group, not the default."""
+    raw = generate_openclaw_config(
+        assembled_agents=_supervisor_only(make_assembled_agent),
+        gateway_token="g",
+        hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
+        user_id=_USER_ID,
+        sellerclaw_api_url="http://api",
+        litellm_base_url="http://litellm",
+        litellm_api_key="k",
+        model_name_prefix=prefix,
+        telegram_enabled=False,
+        telegram_bot_token="",
+        telegram_allowed_user_ids=(),
+        telegram_allowed_group_ids=(),
+    )
+    payload = json.loads(raw)
+    defaults = payload["agents"]["defaults"]
+    assert defaults["heartbeat"]["model"] == expected_simple_ref
+    assert defaults["compaction"]["model"] == expected_simple_ref
+    assert defaults["compaction"]["memoryFlush"]["model"] == expected_simple_ref
+
+
 def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
