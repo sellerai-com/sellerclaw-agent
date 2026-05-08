@@ -19,10 +19,12 @@ def _agent_tier_value(agent: AssembledAgentLike) -> str:
 
 _LITELLM_OPENCLAW_PROVIDER = "litellm"
 
-# Canonical OpenClaw metadata for LiteLLM virtual model groups `{prefix}complex` / `{prefix}simple`.
+# Canonical OpenClaw metadata for LiteLLM virtual model groups
+# `{prefix}complex` / `{prefix}simple` / `{prefix}mini`.
 # Routing to concrete provider models is configured on the LiteLLM side.
 _OPENCLAW_LITELLM_COMPLEX_DISPLAY_NAME = "Frontier (auto)"
-_OPENCLAW_LITELLM_SIMPLE_DISPLAY_NAME = "Mini (auto)"
+_OPENCLAW_LITELLM_SIMPLE_DISPLAY_NAME = "Mid (auto)"
+_OPENCLAW_LITELLM_MINI_DISPLAY_NAME = "Mini (auto)"
 _OPENCLAW_LITELLM_GROUP_REASONING = False
 _OPENCLAW_LITELLM_GROUP_INPUT: tuple[str, ...] = ("text", "image")
 _OPENCLAW_LITELLM_CONTEXT_WINDOW = 128000
@@ -54,6 +56,7 @@ def _build_litellm_openclaw_model_groups(
     *,
     complex_group: str,
     simple_group: str,
+    mini_group: str,
 ) -> list[dict[str, object]]:
     return [
         {
@@ -67,6 +70,14 @@ def _build_litellm_openclaw_model_groups(
         {
             "id": simple_group,
             "name": _OPENCLAW_LITELLM_SIMPLE_DISPLAY_NAME,
+            "reasoning": _OPENCLAW_LITELLM_GROUP_REASONING,
+            "input": list(_OPENCLAW_LITELLM_GROUP_INPUT),
+            "contextWindow": _OPENCLAW_LITELLM_CONTEXT_WINDOW,
+            "maxTokens": _OPENCLAW_LITELLM_MAX_TOKENS,
+        },
+        {
+            "id": mini_group,
+            "name": _OPENCLAW_LITELLM_MINI_DISPLAY_NAME,
             "reasoning": _OPENCLAW_LITELLM_GROUP_REASONING,
             "input": list(_OPENCLAW_LITELLM_GROUP_INPUT),
             "contextWindow": _OPENCLAW_LITELLM_CONTEXT_WINDOW,
@@ -139,9 +150,11 @@ def generate_openclaw_config(
     """Build OpenClaw JSON config from assembled agents and flat parameters."""
     complex_group = f"{model_name_prefix}complex" if model_name_prefix else "complex"
     simple_group = f"{model_name_prefix}simple" if model_name_prefix else "simple"
+    mini_group = f"{model_name_prefix}mini" if model_name_prefix else "mini"
     litellm_models = _build_litellm_openclaw_model_groups(
         complex_group=complex_group,
         simple_group=simple_group,
+        mini_group=mini_group,
     )
 
     agent_ids = [agent.agent_id for agent in assembled_agents]
@@ -223,6 +236,7 @@ def generate_openclaw_config(
     agents_list: list[dict[str, object]] = []
     default_primary = _openclaw_litellm_model_ref(complex_group)
     simple_primary = _openclaw_litellm_model_ref(simple_group)
+    mini_primary = _openclaw_litellm_model_ref(mini_group)
     for agent in assembled_agents:
         group = complex_group if _agent_tier_value(agent) == ModelTier.COMPLEX.value else simple_group
         agent_model = _openclaw_litellm_model_ref(group)
@@ -314,7 +328,7 @@ def generate_openclaw_config(
                         "model": simple_primary,
                     },
                 },
-                "heartbeat": {"model": simple_primary},
+                "heartbeat": {"model": mini_primary},
                 "subagents": {
                     "runTimeoutSeconds": 600,
                 },

@@ -32,6 +32,13 @@ _CANONICAL_COMPLEX = {
     "maxTokens": 8192,
 }
 _CANONICAL_SIMPLE = {
+    "name": "Mid (auto)",
+    "reasoning": False,
+    "input": ["text", "image"],
+    "contextWindow": 128000,
+    "maxTokens": 8192,
+}
+_CANONICAL_MINI = {
     "name": "Mini (auto)",
     "reasoning": False,
     "input": ["text", "image"],
@@ -127,6 +134,7 @@ def test_generate_openclaw_config_litellm_models_use_canonical_metadata(
     }
     assert by_id["u:abc/complex"] == {"id": "u:abc/complex", **_CANONICAL_COMPLEX}
     assert by_id["u:abc/simple"] == {"id": "u:abc/simple", **_CANONICAL_SIMPLE}
+    assert by_id["u:abc/mini"] == {"id": "u:abc/mini", **_CANONICAL_MINI}
 
 
 def test_generate_openclaw_config_telegram_channel_and_bindings(
@@ -311,7 +319,7 @@ def test_generate_openclaw_config_model_name_prefix_on_litellm_groups(
     payload = json.loads(raw)
     models = payload["models"]["providers"]["litellm"]["models"]
     ids = {m["id"] for m in models}
-    assert ids == {"u:abc/complex", "u:abc/simple"}
+    assert ids == {"u:abc/complex", "u:abc/simple", "u:abc/mini"}
     assert payload["agents"]["list"][0]["model"] == "litellm/u:abc/complex"
 
 
@@ -372,18 +380,19 @@ def test_generate_openclaw_config_agent_model_maps_tier(
 
 
 @pytest.mark.parametrize(
-    ("prefix", "expected_simple_ref"),
+    ("prefix", "expected_simple_ref", "expected_mini_ref"),
     [
-        pytest.param(None, "litellm/simple", id="no-prefix"),
-        pytest.param("u:abc/", "litellm/u:abc/simple", id="user-prefix"),
+        pytest.param(None, "litellm/simple", "litellm/mini", id="no-prefix"),
+        pytest.param("u:abc/", "litellm/u:abc/simple", "litellm/u:abc/mini", id="user-prefix"),
     ],
 )
-def test_generate_openclaw_config_system_runs_use_simple_model(
+def test_generate_openclaw_config_system_runs_route_per_tier(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
     prefix: str | None,
     expected_simple_ref: str,
+    expected_mini_ref: str,
 ) -> None:
-    """Heartbeat / compaction / memory-flush use the simple LiteLLM group, not the default."""
+    """Heartbeat uses the cheapest mini group; compaction / memory-flush stay on simple."""
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -401,7 +410,7 @@ def test_generate_openclaw_config_system_runs_use_simple_model(
     )
     payload = json.loads(raw)
     defaults = payload["agents"]["defaults"]
-    assert defaults["heartbeat"]["model"] == expected_simple_ref
+    assert defaults["heartbeat"]["model"] == expected_mini_ref
     assert defaults["compaction"]["model"] == expected_simple_ref
     assert defaults["compaction"]["memoryFlush"]["model"] == expected_simple_ref
 
