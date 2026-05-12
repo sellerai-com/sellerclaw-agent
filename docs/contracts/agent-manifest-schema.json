@@ -77,6 +77,26 @@
     },
     "primary_channel": { "type": "string" },
     "proxy_url": { "type": "string" },
-    "model_name_prefix": { "type": "string" }
+    "model_name_prefix": { "type": "string" },
+    "image_model": {
+      "type": "object",
+      "description": "Image generation model surfaced through OpenClaw's `agents.defaults.imageGenerationModel`. The agent emits a matching entry under `models.providers.litellm.models` so OpenClaw can resolve the reference; LiteLLM provider routing for the alias is configured operator-side.",
+      "properties": {
+        "model_id": { "type": "string", "description": "Stable catalog id from the monolith registry (e.g. `nano-banana-2`)." },
+        "display_name": { "type": "string" },
+        "openclaw_alias": { "type": "string", "description": "Suffix appended to `model_name_prefix` to build the OpenClaw model group id." },
+        "litellm_route": { "type": "string", "description": "LiteLLM model route used operator-side to wire the alias to the real provider (e.g. `gemini/gemini-3-1-flash-image-preview`). Carried for diagnostics; the edge agent does not call providers directly." }
+      }
+    },
+    "video_model": {
+      "type": "object",
+      "description": "Video generation model surfaced through OpenClaw's `agents.defaults.videoGenerationModel`. OpenClaw has no built-in video tool yet — a custom skill or runtime extension consumes this reference.",
+      "properties": {
+        "model_id": { "type": "string" },
+        "display_name": { "type": "string" },
+        "openclaw_alias": { "type": "string" },
+        "litellm_route": { "type": "string" }
+      }
+    }
   }
 }

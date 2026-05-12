@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sellerclaw_agent.bundle.manifest import MediaModelManifest
 from sellerclaw_agent.bundle.protocols import AssembledAgentLike
 from sellerclaw_agent.models import ModelTier
 
@@ -29,6 +30,14 @@ _OPENCLAW_LITELLM_GROUP_REASONING = False
 _OPENCLAW_LITELLM_GROUP_INPUT: tuple[str, ...] = ("text", "image")
 _OPENCLAW_LITELLM_CONTEXT_WINDOW = 128000
 _OPENCLAW_LITELLM_MAX_TOKENS = 8192
+
+# Modality hints for image/video model entries. OpenClaw's chat-LLM-shaped model
+# schema is reused here so registration is uniform; concrete media tools/skills
+# read the modality and route to the right LiteLLM endpoint.
+_OPENCLAW_IMAGE_INPUT: tuple[str, ...] = ("text", "image")
+_OPENCLAW_VIDEO_INPUT: tuple[str, ...] = ("text", "image")
+_OPENCLAW_MEDIA_CONTEXT_WINDOW = 8192
+_OPENCLAW_MEDIA_MAX_TOKENS = 4096
 
 # OpenClaw gateway logging in generated config (not user/manifest input).
 OPENCLAW_BUNDLE_LOG_LEVEL = "warn"
@@ -84,6 +93,29 @@ def _build_litellm_openclaw_model_groups(
             "maxTokens": _OPENCLAW_LITELLM_MAX_TOKENS,
         },
     ]
+
+
+def _build_media_model_entry(
+    *,
+    group_id: str,
+    display_name: str,
+    modality: str,
+) -> dict[str, object]:
+    """Build an OpenClaw model entry for an image/video generation alias."""
+    if modality == "image":
+        input_modes = list(_OPENCLAW_IMAGE_INPUT)
+    elif modality == "video":
+        input_modes = list(_OPENCLAW_VIDEO_INPUT)
+    else:
+        raise ValueError(f"Unsupported media modality: {modality!r}.")
+    return {
+        "id": group_id,
+        "name": display_name,
+        "reasoning": False,
+        "input": input_modes,
+        "contextWindow": _OPENCLAW_MEDIA_CONTEXT_WINDOW,
+        "maxTokens": _OPENCLAW_MEDIA_MAX_TOKENS,
+    }
 
 
 def _build_telegram_groups(*, group_ids: list[str]) -> dict[str, dict[str, bool]]:
@@ -146,6 +178,8 @@ def generate_openclaw_config(
     web_search_enabled: bool = False,
     web_search_auth_token: str = "",
     primary_channel: str = "sellerclaw-ui",
+    image_model: MediaModelManifest | None = None,
+    video_model: MediaModelManifest | None = None,
 ) -> str:
     """Build OpenClaw JSON config from assembled agents and flat parameters."""
     complex_group = f"{model_name_prefix}complex" if model_name_prefix else "complex"
@@ -156,6 +190,28 @@ def generate_openclaw_config(
         simple_group=simple_group,
         mini_group=mini_group,
     )
+
+    image_group: str | None = None
+    if image_model is not None and image_model.is_configured:
+        image_group = f"{model_name_prefix}{image_model.openclaw_alias}" if model_name_prefix else image_model.openclaw_alias
+        litellm_models.append(
+            _build_media_model_entry(
+                group_id=image_group,
+                display_name=image_model.display_name or image_model.openclaw_alias,
+                modality="image",
+            )
+        )
+
+    video_group: str | None = None
+    if video_model is not None and video_model.is_configured:
+        video_group = f"{model_name_prefix}{video_model.openclaw_alias}" if model_name_prefix else video_model.openclaw_alias
+        litellm_models.append(
+            _build_media_model_entry(
+                group_id=video_group,
+                display_name=video_model.display_name or video_model.openclaw_alias,
+                modality="video",
+            )
+        )
 
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)
@@ -313,6 +369,16 @@ def generate_openclaw_config(
                 "timeoutSeconds": 600,
                 "bootstrapMaxChars": OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
                 "model": {"primary": default_primary},
+                **(
+                    {"imageGenerationModel": _openclaw_litellm_model_ref(image_group)}
+                    if image_group is not None
+                    else {}
+                ),
+                **(
+                    {"videoGenerationModel": _openclaw_litellm_model_ref(video_group)}
+                    if video_group is not None
+                    else {}
+                ),
                 "thinkingDefault": "off",
                 "blockStreamingDefault": "on",
                 "blockStreamingChunk": {

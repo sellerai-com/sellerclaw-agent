@@ -174,6 +174,8 @@ class BundleBuilder:
             web_search_enabled=manifest.web_search.enabled,
             web_search_auth_token=web_search_auth_token,
             primary_channel=manifest.primary_channel,
+            image_model=manifest.image_model,
+            video_model=manifest.video_model,
         )
         version = build_gateway_version(
             openclaw_config=openclaw_config,

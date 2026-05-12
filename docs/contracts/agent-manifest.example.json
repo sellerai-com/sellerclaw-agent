@@ -21,5 +21,17 @@
   },
   "primary_channel": "sellerclaw-ui",
   "proxy_url": "",
-  "model_name_prefix": "u:11111111/"
+  "model_name_prefix": "u:11111111/",
+  "image_model": {
+    "model_id": "nano-banana-2",
+    "display_name": "Nano Banana 2 (Gemini 3.1 Flash Image)",
+    "openclaw_alias": "image-nano-banana-2",
+    "litellm_route": "gemini/gemini-3-1-flash-image-preview"
+  },
+  "video_model": {
+    "model_id": "veo-3.1-fast",
+    "display_name": "Google Veo 3.1 Fast",
+    "openclaw_alias": "video-veo-3.1-fast",
+    "litellm_route": "gemini/veo-3.1-fast"
+  }
 }

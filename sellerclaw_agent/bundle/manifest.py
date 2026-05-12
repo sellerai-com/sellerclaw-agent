@@ -47,6 +47,25 @@ class WebSearchManifest:
 
 
 @dataclass(frozen=True)
+class MediaModelManifest:
+    """Reference to an image/video model the agent should expose via openclaw.json.
+
+    The agent emits a matching entry under ``models.providers.litellm.models`` and
+    wires the OpenClaw default through ``agents.defaults.{image,video}GenerationModel``.
+    LiteLLM provider routing for the alias is configured operator-side.
+    """
+
+    model_id: str = ""
+    display_name: str = ""
+    openclaw_alias: str = ""
+    litellm_route: str = ""
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.openclaw_alias.strip())
+
+
+@dataclass(frozen=True)
 class BundleManifest:
     """Flat input for bundle generation (caller supplies all template data and secrets)."""
 
@@ -66,6 +85,8 @@ class BundleManifest:
     # Path segment appended to SELLERCLAW_API_URL to form SELLERCLAW_AGENT_API_BASE_URL.
     # Empty string means the agent API lives directly at SELLERCLAW_API_URL.
     agent_api_base_path: str = ""
+    image_model: MediaModelManifest = field(default_factory=MediaModelManifest)
+    video_model: MediaModelManifest = field(default_factory=MediaModelManifest)
 
     def resolved_enabled_modules(self) -> list[AgentModuleId]:
         out: list[AgentModuleId] = []
@@ -102,6 +123,18 @@ class BundleManifest:
             "proxy_url": self.proxy_url,
             "model_name_prefix": self.model_name_prefix,
             "agent_api_base_path": self.agent_api_base_path,
+            "image_model": {
+                "model_id": self.image_model.model_id,
+                "display_name": self.image_model.display_name,
+                "openclaw_alias": self.image_model.openclaw_alias,
+                "litellm_route": self.image_model.litellm_route,
+            },
+            "video_model": {
+                "model_id": self.video_model.model_id,
+                "display_name": self.video_model.display_name,
+                "openclaw_alias": self.video_model.openclaw_alias,
+                "litellm_route": self.video_model.litellm_route,
+            },
         }
 
     @staticmethod
@@ -165,6 +198,9 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
         raise TypeError("template_variables must be a mapping")
     template_variables = {str(k): str(v) for k, v in tv.items()}
 
+    image_model = _media_model_from_mapping(data.get("image_model"), kind="image_model")
+    video_model = _media_model_from_mapping(data.get("video_model"), kind="video_model")
+
     return BundleManifest(
         user_id=UUID(str(data["user_id"])),
         litellm_base_url=str(data["litellm_base_url"]),
@@ -180,6 +216,22 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
         proxy_url=str(data.get("proxy_url") or "").strip(),
         model_name_prefix=str(data.get("model_name_prefix") or "").strip(),
         agent_api_base_path=_normalize_agent_api_base_path(data.get("agent_api_base_path")),
+        image_model=image_model,
+        video_model=video_model,
+    )
+
+
+def _media_model_from_mapping(raw: object, *, kind: str) -> MediaModelManifest:
+    """Parse an optional ``{image,video}_model`` block; missing/empty → unconfigured default."""
+    if raw is None:
+        return MediaModelManifest()
+    if not isinstance(raw, dict):
+        raise TypeError(f"{kind} must be a mapping")
+    return MediaModelManifest(
+        model_id=str(raw.get("model_id") or "").strip(),
+        display_name=str(raw.get("display_name") or "").strip(),
+        openclaw_alias=str(raw.get("openclaw_alias") or "").strip(),
+        litellm_route=str(raw.get("litellm_route") or "").strip(),
     )
 
 
