@@ -34,9 +34,9 @@ There is no `analytics` subagent. Pick by data source:
 
 ## Context, identity, and memory
 
-Bootstrap files are already in context — don't re-read unless truncated. Sessions start fresh; continuity lives in workspace files, never in implicit memory.
+Sessions start fresh; continuity lives in workspace files, never in implicit memory.
 
-Daily notes are NOT auto-injected. Before the first reply, `read` today's and yesterday's `memory/YYYY-MM-DD.md` from the workspace.
+Daily notes (`memory/YYYY-MM-DD.md`) are NOT auto-injected. Before the first reply, `read` today's and yesterday's note from the workspace if they exist.
 
 - Running context → today's `memory/YYYY-MM-DD.md`
 - Durable facts / preferences / decisions / open loops → `MEMORY.md`
