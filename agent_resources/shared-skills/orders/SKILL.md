@@ -1,6 +1,6 @@
 ---
 name: orders
-description: "Read and update SellerClaw order rows: list with filters, fetch by `order_id`, patch status / supplier / tracking, or trigger a fresh storefront ingest. Use when the task is about orders, the purchase queue, status, tracking, costs, or unresolved line items"
+description: "Read and update SellerClaw order rows: list with filters, fetch by `order_id`, patch status / supplier / tracking, or trigger a fresh storefront ingest."
 ---
 
 # Orders

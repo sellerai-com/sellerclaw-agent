@@ -1,6 +1,6 @@
 ---
 name: supplier-search
-description: "Delegate product information-gathering at connected suppliers to the `supplier` subagent — search, product / variant detail, stock, shipping quotes, refresh of known products. Use when supervisor needs supplier-side product data. Not for purchase or fulfillment (use `supplier-purchase`); not for catalog DB writes (use `source-products`)."
+description: "Gather product info at connected suppliers (search, detail, stock, shipping, refresh) via the `supplier` subagent. Not for purchase (use `supplier-purchase`) or catalog writes (use `source-products`)."
 ---
 
 # Supplier search

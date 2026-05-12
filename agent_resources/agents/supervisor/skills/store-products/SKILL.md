@@ -1,6 +1,6 @@
 ---
 name: store-products
-description: "Manage how products appear on a connected storefront (Shopify, eBay, …) by delegating to the platform subagent: publish, update, remove, or inspect listings. Use for any 'push live', 'list on', 'change price/title', 'unlist', or 'what is live' request. For sourcing and catalog DB writes use `source-products`."
+description: "Publish, update, remove, or inspect product listings on a connected storefront (Shopify, eBay, …) by delegating to the platform subagent. For sourcing and catalog writes use `source-products`."
 ---
 
 # Routing

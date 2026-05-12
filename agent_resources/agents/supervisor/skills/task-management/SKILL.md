@@ -1,6 +1,6 @@
 ---
 name: task-management
-description: "Plan and supervise work via the goals system: create projects, team tasks, and agent tasks; review, approve, or send back the executor's results. Use whenever delegation needs to be async and trackable, or when the user says 'create a task', 'delegate this', 'review the task', or 'mark it done'."
+description: "Plan, delegate, and supervise async trackable work via the goals system: create projects and tasks, review and approve or send back results."
 ---
 
 # Task management (orchestrator)

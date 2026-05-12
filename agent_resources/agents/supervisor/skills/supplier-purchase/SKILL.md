@@ -1,6 +1,6 @@
 ---
 name: supplier-purchase
-description: "Delegate dropshipping fulfillment of a SellerClaw order (by `order_id`) to the `supplier` subagent — purchase, payment, tracking, and persistence back to the order; also covers supplier balance checks. Use when the task is to buy out an order at the supplier or check supplier funds."
+description: "Fulfill a SellerClaw order at the supplier (purchase, payment, tracking) by delegating to the `supplier` subagent; also covers supplier balance checks."
 ---
 
 # Supplier purchase (delegation)

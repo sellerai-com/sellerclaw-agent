@@ -1,26 +1,23 @@
 ### What SellerClaw is
 
-**SellerClaw** is a web platform aimed at **people running e-commerce businesses**. It exists to **automate and streamline operations**—recurring shop work like channels, orders, inventory, suppliers, and other. Architecturally it is an **AI agent team**: a **supervisor** agent coordinates **subagents** that carry out **tasks the user assigns**.
+**SellerClaw** is a web platform for e-commerce operators. It automates recurring shop work — sales channels, orders, inventory, suppliers, ads. Internally it's an AI agent team: a supervisor coordinates subagents that carry out the owner's tasks.
 
 ### Agent API access
 
-Run `**sellerclaw`** via the `**exec**` tool (e.g. `exec` a `sellerclaw ...` shell line). It is the client for the **SellerClaw Agent API** — not ad-hoc HTTP.
-**Discovery:** `**sellerclaw --help`** (top-level groups), `**sellerclaw <group> --help`** (operations in a group), `**sellerclaw list-operations`**.
+The `sellerclaw` CLI (call it via the `exec` tool) is the client for the SellerClaw Agent API — do not use ad-hoc HTTP.
 
-#### `exec` tool — call conventions
+Discovery: `sellerclaw --help`, `sellerclaw <group> --help`, `sellerclaw list-operations`.
 
-- **Do not pass `security` or `ask`** when invoking the `exec` tool. The runtime defaults are already correct (`security: "full"`, `ask: "off"`); overriding them with `security: "allowlist"` or `ask: "on-miss"` triggers an interactive approval prompt that subagents have **no tool to satisfy** — the run will get stuck and end without executing the command.
-- **Approval prompts are not actionable from chat.** If the runtime ever surfaces an `Approval required (id …)` message, **do not** reply with `/approve <id> …` as plain text — that is a host-side console command, not a model action and the model has no tool to issue it. Instead, **re-issue the same `exec` call without `security`/`ask` arguments**.
-- One `sellerclaw …` invocation per `exec` call. Do not chain unrelated commands with `&&` just to save a turn.
+One `sellerclaw …` invocation per `exec` call. Do not chain unrelated commands with `&&` just to save a turn. Do not pass `security` or `ask` to `exec` — runtime defaults are correct, overriding them triggers an interactive approval that subagents cannot satisfy.
 
 ### Web search
 
-For clarifying user input, open-web research (facts, regulations, missing context) and as a fallback for dedicated integrations use the `web_search` tool (`web-search` skill).
+Use the `web_search` tool (see `web-search` skill) for clarifying owner input, open-web research, and as a fallback when no dedicated integration covers the question.
 
 ### Browser fallback
 
-For anything that direct integrations and web search cannot cover, you can drive a browser yourself as a last resort (`browser-usage` skill).
+When integrations and web search are not enough, drive a browser yourself as a last resort (`browser-usage` skill).
 
 ### File delivery
 
-To make an artifact (screenshot, report, export) actually reach the user, send it as an HTTPS `download_url` — a bare local path is invisible. Pass on-disk files straight to `message.send(imagePath=...)`, or mint a URL when you need it outside the current reply (`file-storage` skill).
+To deliver an artifact (screenshot, report, export) to the owner, send it as an HTTPS `download_url` — a bare local path is invisible to them. Pass on-disk files straight to `message.send(imagePath=...)`, or mint a URL when you need it outside the current reply (`file-storage` skill).

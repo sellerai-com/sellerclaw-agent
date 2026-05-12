@@ -1,6 +1,6 @@
 ---
 name: user-info
-description: "Look up the owner's profile, agent configuration, and connected integration groups (suppliers, ad accounts, etc.). Use when the user asks who they are, what their settings are, which integrations are connected, or whenever another skill needs the owner's identity or connection state."
+description: "Look up the owner's profile, agent configuration, and connected integration groups (suppliers, ad accounts, etc.)."
 ---
 
 ## What this covers

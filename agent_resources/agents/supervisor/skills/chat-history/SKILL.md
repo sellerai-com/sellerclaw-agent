@@ -1,6 +1,6 @@
 ---
 name: chat-history
-description: "Read past chats and messages between the owner and the agent. Use to recover conversation context after a fresh session ('what did we discuss', 'continue where we left off', 'find that thing the owner asked yesterday'), or when memory files don't have the detail you need."
+description: "Read past chats with the owner — recover context after a fresh session or find exact wording when memory files lack detail."
 ---
 
 # What this covers

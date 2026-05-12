@@ -1,6 +1,6 @@
 ---
 name: source-products
-description: "Source products from connected suppliers and manage the resulting SellerClaw catalog rows: brief the `supplier` subagent for candidates, save them to the catalog, and list / fetch / patch existing rows. Use when the user wants to find new products from suppliers or edit catalog metadata. For storefront listings use `store-products`."
+description: "Source new products from connected suppliers and manage SellerClaw catalog rows (save, list, fetch, patch). For storefront listings use `store-products`."
 ---
 
 # Source products
