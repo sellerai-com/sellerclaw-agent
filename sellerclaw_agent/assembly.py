@@ -26,6 +26,7 @@ class AssembledAgentConfig:
     user_md: str | None = None
     tools_md: str | None = None
     identity_md: str | None = None
+    heartbeat_md: str | None = None
     skills: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

@@ -92,6 +92,7 @@ def make_assembled_agent() -> Callable[..., AssembledAgentConfig]:
         user_md: str | None = "# USER.md\n",
         tools_md: str | None = "# TOOLS.md\n",
         identity_md: str | None = "# IDENTITY.md\n",
+        heartbeat_md: str | None = None,
         skills: dict[str, str] | None = None,
     ) -> AssembledAgentConfig:
         return AssembledAgentConfig(
@@ -108,6 +109,7 @@ def make_assembled_agent() -> Callable[..., AssembledAgentConfig]:
             user_md=user_md,
             tools_md=tools_md,
             identity_md=identity_md,
+            heartbeat_md=heartbeat_md,
             skills=skills if skills is not None else {"file-storage": "# File Storage"},
         )
 

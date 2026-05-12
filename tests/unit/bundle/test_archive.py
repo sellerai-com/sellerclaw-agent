@@ -99,7 +99,16 @@ def test_build_workspaces_from_assembled_skips_missing_optional_templates_and_em
     assert f"{agent.agent_id}/USER.md" not in keys
     assert f"{agent.agent_id}/TOOLS.md" not in keys
     assert f"{agent.agent_id}/IDENTITY.md" not in keys
+    assert f"{agent.agent_id}/HEARTBEAT.md" not in keys
     assert not any("/skills/" in k for k in keys)
+
+
+def test_build_workspaces_from_assembled_includes_heartbeat_md_when_set(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    agent = make_assembled_agent(heartbeat_md="# HEARTBEAT.md\n- check X")
+    ws = build_workspaces_from_assembled([agent])
+    assert ws[f"{agent.agent_id}/HEARTBEAT.md"] == "# HEARTBEAT.md\n- check X"
 
 
 def test_build_gateway_archive_empty_workspaces() -> None:

@@ -107,6 +107,11 @@ class AgentConfigAssembler:
             filename="identity.md",
             variables=variables,
         )
+        heartbeat_md = self._resolve_optional_template(
+            agent_id="supervisor",
+            filename="heartbeat.md",
+            variables=variables,
+        )
 
         skills = self._build_agent_skills(
             agent_id="supervisor",
@@ -136,6 +141,7 @@ class AgentConfigAssembler:
             user_md=user_md,
             tools_md=tools_md,
             identity_md=identity_md,
+            heartbeat_md=heartbeat_md,
             skills=skills,
         )
 
