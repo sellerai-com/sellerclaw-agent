@@ -1,6 +1,6 @@
 ---
 name: keyword-research
-description: "Grow a seed term into a ranked keyword list via DataForSEO commands in the `sellerclaw` CLI: autocomplete suggestions, monthly search volume + competition, and related/labs ideas. Use when the user asks for keyword ideas, wants to size demand for terms, needs long-tail or backend search-term lists, or is preparing inputs for listing copy or ad targeting. Requires `research_seo` configured (exit code 2 / 503 otherwise); for trend direction over time use `trend-analysis`, for listing copy use `listing-optimization`."
+description: "Grow a seed term into a ranked keyword list via DataForSEO through the `sellerclaw` CLI: autocomplete suggestions, monthly search volume + competition, and related/labs ideas. Use when the task says 'give me keyword ideas for X', 'how much do people search for Y', 'find long-tail keywords', 'list backend search terms', 'what's the competition for this keyword', 'size the demand for this term', or any task building keyword inputs for listing copy or ad targeting. Requires `research_seo` configured (exit 2 / 503 otherwise). For trend direction over time use `trend-analysis`; for finished listing copy use `listing-optimization`."
 ---
 
 # Keyword Research Skill

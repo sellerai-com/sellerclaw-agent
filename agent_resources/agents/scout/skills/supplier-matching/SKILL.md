@@ -1,6 +1,6 @@
 ---
 name: supplier-matching
-description: "Find and rank supplier candidates for a shortlisted product on price, stock, shipping, and quality through a connected supplier provider via the `sellerclaw` CLI. Use when you have a product or hero keyword and need real supplier options. Research only — not for purchase, fulfillment, or catalog DB writes."
+description: "Find and rank supplier candidates for a shortlisted product on price, stock, shipping, and quality through a connected supplier provider via the `sellerclaw` CLI. Use when the task says 'find suppliers for this product', 'where can I source X', 'which supplier has the best price', 'compare supplier options', 'rank suppliers by shipping speed', or any task that needs real supplier candidates for a known product or hero keyword. Research only — for actual purchase use `order-fulfillment`; for catalog DB writes use `source-products`."
 ---
 
 # Supplier Matching Skill

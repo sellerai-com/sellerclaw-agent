@@ -1,6 +1,6 @@
 ---
 name: order-fulfillment
-description: "Run supplier-side fulfillment for a SellerClaw order: place the purchase at the right provider, handle payment outcome, pull tracking, and report account balance. Use when the supervisor brief references a SellerClaw `order_id` (purchase or tracking) or asks for a supplier balance check. For supplier catalog lookups use `product-search`."
+description: "Run supplier-side fulfillment for a SellerClaw order: place the purchase at the right provider, handle the payment outcome, pull tracking, and report account balance. Use when the delegated brief says 'fulfill order #N', 'buy out this order', 'pay for the order', 'pull tracking for the order', 'check supplier balance', 'how much money is in the supplier account', or any task referencing a SellerClaw `order_id` for purchase / payment / tracking, or asking for a supplier balance check. For supplier catalog lookups (search, price, stock) use `product-search`."
 ---
 
 # Supplier order fulfillment

@@ -1,6 +1,6 @@
 ---
 name: product-enrichment
-description: "Enrich an incomplete product card (brand, model, or GTIN) with structured data from external catalogs. Use when the user wants to publish a product of a known brand but has only partial info, and you need title, brand, MPN, GTIN, images, price reference, and category. Primary source is the free eBay Browse search via the `sellerclaw` CLI, with open-source fallbacks."
+description: "Enrich an incomplete product card with structured data from external catalogs — title, brand, MPN, GTIN, images, price reference, category. Use when the task says 'fill in details for this product', 'find the brand/model/GTIN for X', 'get images for this SKU', 'complete this product card before publishing', 'enrich this catalog row', or any task requiring missing catalog metadata for a known-brand product with partial info. Primary source is free eBay Browse via the `sellerclaw` CLI, with open-source fallbacks."
 ---
 
 # Product Enrichment Skill

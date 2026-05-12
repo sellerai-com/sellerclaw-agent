@@ -1,6 +1,6 @@
 ---
 name: shopify-products
-description: "Manage Shopify products and listings: search what is live, publish existing catalog products, edit and sync stock / price / title, toggle visibility, delete. Use whenever the task is about sellable items on Shopify — SKUs, variants, listing visibility, stock, or pricing. For non-product storefront content (pages, menus, theme) use `shopify-storefront-setup`."
+description: "Manage Shopify products and listings on the connected Shopify store: search what is live, publish an existing SellerClaw catalog product, edit / sync stock / price / title, toggle visibility, or delete. Use when the delegated task says 'publish on Shopify', 'put this on Shopify', 'update the Shopify listing', 'change stock/price/title', 'hide/unhide the product', 'delete from Shopify', 'what's live on Shopify', or any task referring to a Shopify SKU, variant, listing visibility, stock, or pricing. For non-product storefront content (pages, menus, theme) use `shopify-storefront-setup`."
 ---
 
 # Shopify products

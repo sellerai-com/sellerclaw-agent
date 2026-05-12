@@ -1,6 +1,6 @@
 ---
 name: shopify-storefront-setup
-description: "Set up Shopify storefront content: pages, collections, navigation menus, shop settings, and theme. Use when the task is non-product (e.g. 'add an About page', 'create a collection', 'set up the main menu', 'change the theme'). For products and listings use `shopify-products`."
+description: "Set up Shopify storefront content beyond products: pages, collections, navigation menus, shop settings, and theme. Use when the delegated task says 'add an About page', 'create a collection', 'set up the main menu', 'change the theme', 'edit shop settings', 'add a banner', 'update the homepage', or any task about the storefront's structure or look-and-feel rather than the products themselves. For products and listings use `shopify-products`."
 ---
 
 # Shopify storefront setup

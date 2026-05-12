@@ -1,6 +1,6 @@
 ---
 name: ebay-products
-description: "Manage eBay listings: search what is live, draft from existing catalog products, publish, edit and sync price / qty / title, withdraw, relist, or delete. Use whenever the task is about an eBay listing — SKUs, drafts, publishing, withdrawal, visibility, stock, or pricing on offers."
+description: "Manage eBay listings on the connected eBay store: search what is live, draft a listing from a SellerClaw catalog product, publish, edit / sync price / qty / title on existing offers, withdraw, relist, or delete. Use when the delegated task says 'publish on eBay', 'list this on eBay', 'update the eBay listing', 'change the price/qty', 'unlist from eBay', 'withdraw the offer', 'relist this', 'what's live on eBay', or any task referring to an eBay SKU, offer, draft, or listing. Cannot create catalog products from scratch — catalog rows come from the supplier side."
 ---
 
 # eBay products

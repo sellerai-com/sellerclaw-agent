@@ -1,6 +1,6 @@
 ---
 name: trend-analysis
-description: "Measure demand direction and seasonality for a keyword or niche via Google Trends (and DataForSEO when configured) through the `sellerclaw` CLI. Use when the user asks whether a niche is rising or declining, has seasonal peaks, or needs demand validation before sourcing or ad spend. For raw search volumes use `keyword-research`."
+description: "Measure demand direction and seasonality for a keyword or niche via Google Trends (and DataForSEO when configured) through the `sellerclaw` CLI. Use when the task says 'is this trending up or down', 'is X seasonal', 'show the trend for Y', 'is demand growing', 'is this a fad', 'before sourcing — is interest holding', 'when does this peak in the year', or any task asking about demand direction over time. For absolute search volumes use `keyword-research`; for social/early signals use `social-trend-discovery`."
 ---
 
 # Trend Analysis Skill

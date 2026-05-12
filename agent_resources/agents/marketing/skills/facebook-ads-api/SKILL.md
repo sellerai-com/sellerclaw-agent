@@ -1,6 +1,6 @@
 ---
 name: facebook-ads-api
-description: "Operate Facebook / Meta Ads for the connected ad account through the `sellerclaw` CLI: list / create / pause / update campaigns, ad sets, and ads; manage custom and lookalike audiences; pull performance metrics by entity and date range. Use whenever the task targets Facebook or Instagram advertising — the ad account ID is resolved server-side, no manual id needed. For campaign workflow templates (creation, optimization, scaling, A/B, emergency rules) use `campaign-playbook`; for product catalog inputs use `catalog`."
+description: "Operate Facebook / Instagram / Meta Ads on the connected ad account through the `sellerclaw` CLI: list / create / pause / update campaigns, ad sets, and ads; manage custom and lookalike audiences; pull performance metrics by entity and date range. Use when the delegated task says 'pause this Meta campaign', 'launch a new Facebook ad', 'pull Meta ad performance', 'create a lookalike audience', 'check Instagram ads spend', 'increase the daily budget on ad set X', 'duplicate this campaign', or any task touching Facebook/Instagram/Meta ad-account state or metrics. The ad account ID is resolved server-side — no manual id needed. For workflow templates (creation, optimization, scaling, A/B, emergency rules) use `campaign-playbook`; for product catalog inputs use `catalog`."
 ---
 
 # Facebook Ads (via `sellerclaw` CLI)

@@ -1,6 +1,6 @@
 ---
 name: product-search
-description: "Look up supplier catalog data on the supplier side — search products, fetch product / variant / stock details, and quote shipping at a connected supplier. Use whenever the supplier subagent is asked for product information from a supplier integration. Not for placing purchases — see `order-fulfillment`."
+description: "Look up product data on the supplier side — keyword search, fetch product / variant / stock details, and quote shipping at a connected supplier. Use when the delegated task says 'find products at the supplier', 'how much does X cost at CJ', 'is this in stock at the supplier', 'how long is shipping', 'check the supplier for SKU Y', 'refresh this supplier product', 'quote shipping for this item', or any task that needs product information from a supplier integration. Not for placing purchases — use `order-fulfillment`."
 ---
 
 # Supplier product search

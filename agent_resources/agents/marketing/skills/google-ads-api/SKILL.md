@@ -1,6 +1,6 @@
 ---
 name: google-ads-api
-description: "Operate Google Ads (and Performance Max) for the connected account through the `sellerclaw` CLI: list / create / pause / update campaigns and ad groups, pull performance metrics, manage PMax asset groups, sync Merchant Center products, and pull keyword ideas. Use whenever the task targets Google Ads — Search, Shopping, or Performance Max — for the owner's connected integration; the customer/account is resolved server-side, no GAQL needed. For campaign workflow templates (creation, optimization, scaling, A/B) use `campaign-playbook`; for catalog inputs use `catalog`."
+description: "Operate Google Ads (Search, Shopping, Performance Max) on the connected account through the `sellerclaw` CLI: list / create / pause / update campaigns and ad groups, pull performance metrics, manage PMax asset groups, sync Merchant Center products, and pull keyword ideas. Use when the delegated task says 'pause this Google Ads campaign', 'launch a Shopping campaign', 'pull Google Ads metrics', 'create a PMax asset group', 'sync products to Merchant Center', 'find keyword ideas', 'change the bid/budget', or any task touching Google Ads account state or metrics. The customer/account is resolved server-side — no GAQL needed. For workflow templates (creation, optimization, scaling, A/B) use `campaign-playbook`; for catalog inputs use `catalog`."
 ---
 
 # Google Ads (via `sellerclaw` CLI)

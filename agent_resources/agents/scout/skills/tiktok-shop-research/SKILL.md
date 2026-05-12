@@ -1,6 +1,6 @@
 ---
 name: tiktok-shop-research
-description: "Evaluate TikTok Shop as a marketplace for a niche or product: search live TikTok Shop listings, fetch product detail (price, stock, related promotional videos), and pull customer reviews via the SociaVault-backed `sellerclaw` CLI. Use when the user asks about TikTok Shop pricing, competition, virality of a product on TikTok Shop, or wants TikTok-Shop-specific review themes. Requires `research_social` configured (exit 2 / 503 otherwise); for broader TikTok/Reddit/Shorts trend mining use `social-trend-discovery`."
+description: "Evaluate TikTok Shop as a marketplace for a niche or product: search live TikTok Shop listings, fetch product detail (price, stock, related promo videos), and pull customer reviews via SociaVault-backed `sellerclaw` commands. Use when the task says 'is this on TikTok Shop', 'what's it cost on TikTok Shop', 'who sells this on TikTok Shop', 'TikTok Shop reviews for X', 'is X viral on TikTok Shop', or any task scoped to TikTok Shop listings/reviews specifically (not general TikTok content). Requires `research_social` configured (exit 2 / 503 otherwise). For broader TikTok/Reddit/Shorts trend mining use `social-trend-discovery`."
 ---
 
 # TikTok Shop Research Skill

@@ -1,6 +1,6 @@
 ---
 name: campaign-playbook
-description: "Provider-agnostic ad-campaign playbook: standard procedures for creating a new campaign, the periodic optimization cycle (kill / scale / fatigue / saturation rules), A/B tests, budget scaling cadence, and emergency rules (CPA blow-up, weekly-spend cap, token expiry). Use whenever the task is to plan a new campaign, run a routine optimization pass, set up an A/B variant, scale spend, or react to a budget/account emergency — pair with `facebook-ads-api` or `google-ads-api` for the actual CLI calls, and `catalog` for catalog inputs."
+description: "Provider-agnostic ad-campaign playbook: standard procedures for launching a new campaign, the periodic optimization cycle (kill / scale / fatigue / saturation rules), A/B tests, budget scaling cadence, and emergency rules (CPA blow-up, weekly-spend cap, token expiry). Use when the delegated task says 'plan a new campaign', 'run an optimization pass', 'which ads should I kill or scale', 'set up an A/B test', 'how much should I scale', 'CPA is too high — what now', 'we hit the weekly cap', or any task about HOW to make ad-account decisions rather than the API calls themselves. Pair with `facebook-ads-api` or `google-ads-api` for the actual CLI calls; for catalog inputs use `catalog`."
 ---
 
 # Campaign playbook

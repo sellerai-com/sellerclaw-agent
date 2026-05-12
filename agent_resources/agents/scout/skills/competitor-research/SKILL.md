@@ -1,6 +1,6 @@
 ---
 name: competitor-research
-description: "Map competitors for a niche or product: SERP rivals, marketplace listings, active ads, and store deep dives. Use when the user asks who else is selling, how prices compare, or how saturated a niche is. For keyword expansion use `keyword-research`; for review themes use `product-demand-analysis`."
+description: "Map competitors for a niche or product: SERP rivals, marketplace listings, active ads, and store deep dives. Use when the task says 'who else is selling X', 'show me competitors for niche Y', 'how do prices compare', 'how saturated is this market', 'who's running ads for this', 'analyze this competitor's store', or any task about identifying or sizing up competition. For keyword expansion use `keyword-research`; for buyer review themes use `product-demand-analysis`."
 ---
 
 # Competitor Research Skill

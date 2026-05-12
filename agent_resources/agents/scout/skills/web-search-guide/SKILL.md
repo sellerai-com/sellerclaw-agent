@@ -1,6 +1,6 @@
 ---
 name: web-search-guide
-description: "Avoid the most common errors when using `web_search`, `web_fetch`, and `browser` for niche/product research: correct parameter formats (e.g. ISO-639-1 `search_lang`, not locale codes), `browser.snapshot` with `refs: \"role\"`, query patterns for volume/competition/supplier checks, and the canonical fallback chain when DataForSEO/SociaVault are unavailable. Read before the first `web_search` or `browser` call in a niche-research session, or whenever those tools start returning errors or empty results."
+description: "Pitfalls and patterns for `web_search`, `web_fetch`, and `browser` in niche/product research: correct parameter formats (e.g. ISO-639-1 `search_lang`, not locale codes), `browser.snapshot` with `refs: \"role\"`, query templates for volume/competition/supplier checks, and the canonical fallback chain when DataForSEO/SociaVault are unavailable. Read before the first `web_search` or `browser` call in a research session, or whenever those tools start returning errors, empty results, or unexpected formats."
 ---
 
 # Web Search & Browser Guide

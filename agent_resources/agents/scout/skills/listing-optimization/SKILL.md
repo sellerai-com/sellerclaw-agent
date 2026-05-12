@@ -1,6 +1,6 @@
 ---
 name: listing-optimization
-description: "Rewrite a marketplace listing (title, bullets, backend search terms) grounded in real search-behaviour data. Use when the user asks to improve, optimize, or rewrite a Shopify/eBay/Amazon listing, or to draft SEO-friendly copy for a new product."
+description: "Rewrite a marketplace listing (title, bullets, backend search terms) grounded in real search-behaviour data. Use when the task says 'optimize this listing', 'rewrite the title', 'improve the bullets', 'make this rank better on Shopify/eBay/Amazon', 'draft SEO-friendly copy for a new product', 'fix the listing copy', or any task to polish or rebuild listing copy. Uses keyword data from `keyword-research` when needed."
 ---
 
 # Listing Optimization Skill

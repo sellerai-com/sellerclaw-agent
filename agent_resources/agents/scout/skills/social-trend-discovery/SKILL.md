@@ -1,6 +1,6 @@
 ---
 name: social-trend-discovery
-description: "Surface social-native demand signals that search tools miss — popular and trending TikTok videos/hashtags, YouTube Shorts, and Reddit threads — through the SociaVault-backed `sellerclaw research-social` commands. Use when the user asks about viral / trending / momentum, wants to validate a niche on TikTok or Reddit, or needs early signals for products without established search volume. Requires `research_social` to be configured (exit 2 / 503 otherwise); for TikTok Shop listings/reviews specifically, use `tiktok-shop-research`."
+description: "Surface social-native demand signals that search tools miss — popular/trending TikTok videos and hashtags, YouTube Shorts, Reddit threads — through SociaVault-backed `sellerclaw research-social` commands. Use when the task says 'is X viral on TikTok', 'what's trending now', 'check Reddit for this niche', 'find momentum signals', 'is anyone talking about this on social', 'find early signals before search volume catches up', or any task about social/early-stage demand. Requires `research_social` configured (exit 2 / 503 otherwise). For TikTok Shop listings/reviews specifically use `tiktok-shop-research`."
 ---
 
 # Social Trend Discovery Skill

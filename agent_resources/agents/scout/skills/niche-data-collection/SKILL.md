@@ -1,6 +1,6 @@
 ---
 name: niche-data-collection
-description: "Collect raw research data for a niche-evaluation sub-task and return it as the fixed-schema JSON the supervisor expects. Use only when the supervisor delegates an Agent Task that names this skill or a niche-data sub-task type; never score or summarize."
+description: "Collect raw research data for a supervisor-delegated niche-evaluation sub-task and return it as the fixed-schema JSON the supervisor expects. Use ONLY when the supervisor's Agent Task explicitly names this skill or specifies a niche-data sub-task type — never for ad-hoc research, never score or summarize. For interactive niche research, use `competitor-research`, `trend-analysis`, or `product-demand-analysis` instead."
 ---
 
 # Niche Data Collection Skill

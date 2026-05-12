@@ -1,6 +1,6 @@
 ---
 name: product-demand-analysis
-description: "Validate real demand and customer voice for a specific product or shortlisted niche — marketplace listings, reviews, buyer questions, sentiment. Use after a shortlist exists (SKU, niche name, or hero keyword) and the user wants proof points, review themes, or go/no-go signals. For top-of-funnel niche discovery use `trend-analysis`."
+description: "Validate real demand and customer voice for a specific product or shortlisted niche — pull marketplace listings, reviews, buyer questions, and sentiment. Use when the task says 'do people actually buy this', 'show me reviews for X', 'what do buyers complain about', 'should I list this — go or no-go', 'find proof of demand', 'check buyer sentiment', or any task asking for buyer-side evidence on a shortlisted product/niche (SKU, niche name, or hero keyword required). For top-of-funnel niche discovery use `trend-analysis`; for competitor stores/ads use `competitor-research`."
 ---
 
 # Product Demand Analysis Skill
