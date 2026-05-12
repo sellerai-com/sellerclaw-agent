@@ -250,6 +250,7 @@ def generate_openclaw_config(
         }
         if agent.is_entry_point:
             payload["default"] = True
+            payload["heartbeat"] = {"model": mini_primary}
         agents_list.append(payload)
 
     sellerclaw_ui_plugin_config: dict[str, object] = {
@@ -328,7 +329,6 @@ def generate_openclaw_config(
                         "model": simple_primary,
                     },
                 },
-                "heartbeat": {"model": mini_primary},
                 "subagents": {
                     "runTimeoutSeconds": 600,
                 },

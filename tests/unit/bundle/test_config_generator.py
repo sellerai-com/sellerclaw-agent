@@ -410,9 +410,14 @@ def test_generate_openclaw_config_system_runs_route_per_tier(
     )
     payload = json.loads(raw)
     defaults = payload["agents"]["defaults"]
-    assert defaults["heartbeat"]["model"] == expected_mini_ref
+    assert "heartbeat" not in defaults, "heartbeat must be per-agent (entry point only), not a default"
     assert defaults["compaction"]["model"] == expected_simple_ref
     assert defaults["compaction"]["memoryFlush"]["model"] == expected_simple_ref
+
+    entry_point_payload = next(
+        agent for agent in payload["agents"]["list"] if agent.get("default") is True
+    )
+    assert entry_point_payload["heartbeat"]["model"] == expected_mini_ref
 
 
 def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
