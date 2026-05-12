@@ -35,3 +35,15 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
 vi.mock("openclaw/plugin-sdk/webhook-ingress", () => ({
   readJsonWebhookBodyOrReject: vi.fn(),
 }));
+
+vi.mock("openclaw/plugin-sdk/media-store", () => ({
+  saveMediaBuffer: vi.fn().mockResolvedValue({
+    id: "media-id",
+    path: "/home/node/.openclaw/media/inbound/media-id",
+    size: 0,
+    contentType: "application/octet-stream",
+  }),
+  resolveMediaBufferPath: vi
+    .fn()
+    .mockResolvedValue("/home/node/.openclaw/media/inbound/media-id"),
+}));

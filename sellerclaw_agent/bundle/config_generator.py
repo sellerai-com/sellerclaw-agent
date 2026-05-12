@@ -316,7 +316,7 @@ def generate_openclaw_config(
                 "blockStreamingDefault": "on",
                 "blockStreamingChunk": {
                     "minChars": 100,
-                    "maxChars": 300,
+                    "maxChars": 500,
                     "breakPreference": "sentence",
                 },
                 "compaction": {

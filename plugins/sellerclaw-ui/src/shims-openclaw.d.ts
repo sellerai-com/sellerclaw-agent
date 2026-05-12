@@ -19,6 +19,17 @@ declare module "openclaw/plugin-sdk/channel-inbound" {
   ): Promise<void>;
 }
 
+declare module "openclaw/plugin-sdk/media-store" {
+  export function saveMediaBuffer(
+    buffer: Buffer,
+    contentType?: string,
+    subdir?: string,
+    maxBytes?: number,
+    originalFilename?: string,
+  ): Promise<{ id: string; path: string; size: number; contentType: string }>;
+  export function resolveMediaBufferPath(id: string, subdir?: string): Promise<string>;
+}
+
 declare module "openclaw/plugin-sdk/webhook-ingress" {
   import type { IncomingMessage, ServerResponse } from "node:http";
   export function readJsonWebhookBodyOrReject(opts: {
