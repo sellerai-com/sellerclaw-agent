@@ -119,7 +119,7 @@ class AgentConfigAssembler:
             remove_skill_names=frozenset(),
         )
 
-        tools_allow = ["group:web", "web_search", "message", "browser", "cron", "exec"]
+        tools_allow = ["group:web", "web_search", "message", "browser", "cron", "exec", "image_generate"]
         if enabled_modules:
             tools_allow = ["group:sessions", *tools_allow]
         else:
