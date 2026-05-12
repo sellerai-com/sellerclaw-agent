@@ -1,6 +1,6 @@
 ---
 name: supplier-purchase
-description: "Fulfill a SellerClaw order at the supplier (purchase, payment, tracking) by delegating to the `supplier` subagent; also covers supplier balance checks."
+description: "Fulfill a SellerClaw order at the supplier — place the purchase, handle payment, pull tracking, and persist results back to the order — or check supplier balance. Use when the owner says 'buy out this order', 'fulfill order #N', 'pay for the order at the supplier', 'place the supplier order', 'how much do I have at CJ', 'check supplier balance', or any task involving placing/paying for an order at the supplier side. Not for product search (use `supplier-search`) or catalog edits (use `source-products`)."
 ---
 
 # Supplier purchase (delegation)

@@ -1,6 +1,6 @@
 ---
 name: source-products
-description: "Source new products from connected suppliers and manage SellerClaw catalog rows (save, list, fetch, patch). For storefront listings use `store-products`."
+description: "Source new products from connected suppliers and manage the SellerClaw catalog: find candidates at a supplier, save them as catalog items, list or fetch what's already in the catalog, edit catalog metadata (price, title, attributes), or remove items. Use when the owner says 'find me products to sell', 'add this to the catalog', 'what's in our catalog', 'update the catalog', 'remove from catalog', or any task involving the product catalog itself. For storefront listings use `store-products`."
 ---
 
 # Source products

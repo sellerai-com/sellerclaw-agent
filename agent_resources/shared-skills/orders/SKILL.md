@@ -1,6 +1,6 @@
 ---
 name: orders
-description: "Read and update SellerClaw order rows: list with filters, fetch by `order_id`, patch status / supplier / tracking, or trigger a fresh storefront ingest."
+description: "Read and update SellerClaw orders: list with filters, fetch one by `order_id`, change status / supplier / tracking on an order, or pull fresh orders from a storefront. Use when the owner says 'show today's orders', 'are there new orders', 'sync orders', 'refresh orders from Shopify', 'mark this shipped', 'set tracking', 'which orders are stuck', 'what's in the purchase queue', 'how much did this order cost', or any task about orders, status, tracking, costs, or unresolved line items."
 ---
 
 # Orders

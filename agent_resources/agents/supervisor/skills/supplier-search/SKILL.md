@@ -1,6 +1,6 @@
 ---
 name: supplier-search
-description: "Gather product info at connected suppliers (search, detail, stock, shipping, refresh) via the `supplier` subagent. Not for purchase (use `supplier-purchase`) or catalog writes (use `source-products`)."
+description: "Gather product info at connected suppliers: search for products, look up price/variants/stock, get a shipping quote, or refresh data on a product we already know. Use when the owner says 'find this at the supplier', 'how much does X cost at CJ', 'is it in stock', 'how long is shipping', 'check the supplier for SKU X', 'refresh this supplier product', or any task asking for supplier-side product data without buying. Not for purchase (use `supplier-purchase`) or catalog writes (use `source-products`)."
 ---
 
 # Supplier search

@@ -1,6 +1,6 @@
 ---
 name: user-info
-description: "Look up the owner's profile, agent configuration, and connected integration groups (suppliers, ad accounts, etc.)."
+description: "Look up the owner's profile, agent configuration, and connected integrations (suppliers, ad accounts, research providers, etc.). Use when the owner asks 'who am I', 'what are my settings', 'what's connected', 'which suppliers do I have', 'which ad accounts are connected', or whenever another skill needs the owner's identity or connection state. For storefronts specifically, prefer `sales-channels`."
 ---
 
 ## What this covers

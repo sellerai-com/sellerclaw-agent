@@ -1,6 +1,6 @@
 ---
 name: sales-channels
-description: "Look up connected storefronts (Shopify, eBay, etc.): list, filter by platform, fetch by id, check status."
+description: "Look up connected storefronts (Shopify, eBay, etc.): list all of them, filter by platform, fetch a specific store, or check its connection status. Use when the owner asks 'which stores do I have', 'is Shopify connected', 'what's the status of eBay', 'which shops are linked', or whenever another skill needs to resolve a store by name/domain to its internal id and platform before acting on it."
 ---
 
 A **sales channel** is a user's online store on a marketplace platform (Shopify, eBay, etc.) connected to SellerClaw. The user may have multiple sales channels across different platforms.
