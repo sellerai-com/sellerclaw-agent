@@ -95,7 +95,7 @@ Normal path: `new` → `pending_approval` → `approved` → `purchasing` → `p
 | Property               | Logic                                                                                                |
 | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | `total_revenue`        | Σ (`sell_price` × `quantity`) — decimals as **strings** in JSON.                                     |
-| `estimated_cost`       | Σ (`purchase_price` + `shipping_cost`) × `quantity`; `**null`** if any line lacks prices or mapping. |
+| `estimated_cost`       | Σ (`purchase_price` + `shipping_cost`) × `quantity`; `null` if any line lacks prices or mapping. |
 | `has_unresolved_items` | `true` if any line has `product_id == null`.                                                         |
 
 

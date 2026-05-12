@@ -5,7 +5,7 @@ description: "Look up connected storefronts (Shopify, eBay, etc.): list all of t
 
 A **sales channel** is a user's online store on a marketplace platform (Shopify, eBay, etc.) connected to SellerClaw. The user may have multiple sales channels across different platforms.
 
-**Owner-facing copy:** When you talk *to* the user about “which store”, refer to it by `**name` or `domain`**, not by the internal `**id**` (UUID).
+**Owner-facing copy:** When you talk *to* the user about "which store", refer to it by `name` or `domain`, not by the internal `id` (UUID).
 
 ## Channel model
 

@@ -21,3 +21,7 @@ When integrations and web search are not enough, drive a browser yourself as a l
 ### File delivery
 
 To deliver an artifact (screenshot, report, export) to the owner, send it as an HTTPS `download_url` — a bare local path is invisible to them. Pass on-disk files straight to `message.send(imagePath=...)`, or mint a URL when you need it outside the current reply (`file-storage` skill).
+
+### Workspace files — already in your context
+
+`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md` are auto-injected into your prompt by the runtime. **Do not `read` them** — the content is already above.

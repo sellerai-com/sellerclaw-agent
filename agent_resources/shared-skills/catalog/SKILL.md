@@ -10,7 +10,7 @@ Two layers, distinct sources:
 - **Product** — internal SellerClaw catalog row. Channel-neutral copy + supplier binding. One per sourced item.
 - **Listing** — live row on a connected storefront (Shopify, eBay, …). Has its own price, stock, remote id, URL.
 
-To target a store, resolve it first via the `**sales-channels`** skill (need its `id` and `platform`).
+To target a store, resolve it first via the `sales-channels` skill (need its `id` and `platform`).
 
 ## Products (catalog)
 

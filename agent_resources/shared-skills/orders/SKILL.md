@@ -14,9 +14,9 @@ In SellerClaw, an **order** is one row for a single customer checkout — which 
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                                    | Internal order ID (usually mentioned as `order_id`).                                                                                                                                                     |
 | `sales_channel_id`                      | The connected storefront ID (also mentioned as `store_id`).                                                                                                                                              |
-| `remote_order_id` / `remote_order_name` | Platform order id / human label (e.g. `#1042`). Use `**remote_order_id`** for marketplace-side work; **never** use the name as a key.                                                                    |
+| `remote_order_id` / `remote_order_name` | Platform order id / human label (e.g. `#1042`). Use `remote_order_id` for marketplace-side work; **never** use the name as a key.                                                                    |
 | `status`                                | Internal purchase pipeline (`new` → … → `fulfilled` or `cancelled`).                                                                                                                                     |
-| `line_items`                            | Per line: `sell_price` (revenue) and, when mapped, `product_id` + `supplier_variant_id` + supplier costs. `**product_id == null`** = line not linked to your catalog; rolls into `has_unresolved_items`. |
+| `line_items`                            | Per line: `sell_price` (revenue) and, when mapped, `product_id` + `supplier_variant_id` + supplier costs. `product_id == null` = line not linked to your catalog; rolls into `has_unresolved_items`. |
 
 
 For the full order JSON shape, `status` transitions, and which fields you may `patch`, see references/data-model.md (read on demand, not by default).
