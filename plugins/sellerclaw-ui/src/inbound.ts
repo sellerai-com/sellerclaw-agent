@@ -159,6 +159,67 @@ async function materializeAttachmentsForAgent(
 const STREAM_DELTA_PATH = "/internal/openclaw/stream-delta";
 const STREAM_END_PATH = "/internal/openclaw/stream-end";
 
+/**
+ * Block-starting markdown patterns whose presence at the start of a new
+ * delta means the previous delta MUST be terminated by a paragraph break
+ * (`\n\n`), otherwise the structure collapses:
+ *   - ATX headings (`# `, `## `, ...)
+ *   - fenced code blocks (` ``` `)
+ *   - blockquotes (`> `)
+ *   - bullet/ordered lists (`- `, `* `, `+ `, `1. `, `1) `)
+ *   - thematic breaks (`---`, `***`, `___`)
+ *   - GFM table rows (`|`)
+ */
+const MARKDOWN_BLOCK_START_RE =
+  /^(?:#{1,6}\s|```|>(?:\s|$)|---|\*\*\*|___|\||[-*+]\s|\d+[.)]\s)/;
+
+/** ATX heading at line start (`# `, `## `, ..., up to `###### `). */
+const ATX_HEADING_RE = /^#{1,6}\s/;
+
+/**
+ * Picks a joiner string to insert between two consecutive streaming deltas.
+ *
+ * The OpenClaw block-streaming chunker cuts the assistant reply at internal
+ * boundaries and drops the whitespace it cut on. We can't see what was
+ * dropped, so we use heuristics on the visible content at the boundary:
+ *
+ *   * Markdown block-starter at the head of the next delta → `\n\n`. Without
+ *     this the heading / list / fence would be absorbed into the previous
+ *     paragraph (or worse, a fence would never close).
+ *   * Closing code fence at the tail of the previous delta → `\n\n`. The
+ *     fence has to live on a line of its own.
+ *   * Previous delta's last line is itself an ATX heading (e.g. `## Title`
+ *     with no trailing newline) → `\n\n`. Headings are line-bounded; without
+ *     a newline the next chunk's text would parse as part of the heading.
+ *   * Otherwise → a single space. We assume the chunker dropped whitespace
+ *     inside running text. This may merge two paragraphs of regular prose
+ *     into one (when the chunker cut at `\n\n` between plain paragraphs),
+ *     which is a cosmetic loss; in exchange we never inject a paragraph
+ *     break in the middle of a sentence, which is the visually disastrous
+ *     failure mode.
+ *
+ * Note we deliberately do NOT escalate when the previous delta's last line
+ * starts with a list / quote / table marker. Those structures can span an
+ * arbitrary amount of content, and the chunker much more often cuts inside
+ * a long list item than right after one. Defaulting to a space there keeps
+ * mid-item continuations intact at the price of an occasional missed visual
+ * paragraph break.
+ *
+ * Exported for unit-testing without spinning up the HTTP route.
+ */
+export function pickDeltaJoin(prevTail: string, nextHead: string): string {
+  if (prevTail === "") return "";
+  const tail = prevTail.replace(/\s+$/, "");
+  const head = nextHead.replace(/^\s+/, "");
+  if (tail === "" || head === "") return "";
+  if (MARKDOWN_BLOCK_START_RE.test(head)) return "\n\n";
+  if (/```$/.test(tail)) return "\n\n";
+  const lastNl = tail.lastIndexOf("\n");
+  const tailLastLine = lastNl === -1 ? tail : tail.slice(lastNl + 1);
+  if (ATX_HEADING_RE.test(tailLastLine)) return "\n\n";
+  return " ";
+}
+
 /** POST one streaming block to SellerClaw; logs failures only (does not throw). */
 async function postStreamDeltaBestEffort(
   api: OpenClawPluginApi,
@@ -288,12 +349,13 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           .filter((part) => part && part.length > 0)
           .join("\n");
 
-        // OpenClaw chunker can drop a whitespace at the cut point when it
-        // falls through to whitespace/hard break (no joiner is defined for
-        // those tiers). We restore the missing space when both sides of the
-        // boundary are "word-like" — skip if either side is whitespace,
-        // opening or closing punctuation.
-        let lastChar = "";
+        // Tail of the previously delivered delta. `pickDeltaJoin` needs
+        // enough suffix to recognise both a closing code fence and the full
+        // last line (for the ATX-heading check). 512 chars comfortably covers
+        // any realistic heading / fence while keeping per-session memory
+        // bounded.
+        let prevTail = "";
+        const TAIL_KEEP_CHARS = 512;
 
         await dispatchInboundDirectDmWithRuntime({
           cfg: api.config,
@@ -316,13 +378,9 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
                 ? String((replyPayload as Record<string, unknown>).text ?? "")
                 : "";
             if (!text.trim()) return;
-            const firstChar = text.charAt(0);
-            const needSpace =
-              lastChar !== "" &&
-              !/[\s([{«„"'`]/.test(lastChar) &&
-              !/[\s)\]}»"'`.,;:!?…]/.test(firstChar);
-            const outText = needSpace ? " " + text : text;
-            lastChar = outText.charAt(outText.length - 1);
+            const joiner = pickDeltaJoin(prevTail, text);
+            const outText = joiner + text;
+            prevTail = outText.slice(-TAIL_KEEP_CHARS);
             api.logger.info?.(
               `sellerclaw-ui: deliver block len=${outText.length} session_key=${sessionKey}`,
             );

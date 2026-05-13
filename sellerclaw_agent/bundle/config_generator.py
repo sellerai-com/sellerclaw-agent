@@ -381,10 +381,14 @@ def generate_openclaw_config(
                 ),
                 "thinkingDefault": "off",
                 "blockStreamingDefault": "on",
+                # Paragraph-preferred cuts keep markdown structural elements
+                # (fenced code blocks, headings, lists) intact across chunks.
+                # The receiving plugin joins consecutive deltas with `\n\n`,
+                # so cutting on `\n\n` makes the join lossless.
                 "blockStreamingChunk": {
                     "minChars": 100,
                     "maxChars": 500,
-                    "breakPreference": "sentence",
+                    "breakPreference": "paragraph",
                 },
                 "compaction": {
                     "reserveTokensFloor": 20000,
