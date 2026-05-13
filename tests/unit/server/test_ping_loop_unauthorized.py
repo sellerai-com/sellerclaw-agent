@@ -14,17 +14,18 @@ from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 pytestmark = pytest.mark.unit
 
 
-async def test_ping_loop_generic_401_clears_session_keeps_creds(
+async def test_ping_loop_generic_401_clears_session_and_credentials(
     monkeypatch,
     tmp_path,
 ) -> None:
-    """Generic 401 (no agent_session_invalidated code): treat as transient; keep creds.
+    """Generic 401: the bearer is dead; drop both session and credentials.
 
-    A self-hosted user whose local server briefly returns 401 (e.g. mid-restart
-    before the auth tables are warm) must not be silently logged out — the
-    persisted agent_token.json is the only credential they have.
+    A 401 means the server read the token and rejected it. There is no
+    transient-401 scenario that warrants retrying with the same dead token —
+    the ping loop must go idle so the next /auth/* call drives a re-login.
     """
     monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
 
     stop = asyncio.Event()
     registry = EdgeRuntimeRegistry()
@@ -97,4 +98,4 @@ async def test_ping_loop_generic_401_clears_session_keeps_creds(
 
     assert sleep_calls, "expected error backoff sleep"
     session_storage.clear.assert_called_once()
-    creds_storage.clear.assert_not_called()
+    creds_storage.clear.assert_called_once()

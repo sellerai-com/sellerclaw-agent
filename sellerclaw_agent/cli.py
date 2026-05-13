@@ -888,6 +888,27 @@ def cmd_setup(console: Console) -> int:
         )
         return 1
 
+    if status.get("connected"):
+        # /auth/status only checks that agent_token.json exists. Verify the
+        # token actually works against cloud before telling the user they're
+        # signed in — ping_loop self-clears creds on 401, so a stale token
+        # turns connected=False on the second poll below.
+        ok, reason, _ = _wait_for_cloud_live(base, console, timeout_s=20.0)
+        if not ok:
+            try:
+                status = get_auth_status(base)
+            except Exception:  # noqa: BLE001
+                pass
+            if not status.get("connected"):
+                console.print(
+                    "[warning]Saved sign-in is no longer valid — please sign in again.[/warning]\n",
+                )
+            else:
+                console.print(
+                    f"[warning]Could not verify cloud connection: "
+                    f"{escape(reason or 'unknown error')}[/warning]\n",
+                )
+
     try:
         if status.get("connected"):
             console.print(

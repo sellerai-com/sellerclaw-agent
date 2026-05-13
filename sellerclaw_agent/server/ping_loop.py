@@ -106,6 +106,7 @@ async def run_edge_ping_loop(
             ok = await _flush_command_ack(
                 pending_ack=pending_ack,
                 client=client,
+                creds_storage=creds_storage,
                 session_storage=session_storage,
                 result_store=result_store,
                 container_mgr=container_mgr,
@@ -185,8 +186,20 @@ async def run_edge_ping_loop(
             continue
         except CloudAuthError as exc:
             if getattr(exc, "status_code", None) == 401:
-                _log.warning("edge_session_unauthorized_clearing_session", error=str(exc))
                 session_storage.clear()
+                creds_storage.clear()
+                if resolve_agent_bearer_token(creds_storage) is not None:
+                    # File cleared but AGENT_API_KEY env still resolves a token; we
+                    # can't self-recover. Operator must rotate the env value.
+                    _log.error(
+                        "edge_session_unauthorized_env_token_cannot_self_recover",
+                        error=str(exc),
+                    )
+                else:
+                    _log.warning(
+                        "edge_session_unauthorized_cleared_credentials",
+                        error=str(exc),
+                    )
             consecutive_errors += 1
             registry.mark_ping_error(str(exc))
             sleep_seconds = ping_interval_after_error(consecutive_errors)
@@ -247,6 +260,7 @@ async def _flush_command_ack(
     *,
     pending_ack: CompletedRemoteCommand,
     client: SellerClawConnectionClient,
+    creds_storage: CredentialsStorage,
     session_storage: EdgeSessionStorage,
     result_store: CommandResultStore,
     container_mgr: SupervisorContainerManager,
@@ -292,6 +306,7 @@ async def _flush_command_ack(
     except CloudAuthError as exc:
         if getattr(exc, "status_code", None) == 401:
             session_storage.clear()
+            creds_storage.clear()
             await result_store.clear_pending_ack()
         _log.warning("edge_ping_ack_auth_error", error=str(exc))
         registry.mark_ping_error(str(exc))
