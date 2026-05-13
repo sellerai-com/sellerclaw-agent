@@ -118,6 +118,15 @@ def _parse_uptime_seconds_from_line(line: str) -> float | None:
     return float(days * 86400 + a * 60 + b)
 
 
+def _is_ready_payload(body: str) -> bool:
+    """Return True iff gateway ``/ready`` body is JSON with ``ready: true``."""
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(payload, dict) and payload.get("ready") is True
+
+
 def _classify_supervisor_status_line(line: str) -> tuple[str, str | None]:
     """Map supervisorctl first line to (openclaw_status, openclaw_error) for ping payloads."""
     if not line.strip():
@@ -420,13 +429,40 @@ class SupervisorContainerManager:
             return "failed", pkill_err
         return "completed", None
 
+    def _gateway_ready_url(self) -> str:
+        return f"http://127.0.0.1:{self.gateway_host_port}/ready"
+
+    def _gateway_is_ready(self, *, timeout: float = 1.5) -> bool:
+        """Return True iff gateway ``/ready`` responded 200 with ``ready: true``.
+
+        Supervisor reports RUNNING as soon as the openclaw process stays up for
+        >startsecs, but the gateway HTTP listener (and plugin registry) can take
+        tens of seconds more to come up. Probing ``/ready`` lets us distinguish
+        "process alive" from "accepting inbound traffic" — otherwise the cloud
+        forwards user chat messages that immediately drop with ConnectError on
+        the local POST /channels/sellerclaw-ui/inbound.
+        """
+        url = self._gateway_ready_url()
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+                if not (200 <= resp.status < 300):
+                    return False
+                raw = resp.read()
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return False
+        body = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        return _is_ready_payload(body)
+
     def probe_openclaw_status(self) -> tuple[str, str | None]:
         try:
             line, result = self._status_line_raw()
             if not line:
                 err = (result.stderr or result.stdout or "").strip() or f"supervisorctl exit {result.returncode}"
                 return "error", err[:500]
-            return _classify_supervisor_status_line(line)
+            status, err = _classify_supervisor_status_line(line)
+            if status == "running" and not self._gateway_is_ready():
+                return "starting", None
+            return status, err
         except Exception as exc:  # noqa: BLE001 - surfaced as probe error
             _log.warning("supervisor_probe_failed", error=str(exc))
             return "error", str(exc)[:500]

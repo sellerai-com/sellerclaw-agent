@@ -12,6 +12,7 @@ from sellerclaw_agent.cloud.supervisor_manager import (
     REJECT_ALREADY_RUNNING,
     REJECT_OPENCLAW_RUNNING_BROWSER,
     SupervisorContainerManager,
+    _is_ready_payload,
     _parse_uptime_seconds_from_line,
     create_supervisor_manager,
     write_runtime_env,
@@ -55,7 +56,10 @@ def test_probe_running_stopped_fatal_starting(
     agent_resources_root: Path,
 ) -> None:
     mgr = _mgr(tmp_path, agent_resources_root)
-    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
+    with (
+        patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run,
+        patch.object(mgr, "_gateway_is_ready", return_value=True),
+    ):
         run.return_value = MagicMock(
             returncode=0,
             stdout="openclaw                         RUNNING   pid 12, uptime 0:01:02\n",
@@ -94,6 +98,44 @@ def test_probe_running_stopped_fatal_starting(
         st2, err2 = mgr.probe_openclaw_status()
         assert st2 == "error"
         assert err2 is not None
+
+
+def test_probe_supervisor_running_but_gateway_not_ready_is_starting(
+    tmp_path: Path,
+    agent_resources_root: Path,
+) -> None:
+    """Supervisor reports RUNNING before openclaw HTTP listener is up; probe must downgrade to starting.
+
+    Without this, the cloud would forward user chat messages into the local
+    OpenClaw inbound endpoint while the gateway HTTP server is still booting,
+    and they would drop with ``httpx.ConnectError``.
+    """
+    mgr = _mgr(tmp_path, agent_resources_root)
+    with (
+        patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run,
+        patch.object(mgr, "_gateway_is_ready", return_value=False),
+    ):
+        run.return_value = MagicMock(
+            returncode=0,
+            stdout="openclaw                         RUNNING   pid 12, uptime 0:00:03\n",
+            stderr="",
+        )
+        assert mgr.probe_openclaw_status() == ("starting", None)
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        pytest.param('{"ready": true, "failing": []}', True, id="ready-true"),
+        pytest.param('{"ready": false, "failing": ["plugins"]}', False, id="ready-false"),
+        pytest.param('{"failing": []}', False, id="missing-ready-key"),
+        pytest.param("not-json", False, id="invalid-json"),
+        pytest.param("[]", False, id="json-array-not-object"),
+        pytest.param("", False, id="empty-body"),
+    ],
+)
+def test_is_ready_payload(body: str, expected: bool) -> None:
+    assert _is_ready_payload(body) is expected
 
 
 def test_probe_exited_maps_to_stopped(
@@ -194,7 +236,10 @@ def test_start_rejects_when_running(
     make_manifest: Callable[..., BundleManifest],
 ) -> None:
     mgr = _mgr(tmp_path, agent_resources_root)
-    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
+    with (
+        patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run,
+        patch.object(mgr, "_gateway_is_ready", return_value=True),
+    ):
         run.return_value = MagicMock(
             returncode=0,
             stdout="openclaw                         RUNNING   pid 1, uptime 0:00:01\n",
