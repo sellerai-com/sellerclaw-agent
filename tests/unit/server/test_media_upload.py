@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -356,3 +357,85 @@ class TestUploadLocalEndpoint:
         kwargs = stub_cloud.call_args.kwargs
         assert kwargs["filename"] == "renamed.jpg"
         assert kwargs["content_type"] == "image/jpeg"
+
+
+def _install_mock_cloud(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> None:
+    """Route ``_proxy_to_cloud``'s httpx client through an in-memory transport."""
+    real_client = httpx.AsyncClient
+
+    def _client_with_mock(**kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(media_upload.httpx, "AsyncClient", _client_with_mock)
+
+
+class TestProxyToCloud:
+    async def test_posts_to_agent_scoped_files_upload_route(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Trailing slash on the base URL must still resolve to a single
+        # ``/agent`` segment — agent routes are mounted under ``/agent`` on
+        # the cloud API (alongside ``/agent/chat/stream`` etc.).
+        monkeypatch.setattr(
+            media_upload, "get_sellerclaw_api_url", lambda: "http://cloud.example:8000/"
+        )
+        seen: dict[str, Any] = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["auth"] = request.headers.get("Authorization")
+            seen["body"] = request.content
+            return httpx.Response(
+                201,
+                json={
+                    "file_id": "fid-1",
+                    "filename": "shot.png",
+                    "content_type": "image/png",
+                    "size_bytes": 5,
+                    "download_url": "https://cloud.example/files/fid-1/shot.png",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                },
+            )
+
+        _install_mock_cloud(monkeypatch, _handler)
+
+        result = await media_upload._proxy_to_cloud(
+            content=b"hello",
+            filename="shot.png",
+            content_type="image/png",
+            bearer="sca_token",
+        )
+
+        assert seen["url"] == "http://cloud.example:8000/agent/files/upload"
+        assert seen["auth"] == "Bearer sca_token"
+        assert b"hello" in seen["body"]
+        assert result["file_id"] == "fid-1"
+        assert result["download_url"] == "https://cloud.example/files/fid-1/shot.png"
+
+    async def test_raises_502_when_cloud_rejects_upload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            media_upload, "get_sellerclaw_api_url", lambda: "http://cloud.example:8000"
+        )
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"detail": "Not Found"})
+
+        _install_mock_cloud(monkeypatch, _handler)
+
+        with pytest.raises(HTTPException) as exc:
+            await media_upload._proxy_to_cloud(
+                content=b"x",
+                filename="x.png",
+                content_type="image/png",
+                bearer="t",
+            )
+        assert exc.value.status_code == 502
+        detail = cast(dict[str, Any], exc.value.detail)
+        assert detail["code"] == "cloud_upload_failed"
+        assert detail["status"] == 404

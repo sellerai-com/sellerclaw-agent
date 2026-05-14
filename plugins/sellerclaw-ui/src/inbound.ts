@@ -4,7 +4,12 @@ import { readJsonWebhookBodyOrReject } from "openclaw/plugin-sdk/webhook-ingress
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 
 import { resolveSellerclawUiAccount } from "./channel.js";
-import { postOpenclawWebhook, type ScwUiAccount } from "./send.js";
+import {
+  postOpenclawWebhook,
+  postWebhookMediaMessage,
+  resolveOutboundMediaUrl,
+  type ScwUiAccount,
+} from "./send.js";
 import { getRuntime } from "./runtime-store.js";
 
 interface InboundPayload {
@@ -220,6 +225,33 @@ export function pickDeltaJoin(prevTail: string, nextHead: string): string {
   return " ";
 }
 
+/**
+ * Extract the deliverable fields from an OpenClaw outbound reply payload.
+ *
+ * The runtime normalizes every `deliver` payload to `{ text, mediaUrls,
+ * mediaUrl, ... }` (see `createNormalizedOutboundDeliverer`). `MEDIA:` reply
+ * directives and markdown images are surfaced here as `mediaUrls` / the legacy
+ * single `mediaUrl`; we merge both into one deduped list.
+ *
+ * Exported for unit-testing without spinning up the HTTP route.
+ */
+export function readDeliverPayload(raw: unknown): { text: string; mediaUrls: string[] } {
+  if (!raw || typeof raw !== "object") return { text: "", mediaUrls: [] };
+  const p = raw as Record<string, unknown>;
+  const text = typeof p.text === "string" ? p.text : "";
+  const mediaUrls: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (trimmed && !mediaUrls.includes(trimmed)) mediaUrls.push(trimmed);
+  };
+  if (Array.isArray(p.mediaUrls)) {
+    for (const entry of p.mediaUrls) push(entry);
+  }
+  push(p.mediaUrl);
+  return { text, mediaUrls };
+}
+
 /** POST one streaming block to SellerClaw; logs failures only (does not throw). */
 async function postStreamDeltaBestEffort(
   api: OpenClawPluginApi,
@@ -356,6 +388,13 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         // bounded.
         let prevTail = "";
         const TAIL_KEEP_CHARS = 512;
+        // Trimmed texts already emitted this turn — streamed as a delta or
+        // attached as an image caption. The OpenClaw block dispatcher hands the
+        // same text to `deliver` twice (once on the text block, once on the
+        // consolidated media payload); without this dedup it renders twice.
+        const emittedTexts = new Set<string>();
+        // Source paths/URLs already delivered as media this turn (same reason).
+        const sentMedia = new Set<string>();
 
         await dispatchInboundDirectDmWithRuntime({
           cfg: api.config,
@@ -373,11 +412,52 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           timestamp: Date.now(),
           commandAuthorized: true,
           deliver: async (replyPayload: unknown) => {
-            const text =
-              replyPayload && typeof replyPayload === "object" && "text" in replyPayload
-                ? String((replyPayload as Record<string, unknown>).text ?? "")
-                : "";
-            if (!text.trim()) return;
+            const { text, mediaUrls } = readDeliverPayload(replyPayload);
+
+            // Media reply (e.g. an `image_generate` result surfaced via a
+            // `MEDIA:` directive). Upload local container artifacts to cloud
+            // File Storage and deliver each as its own chat message with
+            // `raw_content`, mirroring the `sendImage` channel handler. The
+            // stream-delta endpoint is text-only, so media cannot ride it.
+            if (mediaUrls.length > 0) {
+              const trimmed = text.trim();
+              // Use the reply text as the caption of the first media item,
+              // unless it was already streamed as a delta — then send the
+              // media bare so the caption does not render twice.
+              let caption = trimmed && !emittedTexts.has(trimmed) ? text : "";
+              for (const rawUrl of mediaUrls) {
+                if (sentMedia.has(rawUrl)) continue;
+                sentMedia.add(rawUrl);
+                try {
+                  const { url, contentType } = await resolveOutboundMediaUrl(account, rawUrl);
+                  await postWebhookMediaMessage(account, sessionKey, {
+                    mediaUrl: url,
+                    contentType,
+                    caption,
+                    chatId: payload.chat_id,
+                    messageId: crypto.randomUUID(),
+                  });
+                  api.logger.info?.(
+                    `sellerclaw-ui: deliver media session_key=${sessionKey} captioned=${Boolean(
+                      caption.trim(),
+                    )}`,
+                  );
+                  if (caption.trim()) emittedTexts.add(caption.trim());
+                  caption = "";
+                } catch (err) {
+                  api.logger.error?.(
+                    `sellerclaw-ui: media delivery failed for ${rawUrl}: ${String(err)}`,
+                  );
+                }
+              }
+              return;
+            }
+
+            // Text-only delta. Skip exact duplicates: the block dispatcher
+            // re-delivers the same text on the consolidated final payload.
+            const trimmed = text.trim();
+            if (!trimmed || emittedTexts.has(trimmed)) return;
+            emittedTexts.add(trimmed);
             const joiner = pickDeltaJoin(prevTail, text);
             const outText = joiner + text;
             prevTail = outText.slice(-TAIL_KEEP_CHARS);

@@ -8,7 +8,7 @@ import {
   enqueueSend,
   postWebhookMessage,
   resolveOutboundExtId,
-  uploadLocalMedia,
+  resolveOutboundMediaUrl,
   type ScwUiAccount,
 } from "./send.js";
 
@@ -172,14 +172,6 @@ async function outboundSendText(params: unknown): Promise<{ messageId: string }>
   );
 }
 
-function looksLikeLocalPath(value: string): boolean {
-  return value.startsWith("/") || value.startsWith("file://");
-}
-
-function stripFilePrefix(value: string): string {
-  return value.startsWith("file://") ? value.slice("file://".length) : value;
-}
-
 /**
  * Resolve the final public HTTPS image URL. If the caller supplies a local container path
  * (either via `imagePath`/`localImagePath`/`mediaPath` or via `imageUrl` pointing at
@@ -196,18 +188,12 @@ async function resolveDeliverableImageUrl(
     (typeof p.mediaPath === "string" && p.mediaPath) ||
     "";
   const imageUrl = typeof p.imageUrl === "string" ? p.imageUrl.trim() : "";
-  if (explicitPath) {
-    const uploaded = await uploadLocalMedia(account, stripFilePrefix(explicitPath));
-    return uploaded.downloadUrl;
-  }
-  if (!imageUrl) {
+  const source = explicitPath || imageUrl;
+  if (!source) {
     throw new Error("sellerclaw-ui: imageUrl or imagePath is required for sendImage");
   }
-  if (looksLikeLocalPath(imageUrl)) {
-    const uploaded = await uploadLocalMedia(account, stripFilePrefix(imageUrl));
-    return uploaded.downloadUrl;
-  }
-  return imageUrl;
+  const resolved = await resolveOutboundMediaUrl(account, source);
+  return resolved.url;
 }
 
 async function outboundSendImage(params: unknown): Promise<{ messageId: string }> {

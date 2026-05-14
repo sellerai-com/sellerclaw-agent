@@ -145,3 +145,69 @@ export async function postWebhookMessage(
   const mid = body?.message?.id ?? payload.message_id ?? crypto.randomUUID();
   return { messageId: String(mid) };
 }
+
+const IMAGE_URL_EXT_RE = /\.(png|jpe?g|webp|gif)(?:[?#]|$)/i;
+
+/**
+ * Resolve one agent-produced media reference to a publicly deliverable URL.
+ *
+ * Local container artifacts (e.g. `/home/node/.openclaw/media/...` produced by
+ * the `image_generate` tool, or `file://` paths) are proxy-uploaded to cloud
+ * File Storage via {@link uploadLocalMedia}; `http(s)` URLs pass through
+ * unchanged. `contentType` is empty for pass-through URLs.
+ */
+export async function resolveOutboundMediaUrl(
+  account: ScwUiAccount,
+  rawUrl: string,
+): Promise<{ url: string; contentType: string }> {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    throw new Error("sellerclaw-ui: empty media source");
+  }
+  if (trimmed.startsWith("/") || trimmed.startsWith("file://")) {
+    const localPath = trimmed.startsWith("file://")
+      ? trimmed.slice("file://".length)
+      : trimmed;
+    const uploaded = await uploadLocalMedia(account, localPath);
+    return { url: uploaded.downloadUrl, contentType: uploaded.contentType };
+  }
+  return { url: trimmed, contentType: "" };
+}
+
+/**
+ * Deliver one outbound media item (image or file) as a standalone chat message.
+ *
+ * Mirrors the `raw_content` shape the `sendImage` channel outbound handler
+ * produces, so the SellerClaw web chat renders it identically whether the media
+ * came from the `message` tool or from a `MEDIA:` reply directive routed through
+ * the inbound `deliver` callback.
+ */
+export async function postWebhookMediaMessage(
+  account: ScwUiAccount,
+  sessionKey: string,
+  params: {
+    mediaUrl: string;
+    contentType: string;
+    caption: string;
+    chatId: string | null;
+    messageId: string;
+  },
+): Promise<{ messageId: string }> {
+  const isImage =
+    params.contentType.startsWith("image/") || IMAGE_URL_EXT_RE.test(params.mediaUrl);
+  const rawContent: Record<string, unknown>[] = [];
+  if (params.caption.trim()) {
+    rawContent.push({ type: "text", text: params.caption });
+  }
+  rawContent.push(
+    isImage
+      ? { type: "image_url", image_url: { url: params.mediaUrl } }
+      : { type: "file_url", file_url: { url: params.mediaUrl } },
+  );
+  return postWebhookMessage(account, sessionKey, {
+    text: params.caption.trim() ? params.caption : params.mediaUrl,
+    raw_content: rawContent,
+    message_id: params.messageId,
+    ...(params.chatId ? { chat_id: params.chatId } : {}),
+  });
+}

@@ -145,7 +145,9 @@ async def _proxy_to_cloud(
     content_type: str,
     bearer: str,
 ) -> dict[str, Any]:
-    url = f"{get_sellerclaw_api_url().rstrip('/')}/files/upload"
+    # Agent-scoped routes are mounted under ``/agent`` on the cloud API
+    # (matches ``/agent/chat/stream`` etc. used elsewhere in the agent).
+    url = f"{get_sellerclaw_api_url().rstrip('/')}/agent/files/upload"
     async with httpx.AsyncClient(timeout=_UPLOAD_TIMEOUT) as client:
         response = await client.post(
             url,

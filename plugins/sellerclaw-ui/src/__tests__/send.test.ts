@@ -5,8 +5,10 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import {
   isTransientWebhookStatus,
   postOpenclawWebhook,
+  postWebhookMediaMessage,
   postWebhookMessage,
   resolveOutboundExtId,
+  resolveOutboundMediaUrl,
   type ScwUiAccount,
   WEBHOOK_MAX_ATTEMPTS,
 } from "../send.js";
@@ -224,6 +226,162 @@ describe("postOpenclawWebhook / postWebhookMessage", () => {
     await vi.runAllTimersAsync();
     const result = await promise;
     expect(result.messageId).toBe("fallback-mid");
+  });
+});
+
+describe("resolveOutboundMediaUrl", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ["bare local path", "/home/node/.openclaw/media/gen/cat.png", "/home/node/.openclaw/media/gen/cat.png"],
+    ["file:// path", "file:///tmp/shot.png", "/tmp/shot.png"],
+    ["path with surrounding whitespace", "  /tmp/shot.png  ", "/tmp/shot.png"],
+  ])("uploads a %s through the agent media proxy", async (_label, input, expectedLocalPath) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        file_id: "f1",
+        filename: "cat.png",
+        content_type: "image/png",
+        size_bytes: 10,
+        download_url: "https://cloud.example/files/f1/cat.png",
+        expires_at: "2099-01-01T00:00:00Z",
+      }),
+    );
+    globalThis.fetch = fetchMock;
+
+    const promise = resolveOutboundMediaUrl(account, input);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toEqual({
+      url: "https://cloud.example/files/f1/cat.png",
+      contentType: "image/png",
+    });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8001/internal/openclaw/media/upload-local");
+    expect(JSON.parse(init.body as string)).toEqual({ local_path: expectedLocalPath });
+  });
+
+  it("passes an http(s) URL through unchanged without uploading", async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+
+    const result = await resolveOutboundMediaUrl(account, "  https://cdn.example/pic.webp  ");
+
+    expect(result).toEqual({ url: "https://cdn.example/pic.webp", contentType: "" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("throws on an empty source", async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+
+    await expect(resolveOutboundMediaUrl(account, "   ")).rejects.toThrow(
+      "empty media source",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("postWebhookMediaMessage", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  async function capturePostedBody(
+    params: Parameters<typeof postWebhookMediaMessage>[2],
+  ): Promise<Record<string, unknown>> {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: { id: "m1" } }));
+    globalThis.fetch = fetchMock;
+    const promise = postWebhookMediaMessage(account, "sk", params);
+    await vi.runAllTimersAsync();
+    await promise;
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return JSON.parse(init.body as string) as Record<string, unknown>;
+  }
+
+  it.each([
+    [
+      "content-type image/* with an extensionless URL",
+      "image/png",
+      "https://cdn.example/files/abc",
+      "image_url",
+    ],
+    ["empty content-type but an image extension", "", "https://cdn.example/shot.jpeg", "image_url"],
+    ["an image extension followed by a query string", "", "https://cdn.example/x.png?v=2", "image_url"],
+    ["a non-image content-type", "application/pdf", "https://cdn.example/report.pdf", "file_url"],
+    ["empty content-type and a non-image extension", "", "https://cdn.example/data.csv", "file_url"],
+  ])("renders %s as a %s raw_content block", async (_label, contentType, mediaUrl, expectedType) => {
+    const body = await capturePostedBody({
+      mediaUrl,
+      contentType,
+      caption: "look",
+      chatId: "c1",
+      messageId: "mid-1",
+    });
+    expect(body.raw_content).toEqual([
+      { type: "text", text: "look" },
+      expectedType === "image_url"
+        ? { type: "image_url", image_url: { url: mediaUrl } }
+        : { type: "file_url", file_url: { url: mediaUrl } },
+    ]);
+  });
+
+  it("includes the caption as a text block and as the message text", async () => {
+    const body = await capturePostedBody({
+      mediaUrl: "https://cdn.example/x.png",
+      contentType: "image/png",
+      caption: "here you go",
+      chatId: "c1",
+      messageId: "mid-2",
+    });
+    expect(body.text).toBe("here you go");
+    expect((body.raw_content as unknown[])[0]).toEqual({ type: "text", text: "here you go" });
+    expect(body.chat_id).toBe("c1");
+    expect(body.message_id).toBe("mid-2");
+  });
+
+  it("drops the text block and falls back to the URL as text for a blank caption", async () => {
+    const body = await capturePostedBody({
+      mediaUrl: "https://cdn.example/x.png",
+      contentType: "image/png",
+      caption: "   ",
+      chatId: "c1",
+      messageId: "mid-3",
+    });
+    expect(body.raw_content).toEqual([
+      { type: "image_url", image_url: { url: "https://cdn.example/x.png" } },
+    ]);
+    expect(body.text).toBe("https://cdn.example/x.png");
+  });
+
+  it("omits chat_id when chatId is null", async () => {
+    const body = await capturePostedBody({
+      mediaUrl: "https://cdn.example/x.png",
+      contentType: "image/png",
+      caption: "cap",
+      chatId: null,
+      messageId: "mid-4",
+    });
+    expect(body).not.toHaveProperty("chat_id");
   });
 });
 

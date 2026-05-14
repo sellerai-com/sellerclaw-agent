@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const { dispatchMock, readBodyMock, postWebhookMock, saveMediaBufferMock } = vi.hoisted(() => ({
@@ -33,7 +33,7 @@ vi.mock("../runtime-store.js", () => ({
   getRuntime: () => ({}),
 }));
 
-import { pickDeltaJoin, registerInboundRoute } from "../inbound.js";
+import { pickDeltaJoin, readDeliverPayload, registerInboundRoute } from "../inbound.js";
 
 const DEFAULT_CONFIG = {
   channels: {
@@ -467,6 +467,225 @@ describe("registerInboundRoute", () => {
       expect(joined).not.toContain("несколько\n\nчасов");
       expect(joined).toContain("перешли датскую границу");
       expect(joined).not.toContain("перешли\n\nдатскую");
+    });
+  });
+
+  describe("readDeliverPayload", () => {
+    it("returns empty fields for non-object payloads", () => {
+      expect(readDeliverPayload(null)).toEqual({ text: "", mediaUrls: [] });
+      expect(readDeliverPayload("nope")).toEqual({ text: "", mediaUrls: [] });
+    });
+
+    it("merges mediaUrls and the legacy mediaUrl field, deduped and trimmed", () => {
+      expect(
+        readDeliverPayload({
+          text: "caption",
+          mediaUrls: [" /a.png ", "/b.png", "/a.png"],
+          mediaUrl: "/b.png",
+        }),
+      ).toEqual({ text: "caption", mediaUrls: ["/a.png", "/b.png"] });
+    });
+
+    it("ignores non-string media entries", () => {
+      expect(
+        readDeliverPayload({ text: "", mediaUrls: [42, null, "/ok.png", ""] }),
+      ).toEqual({ text: "", mediaUrls: ["/ok.png"] });
+    });
+  });
+
+  describe("deliver media", () => {
+    const LOCAL_IMAGE = "/home/node/.openclaw/media/tool-image-generation/image-1.png";
+    const UPLOADED_URL = "https://api.example/agent/files/gen/image-1.png";
+    const originalFetch = globalThis.fetch;
+
+    function jsonResponse(body: unknown, status = 200): Response {
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const uploadResponse = (): Response =>
+      jsonResponse({
+        file_id: "f1",
+        filename: "image-1.png",
+        content_type: "image/png",
+        size_bytes: 10,
+        download_url: UPLOADED_URL,
+        expires_at: "2099-01-01T00:00:00Z",
+      });
+
+    // send.ts's `uploadLocalMedia` / `postWebhookMessage` call the module-local
+    // `postOpenclawWebhook` (not the mocked export), which hits `fetch`. Route
+    // the upload-proxy and message posts through a fetch mock; text stream
+    // deltas still go via the mocked `postOpenclawWebhook` export.
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      fetchMock = vi.fn((url: string) => {
+        const u = String(url);
+        if (u.includes("/internal/openclaw/media/upload-local")) {
+          return Promise.resolve(uploadResponse());
+        }
+        if (u.includes("/internal/openclaw/messages")) {
+          return Promise.resolve(jsonResponse({ message: { id: "m1" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 200 }));
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    async function dispatchOnce(): Promise<(p: Record<string, unknown>) => Promise<void>> {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u", text: "go" },
+      });
+      const { api, registerHttpRoute } = buildApi();
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = getHandler(registerHttpRoute);
+      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+      await handler(req, res);
+      await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalled());
+      return (
+        dispatchMock.mock.calls.at(-1)![0] as {
+          deliver: (p: Record<string, unknown>) => Promise<void>;
+        }
+      ).deliver;
+    }
+
+    /** Cloud-bound HTTP calls (upload proxy, message posts) routed through `fetch`. */
+    function fetchCallsTo(pathFragment: string): unknown[][] {
+      return fetchMock.mock.calls.filter((c) => String(c[0]).includes(pathFragment));
+    }
+    /** Text stream deltas routed through the mocked `postOpenclawWebhook` export. */
+    function deltaCalls(): unknown[][] {
+      return postWebhookMock.mock.calls.filter((c) =>
+        String(c[0]).includes("/internal/openclaw/stream-delta"),
+      );
+    }
+    function bodyOf(call: unknown[]): Record<string, unknown> {
+      return JSON.parse(String((call[1] as RequestInit).body)) as Record<string, unknown>;
+    }
+
+    it("uploads a local MEDIA path and posts it as an image message with raw_content", async () => {
+      const deliver = await dispatchOnce();
+      await deliver({ text: "Вот голубой корниш-рекс:", mediaUrls: [LOCAL_IMAGE] });
+
+      // Local artifact proxy-uploaded to cloud File Storage.
+      const uploadCalls = fetchCallsTo("/internal/openclaw/media/upload-local");
+      expect(uploadCalls).toHaveLength(1);
+      expect(bodyOf(uploadCalls[0]!).local_path).toBe(LOCAL_IMAGE);
+
+      // Delivered as a full message, not a text-only stream delta.
+      expect(deltaCalls()).toHaveLength(0);
+      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
+      expect(msgCalls).toHaveLength(1);
+      const body = bodyOf(msgCalls[0]!);
+      expect(body.chat_id).toBe("c1");
+      expect(body.session_key).toBe("agent:supervisor:sellerclaw-ui:direct:c1");
+      expect(body.raw_content).toEqual([
+        { type: "text", text: "Вот голубой корниш-рекс:" },
+        { type: "image_url", image_url: { url: UPLOADED_URL } },
+      ]);
+    });
+
+    it("does not duplicate the caption when text was already streamed as a delta", async () => {
+      const deliver = await dispatchOnce();
+      // Block dispatcher: text block first, then the consolidated media payload
+      // carrying the same caption text.
+      await deliver({ text: "Вот голубой корниш-рекс:" });
+      await deliver({ text: "Вот голубой корниш-рекс:", mediaUrl: LOCAL_IMAGE });
+
+      expect(deltaCalls().map((c) => bodyOf(c).text)).toEqual(["Вот голубой корниш-рекс:"]);
+
+      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
+      expect(msgCalls).toHaveLength(1);
+      // Image sent bare — the caption already went out as the delta above.
+      expect(bodyOf(msgCalls[0]!).raw_content).toEqual([
+        { type: "image_url", image_url: { url: UPLOADED_URL } },
+      ]);
+    });
+
+    it("captions the image when media arrives before the matching text block", async () => {
+      const deliver = await dispatchOnce();
+      await deliver({ text: "Вот голубой корниш-рекс:", mediaUrls: [LOCAL_IMAGE] });
+      // Same text re-delivered as a standalone block afterwards — must be dropped.
+      await deliver({ text: "Вот голубой корниш-рекс:" });
+
+      expect(deltaCalls()).toHaveLength(0);
+      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
+      expect(msgCalls).toHaveLength(1);
+      expect(bodyOf(msgCalls[0]!).raw_content).toEqual([
+        { type: "text", text: "Вот голубой корниш-рекс:" },
+        { type: "image_url", image_url: { url: UPLOADED_URL } },
+      ]);
+    });
+
+    it("delivers the same media path only once across block + final payloads", async () => {
+      const deliver = await dispatchOnce();
+      await deliver({ text: "caption", mediaUrls: [LOCAL_IMAGE] });
+      await deliver({ text: "caption", mediaUrls: [LOCAL_IMAGE], mediaUrl: LOCAL_IMAGE });
+
+      expect(fetchCallsTo("/internal/openclaw/media/upload-local")).toHaveLength(1);
+      expect(fetchCallsTo("/internal/openclaw/messages")).toHaveLength(1);
+    });
+
+    it("passes http(s) media URLs through without an upload round-trip", async () => {
+      const deliver = await dispatchOnce();
+      await deliver({ mediaUrls: ["https://cdn.example/pic.webp"] });
+
+      expect(fetchCallsTo("/internal/openclaw/media/upload-local")).toHaveLength(0);
+      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
+      expect(msgCalls).toHaveLength(1);
+      expect(bodyOf(msgCalls[0]!).raw_content).toEqual([
+        { type: "image_url", image_url: { url: "https://cdn.example/pic.webp" } },
+      ]);
+    });
+
+    it("keeps streaming plain-text deltas unaffected by the media path", async () => {
+      const deliver = await dispatchOnce();
+      await deliver({ text: "Hello" });
+      await deliver({ text: "world" });
+      expect(fetchCallsTo("/internal/openclaw/messages")).toHaveLength(0);
+      expect(deltaCalls().map((c) => bodyOf(c).text)).toEqual(["Hello", " world"]);
+    });
+
+    it("still delivers the image when one of several media items fails to upload", async () => {
+      // First upload fails with a non-transient 400 (no retry); the second
+      // succeeds — the good image must still ship.
+      let uploadAttempt = 0;
+      fetchMock.mockImplementation((url: string) => {
+        const u = String(url);
+        if (u.includes("/internal/openclaw/media/upload-local")) {
+          uploadAttempt += 1;
+          return Promise.resolve(
+            uploadAttempt === 1 ? new Response("bad path", { status: 400 }) : uploadResponse(),
+          );
+        }
+        if (u.includes("/internal/openclaw/messages")) {
+          return Promise.resolve(jsonResponse({ message: { id: "m1" } }));
+        }
+        return Promise.resolve(new Response(null, { status: 200 }));
+      });
+
+      const deliver = await dispatchOnce();
+      await deliver({
+        mediaUrls: [
+          "/home/node/.openclaw/media/tool-image-generation/bad.png",
+          "/home/node/.openclaw/media/tool-image-generation/good.png",
+        ],
+      });
+
+      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
+      expect(msgCalls).toHaveLength(1);
+      expect(bodyOf(msgCalls[0]!).raw_content).toEqual([
+        { type: "image_url", image_url: { url: UPLOADED_URL } },
+      ]);
     });
   });
 
