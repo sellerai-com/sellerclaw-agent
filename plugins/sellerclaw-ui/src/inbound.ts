@@ -115,36 +115,49 @@ async function downloadAttachment(
   }
 }
 
-async function persistImageMarker(
+type AttachmentKind = "image" | "file";
+
+/**
+ * Download an attachment from SellerClaw, persist it in the OpenClaw media
+ * store, and return a runtime-recognized marker.
+ *
+ * For images we keep the legacy ``[Image: source: <abs>]`` marker — the
+ * runtime's ``MESSAGE_IMAGE_PATTERN`` picks it up and loads the file as a
+ * vision block in the user prompt.
+ *
+ * For non-image files we emit the canonical ``MEDIA:`` marker (filename on
+ * one line, MEDIA tag with the absolute path on the next). OpenClaw's
+ * media-understanding / file-extraction pipeline detects this and loads the
+ * file: PDF/DOCX text is extracted natively, other types are exposed to the
+ * agent under ``media/inbound/`` via ``Read``/``Bash`` tools.
+ *
+ * We deliberately do not use ``media://inbound/<id>``: that claim-check URI
+ * only resolves when the Gateway pre-registers the id in ``attachmentUris``,
+ * which channel plugins don't have access to.
+ */
+async function persistAttachmentMarker(
   api: OpenClawPluginApi,
   account: ScwUiAccount,
-  image: ImagePart,
+  part: ImagePart | FilePart,
+  kind: AttachmentKind,
 ): Promise<string> {
-  const rewritten = rewriteUrlHost(image.url, account.apiBaseUrl);
-  const displayName = image.filename || filenameFromUrl(rewritten, "image");
+  const rewritten = rewriteUrlHost(part.url, account.apiBaseUrl);
+  const fallbackLabel = kind === "image" ? "image" : "file";
+  const displayName = part.filename || filenameFromUrl(rewritten, fallbackLabel);
   try {
     const { buffer, contentType } = await downloadAttachment(rewritten, account.agentApiKey);
-    const finalContentType = image.contentType || contentType;
+    const finalContentType = part.contentType || contentType;
     const saved = await saveMediaBuffer(buffer, finalContentType, "inbound", undefined, displayName);
-    // Reference the saved file via its absolute path. The runtime's image
-    // detection (``MESSAGE_IMAGE_PATTERN``) picks up ``[Image: source: <abs>]``
-    // and loads it as a vision block in the user prompt. We deliberately do
-    // not use ``media://inbound/<id>``: that claim-check URI only resolves
-    // when the Gateway pre-registers the id in ``attachmentUris``, which
-    // channel plugins don't have access to.
-    return `[Image: source: ${saved.path}]`;
+    if (kind === "image") {
+      return `[Image: source: ${saved.path}]`;
+    }
+    return `${displayName}\nMEDIA: \`${saved.path}\``;
   } catch (err) {
     api.logger.warn?.(
-      `sellerclaw-ui: image attachment fetch/save failed for ${displayName}: ${String(err)}`,
+      `sellerclaw-ui: ${kind} attachment fetch/save failed for ${displayName}: ${String(err)}`,
     );
     return `[attachment unavailable: ${displayName}]`;
   }
-}
-
-function formatFileLink(account: ScwUiAccount, file: FilePart): string {
-  const rewritten = rewriteUrlHost(file.url, account.apiBaseUrl);
-  const displayName = file.filename || filenameFromUrl(rewritten, "file");
-  return `[${displayName}](${rewritten})`;
 }
 
 async function materializeAttachmentsForAgent(
@@ -155,10 +168,12 @@ async function materializeAttachmentsForAgent(
   const { images, files } = extractAttachmentParts(rawContent);
   if (images.length === 0 && files.length === 0) return [];
   const imageMarkers = await Promise.all(
-    images.map((img) => persistImageMarker(api, account, img)),
+    images.map((img) => persistAttachmentMarker(api, account, img, "image")),
   );
-  const fileLinks = files.map((f) => formatFileLink(account, f));
-  return [...imageMarkers, ...fileLinks];
+  const fileMarkers = await Promise.all(
+    files.map((f) => persistAttachmentMarker(api, account, f, "file")),
+  );
+  return [...imageMarkers, ...fileMarkers];
 }
 
 const STREAM_DELTA_PATH = "/internal/openclaw/stream-delta";

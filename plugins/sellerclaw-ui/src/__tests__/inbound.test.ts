@@ -791,7 +791,7 @@ describe("registerInboundRoute", () => {
     expect(d.rawBody).toBe("Describe\n[attachment unavailable: photo.png]");
   });
 
-  it("renders non-image file_url parts as markdown links with rewritten host", async () => {
+  it("persists non-image file_url parts via saveMediaBuffer and injects MEDIA marker", async () => {
     readBodyMock.mockResolvedValue({
       ok: true,
       value: {
@@ -810,7 +810,15 @@ describe("registerInboundRoute", () => {
         ],
       },
     });
-    const { fetchMock } = setFetchResponses([]);
+    saveMediaBufferMock.mockResolvedValueOnce({
+      id: "saved-csv",
+      path: "/home/node/.openclaw/media/inbound/report---saved-csv.csv",
+      size: 0,
+      contentType: "text/csv",
+    });
+    const { fetchMock } = setFetchResponses([
+      { ok: true, body: new ArrayBuffer(8), contentType: "text/csv" },
+    ]);
 
     const { api, registerHttpRoute } = buildApi();
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
@@ -826,12 +834,118 @@ describe("registerInboundRoute", () => {
       expect(dispatchMock).toHaveBeenCalledTimes(1);
     });
 
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(saveMediaBufferMock).not.toHaveBeenCalled();
+    // Host rewritten from localhost:8000 to apiBaseUrl host.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [fetchedUrl, fetchInit] = fetchMock.mock.calls[0] as [
+      string,
+      { headers: Record<string, string> },
+    ];
+    expect(fetchedUrl).toBe("https://api.example/agent/files/x/report.csv");
+    expect(fetchInit.headers.Authorization).toBe("Bearer sca");
+
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(1);
+    const saveArgs = saveMediaBufferMock.mock.calls[0]!;
+    expect(Buffer.isBuffer(saveArgs[0])).toBe(true);
+    expect(saveArgs[1]).toBe("text/csv");
+    expect(saveArgs[2]).toBe("inbound");
+    expect(saveArgs[4]).toBe("report.csv");
+
     const d = dispatchMock.mock.calls[0]![0] as { rawBody: string };
     expect(d.rawBody).toBe(
-      "Look\n[report.csv](https://api.example/agent/files/x/report.csv)",
+      "Look\nreport.csv\nMEDIA: `/home/node/.openclaw/media/inbound/report---saved-csv.csv`",
     );
+  });
+
+  it("persists PDF file_url parts with application/pdf content type", async () => {
+    readBodyMock.mockResolvedValue({
+      ok: true,
+      value: {
+        chat_id: "c1",
+        agent_id: "supervisor",
+        user_id: "u1",
+        text: "Summarize",
+        raw_content: [
+          { type: "text", text: "Summarize" },
+          {
+            type: "file_url",
+            file_url: { url: "https://api.example/agent/files/y/whitepaper.pdf" },
+            filename: "whitepaper.pdf",
+            content_type: "application/pdf",
+          },
+        ],
+      },
+    });
+    saveMediaBufferMock.mockResolvedValueOnce({
+      id: "saved-pdf",
+      path: "/home/node/.openclaw/media/inbound/whitepaper---saved-pdf.pdf",
+      size: 0,
+      contentType: "application/pdf",
+    });
+    setFetchResponses([{ ok: true, body: new ArrayBuffer(16), contentType: "application/pdf" }]);
+
+    const { api, registerHttpRoute } = buildApi();
+    registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+    const handler = getHandler(registerHttpRoute);
+
+    const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+    const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+
+    await handler(req, res);
+    expect(res.statusCode).toBe(202);
+
+    await vi.waitFor(() => {
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(1);
+    const saveArgs = saveMediaBufferMock.mock.calls[0]!;
+    expect(saveArgs[1]).toBe("application/pdf");
+    expect(saveArgs[4]).toBe("whitepaper.pdf");
+
+    const d = dispatchMock.mock.calls[0]![0] as { rawBody: string };
+    expect(d.rawBody).toBe(
+      "Summarize\nwhitepaper.pdf\nMEDIA: `/home/node/.openclaw/media/inbound/whitepaper---saved-pdf.pdf`",
+    );
+  });
+
+  it("falls back to [attachment unavailable] when non-image file fetch fails", async () => {
+    readBodyMock.mockResolvedValue({
+      ok: true,
+      value: {
+        chat_id: "c1",
+        agent_id: "supervisor",
+        user_id: "u1",
+        text: "Read",
+        raw_content: [
+          { type: "text", text: "Read" },
+          {
+            type: "file_url",
+            file_url: { url: "https://api.example/agent/files/z/report.csv" },
+            filename: "report.csv",
+            content_type: "text/csv",
+          },
+        ],
+      },
+    });
+    setFetchResponses([{ ok: false, status: 404 }]);
+
+    const { api, registerHttpRoute } = buildApi();
+    registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+    const handler = getHandler(registerHttpRoute);
+
+    const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+    const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+
+    await handler(req, res);
+    expect(res.statusCode).toBe(202);
+
+    await vi.waitFor(() => {
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
+    });
+
+    expect(saveMediaBufferMock).not.toHaveBeenCalled();
+    const d = dispatchMock.mock.calls[0]![0] as { rawBody: string };
+    expect(d.rawBody).toBe("Read\n[attachment unavailable: report.csv]");
   });
 
   it("handles mixed image + file in one inbound message", async () => {
@@ -859,7 +973,24 @@ describe("registerInboundRoute", () => {
         ],
       },
     });
-    setFetchResponses([{ ok: true, body: new ArrayBuffer(4), contentType: "image/jpeg" }]);
+    // First save for the image (uses the beforeEach default mock); then a
+    // distinct path for the JSON file.
+    saveMediaBufferMock.mockResolvedValueOnce({
+      id: "saved-id",
+      path: "/home/node/.openclaw/media/inbound/saved-id.jpg",
+      size: 0,
+      contentType: "image/jpeg",
+    });
+    saveMediaBufferMock.mockResolvedValueOnce({
+      id: "saved-json",
+      path: "/home/node/.openclaw/media/inbound/data---saved-json.json",
+      size: 0,
+      contentType: "application/json",
+    });
+    setFetchResponses([
+      { ok: true, body: new ArrayBuffer(4), contentType: "image/jpeg" },
+      { ok: true, body: new ArrayBuffer(4), contentType: "application/json" },
+    ]);
 
     const { api, registerHttpRoute } = buildApi();
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
@@ -875,9 +1006,15 @@ describe("registerInboundRoute", () => {
       expect(dispatchMock).toHaveBeenCalledTimes(1);
     });
 
+    expect(saveMediaBufferMock).toHaveBeenCalledTimes(2);
     const d = dispatchMock.mock.calls[0]![0] as { rawBody: string };
     expect(d.rawBody).toBe(
-      "see both\n[Image: source: /home/node/.openclaw/media/inbound/saved-id.jpg]\n[data.json](https://api.example/agent/files/f/data.json)",
+      [
+        "see both",
+        "[Image: source: /home/node/.openclaw/media/inbound/saved-id.jpg]",
+        "data.json",
+        "MEDIA: `/home/node/.openclaw/media/inbound/data---saved-json.json`",
+      ].join("\n"),
     );
   });
 });
