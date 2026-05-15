@@ -21,17 +21,5 @@
   },
   "primary_channel": "sellerclaw-ui",
   "proxy_url": "",
-  "model_name_prefix": "u:11111111/",
-  "image_model": {
-    "model_id": "gpt-image-2",
-    "display_name": "GPT Image 2",
-    "openclaw_alias": "image-gpt-image-2",
-    "litellm_route": "openai/gpt-image-1"
-  },
-  "video_model": {
-    "model_id": "veo-3.1-fast",
-    "display_name": "Google Veo 3.1 Fast",
-    "openclaw_alias": "video-veo-3.1-fast",
-    "litellm_route": "gemini/veo-3.1-fast"
-  }
+  "model_name_prefix": "u:11111111/"
 }
