@@ -127,6 +127,7 @@ class AgentConfigAssembler:
             "cron",
             "exec",
             "image_generate",
+            "video_generate",
             "pdf",
         ]
         if enabled_modules:
