@@ -599,25 +599,34 @@ def test_generate_openclaw_config_native_pdf_providers_carry_correct_model_metad
             "input": ["text", "image"],
             "contextWindow": 1000000,
             "maxTokens": 8192,
-        }
+        },
+        {
+            "id": "veo-3.1-fast-generate-preview",
+            "name": "Google Veo 3.1 Fast",
+            "reasoning": False,
+            "input": ["text", "image"],
+            "contextWindow": 32000,
+            "maxTokens": 8192,
+        },
     ]
 
 
 @pytest.mark.parametrize(
-    ("prefix", "expected_image_ref", "expected_video_ref"),
+    ("prefix", "expected_image_ref"),
     [
-        pytest.param(None, "litellm/image", "litellm/video", id="no-prefix"),
-        pytest.param("u:abc/", "litellm/u:abc/image", "litellm/u:abc/video", id="user-prefix"),
+        pytest.param(None, "litellm/image", id="no-prefix"),
+        pytest.param("u:abc/", "litellm/u:abc/image", id="user-prefix"),
     ],
 )
-def test_generate_openclaw_config_media_generation_defaults_point_at_litellm_groups(
+def test_generate_openclaw_config_image_generation_default_points_at_litellm_group(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
     prefix: str | None,
     expected_image_ref: str,
-    expected_video_ref: str,
 ) -> None:
-    """Image/video generation point at LiteLLM virtual groups; fallback lives inside LiteLLM,
-    so the OpenClaw block must NOT carry its own `fallbacks` list."""
+    """Image generation routes through OpenClaw's LiteLLM image-generation provider plugin
+    (``extensions/litellm/image-generation-provider.ts`` upstream); fallback between concrete
+    image models lives inside LiteLLM, so the OpenClaw block must NOT carry its own
+    ``fallbacks`` list."""
     raw = generate_openclaw_config(
         assembled_agents=_supervisor_only(make_assembled_agent),
         gateway_token="g",
@@ -635,7 +644,21 @@ def test_generate_openclaw_config_media_generation_defaults_point_at_litellm_gro
     )
     defaults = json.loads(raw)["agents"]["defaults"]
     assert defaults["imageGenerationModel"] == {"primary": expected_image_ref}
-    assert defaults["videoGenerationModel"] == {"primary": expected_video_ref}
+
+
+def test_generate_openclaw_config_video_generation_routes_through_google_passthrough(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Video generation must point at OpenClaw's ``google`` provider plugin — the LiteLLM
+    extension has no video-generation plugin upstream (``extensions/litellm`` ships only
+    ``image-generation-provider.ts``), so a ``litellm/...`` ref resolves to nothing and
+    surfaces "no providers" at runtime. The Google video plugin posts to
+    ``{baseUrl}/v1beta/models/{modelId}:predictLongRunning`` against LiteLLM's
+    ``/gemini/{endpoint}`` passthrough configured in ``models.providers.google.baseUrl``."""
+    defaults = _generate_default_config(make_assembled_agent)["agents"]["defaults"]
+    assert defaults["videoGenerationModel"] == {
+        "primary": "google/veo-3.1-fast-generate-preview",
+    }
 
 
 def test_generate_openclaw_config_pdf_model_default_prefers_google_with_anthropic_fallback(
@@ -684,5 +707,5 @@ def test_generate_openclaw_config_model_name_prefix_does_not_leak_into_pdf_provi
     anthropic_ids = {m["id"] for m in payload["models"]["providers"]["anthropic"]["models"]}
     google_ids = {m["id"] for m in payload["models"]["providers"]["google"]["models"]}
     assert anthropic_ids == {"claude-sonnet-4-6"}
-    assert google_ids == {"gemini-3.1-pro-preview"}
+    assert google_ids == {"gemini-3.1-pro-preview", "veo-3.1-fast-generate-preview"}
     assert payload["agents"]["defaults"]["pdfModel"]["primary"] == "google/gemini-3.1-pro-preview"

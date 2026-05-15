@@ -54,6 +54,20 @@ _PDF_GOOGLE_MODEL_NAME = "Gemini 3.1 Pro (Preview)"
 _PDF_GOOGLE_CONTEXT_WINDOW = 1000000
 _PDF_GOOGLE_MAX_TOKENS = 8192
 
+# Veo (video) routes through the same `models.providers.google` passthrough as PDF —
+# OpenClaw's google video-generation provider plugin reads ``models.providers.google.baseUrl``
+# and posts to ``{baseUrl}/v1beta/models/{modelId}:predictLongRunning``, which LiteLLM's
+# ``/gemini/{endpoint}`` catchall forwards to Google verbatim. There is no LiteLLM
+# video-generation plugin in OpenClaw's ``extensions/litellm`` (only image), so routing
+# ``videoGenerationModel.primary`` through the LiteLLM virtual provider is a no-op — the
+# tool surfaces "no providers" until a recognized provider plugin (google here) is
+# discoverable. Model id must be the Google-recognized name; OpenClaw's defaults are
+# enumerated in ``extensions/google/generation-provider-metadata.ts`` upstream.
+_VIDEO_GOOGLE_MODEL_ID = "veo-3.1-fast-generate-preview"
+_VIDEO_GOOGLE_MODEL_NAME = "Google Veo 3.1 Fast"
+_VIDEO_GOOGLE_CONTEXT_WINDOW = 32000
+_VIDEO_GOOGLE_MAX_TOKENS = 8192
+
 # OpenClaw gateway logging in generated config (not user/manifest input).
 OPENCLAW_BUNDLE_LOG_LEVEL = "warn"
 OPENCLAW_BUNDLE_CONSOLE_STYLE = "pretty"
@@ -162,6 +176,14 @@ def _build_google_passthrough_provider(
                 "input": list(_OPENCLAW_PDF_INPUT),
                 "contextWindow": _PDF_GOOGLE_CONTEXT_WINDOW,
                 "maxTokens": _PDF_GOOGLE_MAX_TOKENS,
+            },
+            {
+                "id": _VIDEO_GOOGLE_MODEL_ID,
+                "name": _VIDEO_GOOGLE_MODEL_NAME,
+                "reasoning": False,
+                "input": list(_OPENCLAW_PDF_INPUT),
+                "contextWindow": _VIDEO_GOOGLE_CONTEXT_WINDOW,
+                "maxTokens": _VIDEO_GOOGLE_MAX_TOKENS,
             },
         ],
     }
@@ -333,7 +355,11 @@ def generate_openclaw_config(
     simple_primary = _openclaw_litellm_model_ref(simple_group)
     mini_primary = _openclaw_litellm_model_ref(mini_group)
     image_primary = _openclaw_litellm_model_ref(image_group)
-    video_primary = _openclaw_litellm_model_ref(video_group)
+    # Video routes through OpenClaw's `google` video-generation provider (which talks to
+    # LiteLLM's `/gemini/{endpoint}` passthrough via the configured provider baseUrl).
+    # OpenClaw has no `litellm` video plugin, so a `litellm/...` ref resolves to nothing
+    # at runtime and the `video_generate` tool reports "no providers".
+    video_primary = f"google/{_VIDEO_GOOGLE_MODEL_ID}"
     for agent in assembled_agents:
         group = complex_group if _agent_tier_value(agent) == ModelTier.COMPLEX.value else simple_group
         agent_model = _openclaw_litellm_model_ref(group)
