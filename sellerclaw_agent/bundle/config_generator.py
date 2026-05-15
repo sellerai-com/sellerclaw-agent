@@ -39,6 +39,27 @@ _OPENCLAW_VIDEO_INPUT: tuple[str, ...] = ("text", "image")
 _OPENCLAW_MEDIA_CONTEXT_WINDOW = 8192
 _OPENCLAW_MEDIA_MAX_TOKENS = 4096
 
+# Native-PDF providers, exposed via LiteLLM's passthrough endpoints
+# (`<litellm>/anthropic/v1/messages`, `<litellm>/gemini/v1beta/...`). OpenClaw
+# routes through its real `anthropic`/`google` provider drivers — which is what
+# activates native PDF mode (raw PDF bytes to provider API, `pages` filter, no
+# extraction overhead). Model ids must be the upstream provider's real names
+# because LiteLLM passes them through verbatim; do NOT prefix with model_name_prefix.
+_OPENCLAW_PDF_INPUT: tuple[str, ...] = ("text", "image")
+
+_ANTHROPIC_PASSTHROUGH_SUBPATH = "/anthropic"
+_GOOGLE_PASSTHROUGH_SUBPATH = "/gemini"
+
+_PDF_ANTHROPIC_MODEL_ID = "claude-sonnet-4-6"
+_PDF_ANTHROPIC_MODEL_NAME = "Claude Sonnet 4.6"
+_PDF_ANTHROPIC_CONTEXT_WINDOW = 200000
+_PDF_ANTHROPIC_MAX_TOKENS = 8192
+
+_PDF_GOOGLE_MODEL_ID = "gemini-3.1-pro-preview"
+_PDF_GOOGLE_MODEL_NAME = "Gemini 3.1 Pro (Preview)"
+_PDF_GOOGLE_CONTEXT_WINDOW = 1000000
+_PDF_GOOGLE_MAX_TOKENS = 8192
+
 # OpenClaw gateway logging in generated config (not user/manifest input).
 OPENCLAW_BUNDLE_LOG_LEVEL = "warn"
 OPENCLAW_BUNDLE_CONSOLE_STYLE = "pretty"
@@ -105,6 +126,67 @@ def _build_litellm_openclaw_model_groups(
             "maxTokens": _OPENCLAW_LITELLM_MAX_TOKENS,
         },
     ]
+
+
+def _derive_passthrough_base_url(litellm_base_url: str, subpath: str) -> str:
+    """LiteLLM exposes provider-native APIs under fixed subpaths of its base URL.
+
+    The provider SDK in OpenClaw appends the rest of the path (`/v1/messages`,
+    `/v1beta/models/...`) — we only carry the prefix here.
+    """
+    return f"{litellm_base_url.rstrip('/')}{subpath}"
+
+
+def _build_anthropic_passthrough_provider(
+    *,
+    litellm_base_url: str,
+    litellm_api_key: str,
+) -> dict[str, object]:
+    return {
+        "baseUrl": _derive_passthrough_base_url(litellm_base_url, _ANTHROPIC_PASSTHROUGH_SUBPATH),
+        "apiKey": litellm_api_key,
+        "models": [
+            {
+                "id": _PDF_ANTHROPIC_MODEL_ID,
+                "name": _PDF_ANTHROPIC_MODEL_NAME,
+                "reasoning": False,
+                "input": list(_OPENCLAW_PDF_INPUT),
+                "contextWindow": _PDF_ANTHROPIC_CONTEXT_WINDOW,
+                "maxTokens": _PDF_ANTHROPIC_MAX_TOKENS,
+            },
+        ],
+    }
+
+
+def _build_google_passthrough_provider(
+    *,
+    litellm_base_url: str,
+    litellm_api_key: str,
+) -> dict[str, object]:
+    return {
+        "baseUrl": _derive_passthrough_base_url(litellm_base_url, _GOOGLE_PASSTHROUGH_SUBPATH),
+        "apiKey": litellm_api_key,
+        "models": [
+            {
+                "id": _PDF_GOOGLE_MODEL_ID,
+                "name": _PDF_GOOGLE_MODEL_NAME,
+                "reasoning": False,
+                "input": list(_OPENCLAW_PDF_INPUT),
+                "contextWindow": _PDF_GOOGLE_CONTEXT_WINDOW,
+                "maxTokens": _PDF_GOOGLE_MAX_TOKENS,
+            },
+        ],
+    }
+
+
+def _build_pdf_model_block() -> dict[str, object]:
+    """OpenClaw `agents.defaults.pdfModel`. Primary picks Gemini (whose baseUrl
+    override is explicitly documented for the Google provider); falls back to
+    Anthropic Sonnet (also through LiteLLM passthrough)."""
+    return {
+        "primary": f"google/{_PDF_GOOGLE_MODEL_ID}",
+        "fallbacks": [f"anthropic/{_PDF_ANTHROPIC_MODEL_ID}"],
+    }
 
 
 def _build_media_model_entry(
@@ -390,7 +472,20 @@ def generate_openclaw_config(
                     "apiKey": litellm_api_key,
                     "api": "openai-completions",
                     "models": litellm_models,
-                }
+                },
+                # Native-PDF providers pointed at LiteLLM passthrough endpoints.
+                # OpenClaw drives them through its real anthropic/google SDKs, which is
+                # what flips the PDF tool into native mode (raw PDF bytes upstream, no
+                # extraction/render). Upstream auth happens inside LiteLLM; OpenClaw only
+                # presents the LiteLLM virtual key.
+                "anthropic": _build_anthropic_passthrough_provider(
+                    litellm_base_url=litellm_base_url,
+                    litellm_api_key=litellm_api_key,
+                ),
+                "google": _build_google_passthrough_provider(
+                    litellm_base_url=litellm_base_url,
+                    litellm_api_key=litellm_api_key,
+                ),
             }
         },
         "agents": {
@@ -419,6 +514,7 @@ def generate_openclaw_config(
                     if video_group is not None
                     else {}
                 ),
+                "pdfModel": _build_pdf_model_block(),
                 "thinkingDefault": "off",
                 "blockStreamingDefault": "on",
                 "blockStreamingChunk": {

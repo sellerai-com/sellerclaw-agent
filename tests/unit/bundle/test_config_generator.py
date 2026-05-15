@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -484,3 +485,135 @@ def test_generate_openclaw_config_web_search_enabled_requires_api_base_url(
             web_search_enabled=True,
             web_search_auth_token="tok",
         )
+
+
+def _generate_default_config(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+    *,
+    litellm_base_url: str = "http://litellm",
+) -> Any:
+    raw = generate_openclaw_config(
+        assembled_agents=_supervisor_only(make_assembled_agent),
+        gateway_token="g",
+        hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
+        user_id=_USER_ID,
+        sellerclaw_api_url="http://api",
+        litellm_base_url=litellm_base_url,
+        litellm_api_key="k",
+        telegram_enabled=False,
+        telegram_bot_token="",
+        telegram_allowed_user_ids=(),
+        telegram_allowed_group_ids=(),
+    )
+    return json.loads(raw)
+
+
+@pytest.mark.parametrize(
+    ("litellm_base_url", "expected_anthropic_base_url", "expected_google_base_url"),
+    [
+        pytest.param(
+            "http://litellm",
+            "http://litellm/anthropic",
+            "http://litellm/gemini",
+            id="no-trailing-slash",
+        ),
+        pytest.param(
+            "http://litellm/",
+            "http://litellm/anthropic",
+            "http://litellm/gemini",
+            id="trailing-slash-stripped",
+        ),
+        pytest.param(
+            "https://host.example.com/litellm",
+            "https://host.example.com/litellm/anthropic",
+            "https://host.example.com/litellm/gemini",
+            id="subpath-host",
+        ),
+    ],
+)
+def test_generate_openclaw_config_emits_native_pdf_providers_via_litellm_passthrough(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+    litellm_base_url: str,
+    expected_anthropic_base_url: str,
+    expected_google_base_url: str,
+) -> None:
+    """Anthropic + Google providers must be wired through LiteLLM passthrough endpoints so the
+    PDF tool can flip into native mode (raw PDF bytes upstream, no extraction overhead)."""
+    payload = _generate_default_config(
+        make_assembled_agent,
+        litellm_base_url=litellm_base_url,
+    )
+    providers = payload["models"]["providers"]
+    assert providers["anthropic"]["baseUrl"] == expected_anthropic_base_url
+    assert providers["anthropic"]["apiKey"] == "k"
+    assert providers["google"]["baseUrl"] == expected_google_base_url
+    assert providers["google"]["apiKey"] == "k"
+
+
+def test_generate_openclaw_config_native_pdf_providers_carry_correct_model_metadata(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """PDF model ids are upstream-API names (LiteLLM passes them verbatim) — not prefixed."""
+    providers = _generate_default_config(make_assembled_agent)["models"]["providers"]
+    anthropic_models = providers["anthropic"]["models"]
+    google_models = providers["google"]["models"]
+    assert anthropic_models == [
+        {
+            "id": "claude-sonnet-4-6",
+            "name": "Claude Sonnet 4.6",
+            "reasoning": False,
+            "input": ["text", "image"],
+            "contextWindow": 200000,
+            "maxTokens": 8192,
+        }
+    ]
+    assert google_models == [
+        {
+            "id": "gemini-3.1-pro-preview",
+            "name": "Gemini 3.1 Pro (Preview)",
+            "reasoning": False,
+            "input": ["text", "image"],
+            "contextWindow": 1000000,
+            "maxTokens": 8192,
+        }
+    ]
+
+
+def test_generate_openclaw_config_pdf_model_default_prefers_google_with_anthropic_fallback(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Gemini is primary because OpenClaw's `google.baseUrl` override is explicitly
+    documented; Anthropic baseUrl override is implied but unverified, so it sits in the fallback."""
+    defaults = _generate_default_config(make_assembled_agent)["agents"]["defaults"]
+    assert defaults["pdfModel"] == {
+        "primary": "google/gemini-3.1-pro-preview",
+        "fallbacks": ["anthropic/claude-sonnet-4-6"],
+    }
+
+
+def test_generate_openclaw_config_model_name_prefix_does_not_leak_into_pdf_providers(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Prefix is for LiteLLM virtual groups; native provider ids must stay bare to be valid upstream."""
+    raw = generate_openclaw_config(
+        assembled_agents=_supervisor_only(make_assembled_agent),
+        gateway_token="g",
+        hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
+        user_id=_USER_ID,
+        sellerclaw_api_url="http://api",
+        litellm_base_url="http://litellm",
+        litellm_api_key="k",
+        model_name_prefix="u:abc/",
+        telegram_enabled=False,
+        telegram_bot_token="",
+        telegram_allowed_user_ids=(),
+        telegram_allowed_group_ids=(),
+    )
+    payload = json.loads(raw)
+    anthropic_ids = {m["id"] for m in payload["models"]["providers"]["anthropic"]["models"]}
+    google_ids = {m["id"] for m in payload["models"]["providers"]["google"]["models"]}
+    assert anthropic_ids == {"claude-sonnet-4-6"}
+    assert google_ids == {"gemini-3.1-pro-preview"}
+    assert payload["agents"]["defaults"]["pdfModel"]["primary"] == "google/gemini-3.1-pro-preview"
