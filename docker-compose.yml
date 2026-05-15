@@ -28,6 +28,11 @@ services:
       OPENCLAW_GATEWAY_HTTP_BASE: "${OPENCLAW_GATEWAY_HTTP_BASE:-http://127.0.0.1:7789}"
       OPENCLAW_PORT_GATEWAY: "${OPENCLAW_PORT_GATEWAY:-7788}"
       OPENCLAW_PORT_VNC: "${OPENCLAW_PORT_VNC:-6080}"
+      # Sentinel value gates OpenClaw's `isProviderApiKeyConfigured({ provider: "google" })`
+      # so the `video_generate` tool surfaces. Real upstream auth happens via the `apiKey`
+      # field in `models.providers.google` (LiteLLM virtual key), which OpenClaw's google
+      # video provider reads in preference to env vars.
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-litellm-passthrough}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
