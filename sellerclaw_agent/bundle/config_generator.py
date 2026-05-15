@@ -370,12 +370,12 @@ def generate_openclaw_config(
                 "bootstrapMaxChars": OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
                 "model": {"primary": default_primary},
                 **(
-                    {"imageGenerationModel": _openclaw_litellm_model_ref(image_group)}
+                    {"imageGenerationModel": {"primary": _openclaw_litellm_model_ref(image_group)}}
                     if image_group is not None
                     else {}
                 ),
                 **(
-                    {"videoGenerationModel": _openclaw_litellm_model_ref(video_group)}
+                    {"videoGenerationModel": {"primary": _openclaw_litellm_model_ref(video_group)}}
                     if video_group is not None
                     else {}
                 ),

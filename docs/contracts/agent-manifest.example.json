@@ -23,10 +23,10 @@
   "proxy_url": "",
   "model_name_prefix": "u:11111111/",
   "image_model": {
-    "model_id": "nano-banana-2",
-    "display_name": "Nano Banana 2 (Gemini 3.1 Flash Image)",
-    "openclaw_alias": "image-nano-banana-2",
-    "litellm_route": "gemini/gemini-3-1-flash-image-preview"
+    "model_id": "gpt-image-2",
+    "display_name": "GPT Image 2",
+    "openclaw_alias": "image-gpt-image-2",
+    "litellm_route": "openai/gpt-image-1"
   },
   "video_model": {
     "model_id": "veo-3.1-fast",
