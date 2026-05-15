@@ -206,6 +206,39 @@ def test_collect_new_session_log_lines_drop_tracker_when_file_removed(tmp_path: 
     assert session_file not in trackers
 
 
+@pytest.mark.parametrize(
+    ("embedded_char", "char_id"),
+    [
+        pytest.param("", "nel", id="nel-u0085"),
+        pytest.param(" ", "ls", id="line-separator-u2028"),
+        pytest.param(" ", "ps", id="paragraph-separator-u2029"),
+    ],
+)
+def test_collect_new_session_log_lines_does_not_split_on_unicode_line_breaks(
+    tmp_path: Path,
+    embedded_char: str,
+    char_id: str,
+) -> None:
+    """A JSONL record with a Unicode line-break inside a string value must stay
+    as one record. Python's ``str.splitlines()`` would otherwise split on NEL /
+    LS / PS, producing dozens of garbage ``raw=`` fragments per real line."""
+    _ = char_id
+    state_dir = tmp_path / ".openclaw"
+    session_file = _session_file(state_dir, agent_id="supervisor", session_key="session-nel")
+    payload_text = f"bin{embedded_char}data"
+    session_file.write_text(
+        '{"type":"model.completed","text":"' + payload_text + '"}\n',
+        encoding="utf-8",
+    )
+    trackers: dict = {}
+
+    lines = collect_new_session_log_lines(state_dir=state_dir, trackers=trackers)
+
+    assert len(lines) == 1
+    assert "type=model.completed" in lines[0]
+    assert "raw=" not in lines[0]
+
+
 def test_collect_new_session_log_lines_reads_file_with_invalid_utf8_bytes(tmp_path: Path) -> None:
     state_dir = tmp_path / ".openclaw"
     session_file = _session_file(state_dir, agent_id="scout", session_key="session-bad")

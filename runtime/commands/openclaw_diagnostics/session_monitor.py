@@ -81,13 +81,11 @@ def collect_new_session_log_lines(
             continue
 
         buffered = tracker.remainder + chunk
-        raw_lines = buffered.splitlines(keepends=True)
-        tracker.remainder = ""
-        if raw_lines and not raw_lines[-1].endswith(("\n", "\r")):
-            tracker.remainder = raw_lines.pop()
+        raw_lines = buffered.split("\n")
+        tracker.remainder = raw_lines.pop()
 
         for raw_line in raw_lines:
-            line = raw_line.rstrip("\r\n")
+            line = raw_line.rstrip("\r")
             if not line:
                 continue
             lines.append(format_session_log_line(path=path, raw_line=line))
