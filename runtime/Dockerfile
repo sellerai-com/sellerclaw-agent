@@ -5,7 +5,7 @@
 #   staging – adds the staging entrypoint (fly.io)
 #
 # To update: check https://github.com/openclaw/openclaw/pkgs/container/openclaw/versions
-FROM ghcr.io/openclaw/openclaw:2026.5.7 AS base
+FROM ghcr.io/openclaw/openclaw:2026.5.12 AS base
 
 ENV OPENCLAW_PORT=7788
 ENV OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
