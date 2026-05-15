@@ -61,6 +61,18 @@ def _openclaw_litellm_model_ref(group_model_name: str) -> str:
     return f"{_LITELLM_OPENCLAW_PROVIDER}/{group_model_name}"
 
 
+def _media_generation_block(
+    *,
+    primary_group: str,
+    fallback_groups: Sequence[str],
+) -> dict[str, object]:
+    """OpenClaw ``{image,video}GenerationModel`` shape: ``primary`` plus optional ``fallbacks``."""
+    block: dict[str, object] = {"primary": _openclaw_litellm_model_ref(primary_group)}
+    if fallback_groups:
+        block["fallbacks"] = [_openclaw_litellm_model_ref(g) for g in fallback_groups]
+    return block
+
+
 def _build_litellm_openclaw_model_groups(
     *,
     complex_group: str,
@@ -180,6 +192,8 @@ def generate_openclaw_config(
     primary_channel: str = "sellerclaw-ui",
     image_model: MediaModelManifest | None = None,
     video_model: MediaModelManifest | None = None,
+    image_fallback_models: Sequence[MediaModelManifest] = (),
+    video_fallback_models: Sequence[MediaModelManifest] = (),
 ) -> str:
     """Build OpenClaw JSON config from assembled agents and flat parameters."""
     complex_group = f"{model_name_prefix}complex" if model_name_prefix else "complex"
@@ -191,27 +205,43 @@ def generate_openclaw_config(
         mini_group=mini_group,
     )
 
-    image_group: str | None = None
-    if image_model is not None and image_model.is_configured:
-        image_group = f"{model_name_prefix}{image_model.openclaw_alias}" if model_name_prefix else image_model.openclaw_alias
-        litellm_models.append(
-            _build_media_model_entry(
-                group_id=image_group,
-                display_name=image_model.display_name or image_model.openclaw_alias,
-                modality="image",
-            )
-        )
+    def _register_media(
+        primary: MediaModelManifest | None,
+        fallbacks: Sequence[MediaModelManifest],
+        modality: str,
+    ) -> tuple[str | None, list[str]]:
+        """Append LiteLLM model entries for primary + fallbacks, return their group refs.
 
-    video_group: str | None = None
-    if video_model is not None and video_model.is_configured:
-        video_group = f"{model_name_prefix}{video_model.openclaw_alias}" if model_name_prefix else video_model.openclaw_alias
-        litellm_models.append(
-            _build_media_model_entry(
-                group_id=video_group,
-                display_name=video_model.display_name or video_model.openclaw_alias,
-                modality="video",
+        Skips duplicates (same openclaw_alias) and entries that are not ``is_configured``.
+        ``primary`` is always emitted first so ``fallbacks`` ordering is preserved verbatim.
+        """
+        primary_group: str | None = None
+        fallback_groups: list[str] = []
+        seen_aliases: set[str] = set()
+
+        def _emit(m: MediaModelManifest) -> str:
+            group = f"{model_name_prefix}{m.openclaw_alias}" if model_name_prefix else m.openclaw_alias
+            litellm_models.append(
+                _build_media_model_entry(
+                    group_id=group,
+                    display_name=m.display_name or m.openclaw_alias,
+                    modality=modality,
+                )
             )
-        )
+            return group
+
+        if primary is not None and primary.is_configured:
+            primary_group = _emit(primary)
+            seen_aliases.add(primary.openclaw_alias)
+        for fb in fallbacks:
+            if not fb.is_configured or fb.openclaw_alias in seen_aliases:
+                continue
+            fallback_groups.append(_emit(fb))
+            seen_aliases.add(fb.openclaw_alias)
+        return primary_group, fallback_groups
+
+    image_group, image_fallback_groups = _register_media(image_model, image_fallback_models, "image")
+    video_group, video_fallback_groups = _register_media(video_model, video_fallback_models, "video")
 
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)
@@ -370,12 +400,22 @@ def generate_openclaw_config(
                 "bootstrapMaxChars": OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
                 "model": {"primary": default_primary},
                 **(
-                    {"imageGenerationModel": {"primary": _openclaw_litellm_model_ref(image_group)}}
+                    {
+                        "imageGenerationModel": _media_generation_block(
+                            primary_group=image_group,
+                            fallback_groups=image_fallback_groups,
+                        )
+                    }
                     if image_group is not None
                     else {}
                 ),
                 **(
-                    {"videoGenerationModel": {"primary": _openclaw_litellm_model_ref(video_group)}}
+                    {
+                        "videoGenerationModel": _media_generation_block(
+                            primary_group=video_group,
+                            fallback_groups=video_fallback_groups,
+                        )
+                    }
                     if video_group is not None
                     else {}
                 ),

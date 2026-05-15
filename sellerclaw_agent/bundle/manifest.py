@@ -87,6 +87,12 @@ class BundleManifest:
     agent_api_base_path: str = ""
     image_model: MediaModelManifest = field(default_factory=MediaModelManifest)
     video_model: MediaModelManifest = field(default_factory=MediaModelManifest)
+    # After-primary fallbacks for OpenClaw's `{image,video}GenerationModel.fallbacks`.
+    # Empty when no further reachable media model exists for this user. The agent must
+    # also register each entry under `models.providers.litellm.models` so OpenClaw can
+    # resolve the alias.
+    image_fallbacks: tuple[MediaModelManifest, ...] = ()
+    video_fallbacks: tuple[MediaModelManifest, ...] = ()
 
     def resolved_enabled_modules(self) -> list[AgentModuleId]:
         out: list[AgentModuleId] = []
@@ -123,18 +129,10 @@ class BundleManifest:
             "proxy_url": self.proxy_url,
             "model_name_prefix": self.model_name_prefix,
             "agent_api_base_path": self.agent_api_base_path,
-            "image_model": {
-                "model_id": self.image_model.model_id,
-                "display_name": self.image_model.display_name,
-                "openclaw_alias": self.image_model.openclaw_alias,
-                "litellm_route": self.image_model.litellm_route,
-            },
-            "video_model": {
-                "model_id": self.video_model.model_id,
-                "display_name": self.video_model.display_name,
-                "openclaw_alias": self.video_model.openclaw_alias,
-                "litellm_route": self.video_model.litellm_route,
-            },
+            "image_model": _media_model_to_mapping(self.image_model),
+            "video_model": _media_model_to_mapping(self.video_model),
+            "image_fallbacks": [_media_model_to_mapping(m) for m in self.image_fallbacks],
+            "video_fallbacks": [_media_model_to_mapping(m) for m in self.video_fallbacks],
         }
 
     @staticmethod
@@ -200,6 +198,8 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
 
     image_model = _media_model_from_mapping(data.get("image_model"), kind="image_model")
     video_model = _media_model_from_mapping(data.get("video_model"), kind="video_model")
+    image_fallbacks = _media_fallbacks_from_mapping(data.get("image_fallbacks"), kind="image_fallbacks")
+    video_fallbacks = _media_fallbacks_from_mapping(data.get("video_fallbacks"), kind="video_fallbacks")
 
     return BundleManifest(
         user_id=UUID(str(data["user_id"])),
@@ -218,6 +218,8 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> BundleManifest:
         agent_api_base_path=_normalize_agent_api_base_path(data.get("agent_api_base_path")),
         image_model=image_model,
         video_model=video_model,
+        image_fallbacks=image_fallbacks,
+        video_fallbacks=video_fallbacks,
     )
 
 
@@ -233,6 +235,38 @@ def _media_model_from_mapping(raw: object, *, kind: str) -> MediaModelManifest:
         openclaw_alias=str(raw.get("openclaw_alias") or "").strip(),
         litellm_route=str(raw.get("litellm_route") or "").strip(),
     )
+
+
+def _media_model_to_mapping(m: MediaModelManifest) -> dict[str, str]:
+    return {
+        "model_id": m.model_id,
+        "display_name": m.display_name,
+        "openclaw_alias": m.openclaw_alias,
+        "litellm_route": m.litellm_route,
+    }
+
+
+def _media_fallbacks_from_mapping(raw: object, *, kind: str) -> tuple[MediaModelManifest, ...]:
+    """Parse an optional ``{image,video}_fallbacks`` list; unconfigured entries are skipped."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise TypeError(f"{kind} must be a list")
+    parsed: list[MediaModelManifest] = []
+    for entry in raw:
+        if entry is None:
+            continue
+        if not isinstance(entry, dict):
+            raise TypeError(f"{kind} entries must be mappings")
+        model = MediaModelManifest(
+            model_id=str(entry.get("model_id") or "").strip(),
+            display_name=str(entry.get("display_name") or "").strip(),
+            openclaw_alias=str(entry.get("openclaw_alias") or "").strip(),
+            litellm_route=str(entry.get("litellm_route") or "").strip(),
+        )
+        if model.is_configured:
+            parsed.append(model)
+    return tuple(parsed)
 
 
 def _normalize_agent_api_base_path(value: object) -> str:

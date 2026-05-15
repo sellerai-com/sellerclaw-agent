@@ -22,6 +22,36 @@ interface InboundPayload {
   raw_content?: unknown[];
 }
 
+/**
+ * Plugin logger wrappers: when OpenClaw runs without a logger (or with `info`/`error`
+ * stripped — happens with `redactSensitive: "tools"`), optional chaining swallows
+ * media-delivery failures silently. Fall back to `console.*` so the operator can still
+ * see what happened when chasing a "image not delivered" bug.
+ */
+function logInfo(api: OpenClawPluginApi, msg: string): void {
+  if (api.logger?.info) {
+    api.logger.info(msg);
+    return;
+  }
+  console.info(msg);
+}
+
+function logError(api: OpenClawPluginApi, msg: string): void {
+  if (api.logger?.error) {
+    api.logger.error(msg);
+    return;
+  }
+  console.error(msg);
+}
+
+function logWarn(api: OpenClawPluginApi, msg: string): void {
+  if (api.logger?.warn) {
+    api.logger.warn(msg);
+    return;
+  }
+  console.warn(msg);
+}
+
 interface ImagePart {
   url: string;
   filename: string;
@@ -153,7 +183,8 @@ async function persistAttachmentMarker(
     }
     return `${displayName}\nMEDIA: \`${saved.path}\``;
   } catch (err) {
-    api.logger.warn?.(
+    logWarn(
+      api,
       `sellerclaw-ui: ${kind} attachment fetch/save failed for ${displayName}: ${String(err)}`,
     );
     return `[attachment unavailable: ${displayName}]`;
@@ -289,7 +320,7 @@ async function postStreamDeltaBestEffort(
       }),
     });
   } catch (err) {
-    api.logger.warn?.(`sellerclaw-ui: stream-delta request failed: ${String(err)}`);
+    logWarn(api, `sellerclaw-ui: stream-delta request failed url=${url}: ${String(err)}`);
   }
 }
 
@@ -313,7 +344,7 @@ async function postStreamEndBestEffort(
       }),
     });
   } catch (err) {
-    api.logger.warn?.(`sellerclaw-ui: stream-end request failed: ${String(err)}`);
+    logWarn(api, `sellerclaw-ui: stream-end request failed url=${url}: ${String(err)}`);
   }
 }
 
@@ -372,14 +403,15 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
       try {
         runtime = getRuntime();
       } catch (err) {
-        api.logger.error?.(`sellerclaw-ui: getRuntime failed: ${String(err)}`);
+        logError(api, `sellerclaw-ui: getRuntime failed: ${String(err)}`);
         res.statusCode = 500;
         res.end(JSON.stringify({ error: "Plugin runtime not available" }));
         return true;
       }
 
       const sessionKey = `agent:${payload.agent_id}:sellerclaw-ui:direct:${payload.chat_id}`;
-      api.logger.info?.(
+      logInfo(
+        api,
         `sellerclaw-ui: inbound accepted chat_id=${payload.chat_id} agent_id=${payload.agent_id} expected_session_key=${sessionKey}`,
       );
 
@@ -443,8 +475,16 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
               for (const rawUrl of mediaUrls) {
                 if (sentMedia.has(rawUrl)) continue;
                 sentMedia.add(rawUrl);
+                logInfo(
+                  api,
+                  `sellerclaw-ui: media delivery start session_key=${sessionKey} source=${rawUrl}`,
+                );
                 try {
                   const { url, contentType } = await resolveOutboundMediaUrl(account, rawUrl);
+                  logInfo(
+                    api,
+                    `sellerclaw-ui: media uploaded session_key=${sessionKey} cloud_url=${url} content_type=${contentType || "?"}`,
+                  );
                   await postWebhookMediaMessage(account, sessionKey, {
                     mediaUrl: url,
                     contentType,
@@ -452,16 +492,18 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
                     chatId: payload.chat_id,
                     messageId: crypto.randomUUID(),
                   });
-                  api.logger.info?.(
-                    `sellerclaw-ui: deliver media session_key=${sessionKey} captioned=${Boolean(
+                  logInfo(
+                    api,
+                    `sellerclaw-ui: media delivered session_key=${sessionKey} captioned=${Boolean(
                       caption.trim(),
-                    )}`,
+                    )} cloud_url=${url}`,
                   );
                   if (caption.trim()) emittedTexts.add(caption.trim());
                   caption = "";
                 } catch (err) {
-                  api.logger.error?.(
-                    `sellerclaw-ui: media delivery failed for ${rawUrl}: ${String(err)}`,
+                  logError(
+                    api,
+                    `sellerclaw-ui: media delivery failed source=${rawUrl} session_key=${sessionKey}: ${String(err)}`,
                   );
                 }
               }
@@ -476,16 +518,17 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
             const joiner = pickDeltaJoin(prevTail, text);
             const outText = joiner + text;
             prevTail = outText.slice(-TAIL_KEEP_CHARS);
-            api.logger.info?.(
+            logInfo(
+              api,
               `sellerclaw-ui: deliver block len=${outText.length} session_key=${sessionKey}`,
             );
             await postStreamDeltaBestEffort(api, account, sessionKey, outText);
           },
           onRecordError: (err: unknown) => {
-            api.logger.error?.(`sellerclaw-ui: inbound session record error: ${String(err)}`);
+            logError(api, `sellerclaw-ui: inbound session record error: ${String(err)}`);
           },
           onDispatchError: (err: unknown, info: { kind: string }) => {
-            api.logger.error?.(`sellerclaw-ui: inbound ${info.kind} reply error: ${String(err)}`);
+            logError(api, `sellerclaw-ui: inbound ${info.kind} reply error: ${String(err)}`);
           },
         });
       })();
@@ -493,7 +536,7 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
       void dispatchPromise
         .then(() => postStreamEndBestEffort(api, account, sessionKey))
         .catch((err: unknown) => {
-          api.logger.error?.(`sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
+          logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
           void postStreamEndBestEffort(api, account, sessionKey);
         });
 
