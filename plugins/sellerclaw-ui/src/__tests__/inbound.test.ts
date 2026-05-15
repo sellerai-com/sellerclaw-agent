@@ -594,10 +594,13 @@ describe("registerInboundRoute", () => {
       ]);
     });
 
-    it("does not duplicate the caption when text was already streamed as a delta", async () => {
-      const deliver = await dispatchOnce();
+    it("re-uses the text as caption when it was already streamed as a delta", async () => {
       // Block dispatcher: text block first, then the consolidated media payload
-      // carrying the same caption text.
+      // carrying the same caption text. The text-only delta gets orphaned by
+      // the backend (ingest_openclaw_ui_message closes the user turn before
+      // stream-end finalizes), so the only surviving copy of the prose is the
+      // caption on the media message — we must re-include it.
+      const deliver = await dispatchOnce();
       await deliver({ text: "Вот голубой корниш-рекс:" });
       await deliver({ text: "Вот голубой корниш-рекс:", mediaUrl: LOCAL_IMAGE });
 
@@ -605,8 +608,8 @@ describe("registerInboundRoute", () => {
 
       const msgCalls = fetchCallsTo("/internal/openclaw/messages");
       expect(msgCalls).toHaveLength(1);
-      // Image sent bare — the caption already went out as the delta above.
       expect(bodyOf(msgCalls[0]!).raw_content).toEqual([
+        { type: "text", text: "Вот голубой корниш-рекс:" },
         { type: "image_url", image_url: { url: UPLOADED_URL } },
       ]);
     });

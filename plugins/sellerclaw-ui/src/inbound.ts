@@ -435,10 +435,13 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         // bounded.
         let prevTail = "";
         const TAIL_KEEP_CHARS = 512;
-        // Trimmed texts already emitted this turn — streamed as a delta or
-        // attached as an image caption. The OpenClaw block dispatcher hands the
-        // same text to `deliver` twice (once on the text block, once on the
-        // consolidated media payload); without this dedup it renders twice.
+        // Trimmed text-only delta payloads we've already streamed this turn —
+        // OpenClaw's block dispatcher can re-deliver the same text on the
+        // consolidated final payload, and we don't want to send it as a
+        // stream-delta twice. This set gates the *text-only* path; the media
+        // path always uses the deliver text as caption (see below) — the
+        // buffered delta gets orphaned anyway when the media POST closes the
+        // pending user turn before `stream-end` lands.
         const emittedTexts = new Set<string>();
         // Source paths/URLs already delivered as media this turn (same reason).
         const sentMedia = new Set<string>();
@@ -468,10 +471,15 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
             // stream-delta endpoint is text-only, so media cannot ride it.
             if (mediaUrls.length > 0) {
               const trimmed = text.trim();
-              // Use the reply text as the caption of the first media item,
-              // unless it was already streamed as a delta — then send the
-              // media bare so the caption does not render twice.
-              let caption = trimmed && !emittedTexts.has(trimmed) ? text : "";
+              // Use the reply text as the caption of the FIRST media item this
+              // turn. We don't dedup against ``emittedTexts`` here: the backend
+              // ingest path (services.ingest_openclaw_ui_message) closes the
+              // pending user turn synchronously, which makes the subsequent
+              // ``stream-end`` a no-op and orphans any text we streamed as a
+              // delta. Carrying the text as caption is the only place it
+              // survives — otherwise the UI shows the cloud URL (postWebhook
+              // text fallback) instead of the actual assistant prose.
+              let caption = trimmed || "";
               for (const rawUrl of mediaUrls) {
                 if (sentMedia.has(rawUrl)) continue;
                 sentMedia.add(rawUrl);
