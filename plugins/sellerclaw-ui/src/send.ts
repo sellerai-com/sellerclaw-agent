@@ -204,8 +204,12 @@ export async function postWebhookMediaMessage(
       ? { type: "image_url", image_url: { url: params.mediaUrl } }
       : { type: "file_url", file_url: { url: params.mediaUrl } },
   );
+  // Backend requires ``text`` min_length=1. Falling back to ``params.mediaUrl``
+  // leaks the cloud URL into the chat bubble (UI renders the text field).
+  // A single space passes validation and renders as an empty text section,
+  // leaving only the image — the correct outcome for an image-only reply.
   return postWebhookMessage(account, sessionKey, {
-    text: params.caption.trim() ? params.caption : params.mediaUrl,
+    text: params.caption.trim() ? params.caption : " ",
     raw_content: rawContent,
     message_id: params.messageId,
     ...(params.chatId ? { chat_id: params.chatId } : {}),

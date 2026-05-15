@@ -359,7 +359,9 @@ describe("postWebhookMediaMessage", () => {
     expect(body.message_id).toBe("mid-2");
   });
 
-  it("drops the text block and falls back to the URL as text for a blank caption", async () => {
+  it("drops the text block and uses a blank placeholder text for a blank caption", async () => {
+    // ``text`` must pass backend min_length=1; we send a single space so the
+    // bubble renders image-only instead of leaking the cloud URL.
     const body = await capturePostedBody({
       mediaUrl: "https://cdn.example/x.png",
       contentType: "image/png",
@@ -370,7 +372,7 @@ describe("postWebhookMediaMessage", () => {
     expect(body.raw_content).toEqual([
       { type: "image_url", image_url: { url: "https://cdn.example/x.png" } },
     ]);
-    expect(body.text).toBe("https://cdn.example/x.png");
+    expect(body.text).toBe(" ");
   });
 
   it("omits chat_id when chatId is null", async () => {
