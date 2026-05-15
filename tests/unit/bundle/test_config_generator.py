@@ -12,6 +12,7 @@ from sellerclaw_agent.bundle.config_generator import (
     OPENCLAW_BUNDLE_CONSOLE_STYLE,
     OPENCLAW_BUNDLE_LOG_LEVEL,
     OPENCLAW_BUNDLE_REDACT_SENSITIVE,
+    OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
     OPENCLAW_LOCAL_AGENT_BASE_URL,
     OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI,
     OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH,
@@ -41,6 +42,20 @@ _CANONICAL_SIMPLE = {
 }
 _CANONICAL_MINI = {
     "name": "Mini (auto)",
+    "reasoning": False,
+    "input": ["text", "image"],
+    "contextWindow": 128000,
+    "maxTokens": 8192,
+}
+_CANONICAL_IMAGE = {
+    "name": "Image (auto)",
+    "reasoning": False,
+    "input": ["text", "image"],
+    "contextWindow": 128000,
+    "maxTokens": 8192,
+}
+_CANONICAL_VIDEO = {
+    "name": "Video (auto)",
     "reasoning": False,
     "input": ["text", "image"],
     "contextWindow": 128000,
@@ -136,6 +151,8 @@ def test_generate_openclaw_config_litellm_models_use_canonical_metadata(
     assert by_id["u:abc/complex"] == {"id": "u:abc/complex", **_CANONICAL_COMPLEX}
     assert by_id["u:abc/simple"] == {"id": "u:abc/simple", **_CANONICAL_SIMPLE}
     assert by_id["u:abc/mini"] == {"id": "u:abc/mini", **_CANONICAL_MINI}
+    assert by_id["u:abc/image"] == {"id": "u:abc/image", **_CANONICAL_IMAGE}
+    assert by_id["u:abc/video"] == {"id": "u:abc/video", **_CANONICAL_VIDEO}
 
 
 def test_generate_openclaw_config_telegram_channel_and_bindings(
@@ -320,7 +337,13 @@ def test_generate_openclaw_config_model_name_prefix_on_litellm_groups(
     payload = json.loads(raw)
     models = payload["models"]["providers"]["litellm"]["models"]
     ids = {m["id"] for m in models}
-    assert ids == {"u:abc/complex", "u:abc/simple", "u:abc/mini"}
+    assert ids == {
+        "u:abc/complex",
+        "u:abc/simple",
+        "u:abc/mini",
+        "u:abc/image",
+        "u:abc/video",
+    }
     assert payload["agents"]["list"][0]["model"] == "litellm/u:abc/complex"
 
 
@@ -580,6 +603,41 @@ def test_generate_openclaw_config_native_pdf_providers_carry_correct_model_metad
     ]
 
 
+@pytest.mark.parametrize(
+    ("prefix", "expected_image_ref", "expected_video_ref"),
+    [
+        pytest.param(None, "litellm/image", "litellm/video", id="no-prefix"),
+        pytest.param("u:abc/", "litellm/u:abc/image", "litellm/u:abc/video", id="user-prefix"),
+    ],
+)
+def test_generate_openclaw_config_media_generation_defaults_point_at_litellm_groups(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+    prefix: str | None,
+    expected_image_ref: str,
+    expected_video_ref: str,
+) -> None:
+    """Image/video generation point at LiteLLM virtual groups; fallback lives inside LiteLLM,
+    so the OpenClaw block must NOT carry its own `fallbacks` list."""
+    raw = generate_openclaw_config(
+        assembled_agents=_supervisor_only(make_assembled_agent),
+        gateway_token="g",
+        hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
+        user_id=_USER_ID,
+        sellerclaw_api_url="http://api",
+        litellm_base_url="http://litellm",
+        litellm_api_key="k",
+        model_name_prefix=prefix,
+        telegram_enabled=False,
+        telegram_bot_token="",
+        telegram_allowed_user_ids=(),
+        telegram_allowed_group_ids=(),
+    )
+    defaults = json.loads(raw)["agents"]["defaults"]
+    assert defaults["imageGenerationModel"] == {"primary": expected_image_ref}
+    assert defaults["videoGenerationModel"] == {"primary": expected_video_ref}
+
+
 def test_generate_openclaw_config_pdf_model_default_prefers_google_with_anthropic_fallback(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
@@ -590,6 +648,17 @@ def test_generate_openclaw_config_pdf_model_default_prefers_google_with_anthropi
         "primary": "google/gemini-3.1-pro-preview",
         "fallbacks": ["anthropic/claude-sonnet-4-6"],
     }
+
+
+def test_generate_openclaw_config_enables_document_extract_plugin_for_pdf_fallback(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """OpenClaw's PDF tool fails with `enable the document-extract plugin` when the
+    bundled extractor isn't enabled — must always be in `plugins.allow` AND `plugins.entries`."""
+    payload = _generate_default_config(make_assembled_agent)
+    plugins = payload["plugins"]
+    assert OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID in plugins["allow"]
+    assert plugins["entries"][OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID] == {"enabled": True}
 
 
 def test_generate_openclaw_config_model_name_prefix_does_not_leak_into_pdf_providers(

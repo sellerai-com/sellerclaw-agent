@@ -5,7 +5,6 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sellerclaw_agent.bundle.manifest import MediaModelManifest
 from sellerclaw_agent.bundle.protocols import AssembledAgentLike
 from sellerclaw_agent.models import ModelTier
 
@@ -21,23 +20,18 @@ def _agent_tier_value(agent: AssembledAgentLike) -> str:
 _LITELLM_OPENCLAW_PROVIDER = "litellm"
 
 # Canonical OpenClaw metadata for LiteLLM virtual model groups
-# `{prefix}complex` / `{prefix}simple` / `{prefix}mini`.
-# Routing to concrete provider models is configured on the LiteLLM side.
+# `{prefix}complex` / `{prefix}simple` / `{prefix}mini` / `{prefix}image` / `{prefix}video`.
+# Routing to concrete provider models is configured on the LiteLLM side — these entries
+# only register the group name + display metadata that OpenClaw exposes to agents/UI.
 _OPENCLAW_LITELLM_COMPLEX_DISPLAY_NAME = "Frontier (auto)"
 _OPENCLAW_LITELLM_SIMPLE_DISPLAY_NAME = "Mid (auto)"
 _OPENCLAW_LITELLM_MINI_DISPLAY_NAME = "Mini (auto)"
+_OPENCLAW_LITELLM_IMAGE_DISPLAY_NAME = "Image (auto)"
+_OPENCLAW_LITELLM_VIDEO_DISPLAY_NAME = "Video (auto)"
 _OPENCLAW_LITELLM_GROUP_REASONING = False
 _OPENCLAW_LITELLM_GROUP_INPUT: tuple[str, ...] = ("text", "image")
 _OPENCLAW_LITELLM_CONTEXT_WINDOW = 128000
 _OPENCLAW_LITELLM_MAX_TOKENS = 8192
-
-# Modality hints for image/video model entries. OpenClaw's chat-LLM-shaped model
-# schema is reused here so registration is uniform; concrete media tools/skills
-# read the modality and route to the right LiteLLM endpoint.
-_OPENCLAW_IMAGE_INPUT: tuple[str, ...] = ("text", "image")
-_OPENCLAW_VIDEO_INPUT: tuple[str, ...] = ("text", "image")
-_OPENCLAW_MEDIA_CONTEXT_WINDOW = 8192
-_OPENCLAW_MEDIA_MAX_TOKENS = 4096
 
 # Native-PDF providers, exposed via LiteLLM's passthrough endpoints
 # (`<litellm>/anthropic/v1/messages`, `<litellm>/gemini/v1beta/...`). OpenClaw
@@ -77,21 +71,26 @@ SELLERCLAW_WEB_SEARCH_PLUGIN_ID = "sellerclaw-web-search"
 OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI = "/opt/openclaw-plugins/sellerclaw-ui"
 OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH = "/opt/openclaw-plugins/sellerclaw-web-search"
 
+# Bundled OpenClaw plugin that backs the PDF tool's fallback (extract + page-render)
+# pipeline. Without it the PDF tool fails with `PDF extraction disabled or unavailable:
+# enable the document-extract plugin to process application/pdf files`. Bundled with
+# the OpenClaw runtime, so no load path needed — just allow + enable.
+OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID = "document-extract"
+
 
 def _openclaw_litellm_model_ref(group_model_name: str) -> str:
     return f"{_LITELLM_OPENCLAW_PROVIDER}/{group_model_name}"
 
 
-def _media_generation_block(
-    *,
-    primary_group: str,
-    fallback_groups: Sequence[str],
-) -> dict[str, object]:
-    """OpenClaw ``{image,video}GenerationModel`` shape: ``primary`` plus optional ``fallbacks``."""
-    block: dict[str, object] = {"primary": _openclaw_litellm_model_ref(primary_group)}
-    if fallback_groups:
-        block["fallbacks"] = [_openclaw_litellm_model_ref(g) for g in fallback_groups]
-    return block
+def _build_litellm_group_entry(group_id: str, display_name: str) -> dict[str, object]:
+    return {
+        "id": group_id,
+        "name": display_name,
+        "reasoning": _OPENCLAW_LITELLM_GROUP_REASONING,
+        "input": list(_OPENCLAW_LITELLM_GROUP_INPUT),
+        "contextWindow": _OPENCLAW_LITELLM_CONTEXT_WINDOW,
+        "maxTokens": _OPENCLAW_LITELLM_MAX_TOKENS,
+    }
 
 
 def _build_litellm_openclaw_model_groups(
@@ -99,32 +98,21 @@ def _build_litellm_openclaw_model_groups(
     complex_group: str,
     simple_group: str,
     mini_group: str,
+    image_group: str,
+    video_group: str,
 ) -> list[dict[str, object]]:
+    """Five virtual groups served through LiteLLM: chat tiers + media kinds.
+
+    `image`/`video` follow the same operator-static, LiteLLM-side-fallback pattern as
+    `complex`/`simple`/`mini` — the agent only sees a single ref per kind, fallback
+    between concrete models is configured inside LiteLLM's model_list.
+    """
     return [
-        {
-            "id": complex_group,
-            "name": _OPENCLAW_LITELLM_COMPLEX_DISPLAY_NAME,
-            "reasoning": _OPENCLAW_LITELLM_GROUP_REASONING,
-            "input": list(_OPENCLAW_LITELLM_GROUP_INPUT),
-            "contextWindow": _OPENCLAW_LITELLM_CONTEXT_WINDOW,
-            "maxTokens": _OPENCLAW_LITELLM_MAX_TOKENS,
-        },
-        {
-            "id": simple_group,
-            "name": _OPENCLAW_LITELLM_SIMPLE_DISPLAY_NAME,
-            "reasoning": _OPENCLAW_LITELLM_GROUP_REASONING,
-            "input": list(_OPENCLAW_LITELLM_GROUP_INPUT),
-            "contextWindow": _OPENCLAW_LITELLM_CONTEXT_WINDOW,
-            "maxTokens": _OPENCLAW_LITELLM_MAX_TOKENS,
-        },
-        {
-            "id": mini_group,
-            "name": _OPENCLAW_LITELLM_MINI_DISPLAY_NAME,
-            "reasoning": _OPENCLAW_LITELLM_GROUP_REASONING,
-            "input": list(_OPENCLAW_LITELLM_GROUP_INPUT),
-            "contextWindow": _OPENCLAW_LITELLM_CONTEXT_WINDOW,
-            "maxTokens": _OPENCLAW_LITELLM_MAX_TOKENS,
-        },
+        _build_litellm_group_entry(complex_group, _OPENCLAW_LITELLM_COMPLEX_DISPLAY_NAME),
+        _build_litellm_group_entry(simple_group, _OPENCLAW_LITELLM_SIMPLE_DISPLAY_NAME),
+        _build_litellm_group_entry(mini_group, _OPENCLAW_LITELLM_MINI_DISPLAY_NAME),
+        _build_litellm_group_entry(image_group, _OPENCLAW_LITELLM_IMAGE_DISPLAY_NAME),
+        _build_litellm_group_entry(video_group, _OPENCLAW_LITELLM_VIDEO_DISPLAY_NAME),
     ]
 
 
@@ -189,29 +177,6 @@ def _build_pdf_model_block() -> dict[str, object]:
     }
 
 
-def _build_media_model_entry(
-    *,
-    group_id: str,
-    display_name: str,
-    modality: str,
-) -> dict[str, object]:
-    """Build an OpenClaw model entry for an image/video generation alias."""
-    if modality == "image":
-        input_modes = list(_OPENCLAW_IMAGE_INPUT)
-    elif modality == "video":
-        input_modes = list(_OPENCLAW_VIDEO_INPUT)
-    else:
-        raise ValueError(f"Unsupported media modality: {modality!r}.")
-    return {
-        "id": group_id,
-        "name": display_name,
-        "reasoning": False,
-        "input": input_modes,
-        "contextWindow": _OPENCLAW_MEDIA_CONTEXT_WINDOW,
-        "maxTokens": _OPENCLAW_MEDIA_MAX_TOKENS,
-    }
-
-
 def _build_telegram_groups(*, group_ids: list[str]) -> dict[str, dict[str, bool]]:
     result: dict[str, dict[str, bool]] = {}
     for gid in group_ids:
@@ -272,58 +237,20 @@ def generate_openclaw_config(
     web_search_enabled: bool = False,
     web_search_auth_token: str = "",
     primary_channel: str = "sellerclaw-ui",
-    image_model: MediaModelManifest | None = None,
-    video_model: MediaModelManifest | None = None,
-    image_fallback_models: Sequence[MediaModelManifest] = (),
-    video_fallback_models: Sequence[MediaModelManifest] = (),
 ) -> str:
     """Build OpenClaw JSON config from assembled agents and flat parameters."""
     complex_group = f"{model_name_prefix}complex" if model_name_prefix else "complex"
     simple_group = f"{model_name_prefix}simple" if model_name_prefix else "simple"
     mini_group = f"{model_name_prefix}mini" if model_name_prefix else "mini"
+    image_group = f"{model_name_prefix}image" if model_name_prefix else "image"
+    video_group = f"{model_name_prefix}video" if model_name_prefix else "video"
     litellm_models = _build_litellm_openclaw_model_groups(
         complex_group=complex_group,
         simple_group=simple_group,
         mini_group=mini_group,
+        image_group=image_group,
+        video_group=video_group,
     )
-
-    def _register_media(
-        primary: MediaModelManifest | None,
-        fallbacks: Sequence[MediaModelManifest],
-        modality: str,
-    ) -> tuple[str | None, list[str]]:
-        """Append LiteLLM model entries for primary + fallbacks, return their group refs.
-
-        Skips duplicates (same openclaw_alias) and entries that are not ``is_configured``.
-        ``primary`` is always emitted first so ``fallbacks`` ordering is preserved verbatim.
-        """
-        primary_group: str | None = None
-        fallback_groups: list[str] = []
-        seen_aliases: set[str] = set()
-
-        def _emit(m: MediaModelManifest) -> str:
-            group = f"{model_name_prefix}{m.openclaw_alias}" if model_name_prefix else m.openclaw_alias
-            litellm_models.append(
-                _build_media_model_entry(
-                    group_id=group,
-                    display_name=m.display_name or m.openclaw_alias,
-                    modality=modality,
-                )
-            )
-            return group
-
-        if primary is not None and primary.is_configured:
-            primary_group = _emit(primary)
-            seen_aliases.add(primary.openclaw_alias)
-        for fb in fallbacks:
-            if not fb.is_configured or fb.openclaw_alias in seen_aliases:
-                continue
-            fallback_groups.append(_emit(fb))
-            seen_aliases.add(fb.openclaw_alias)
-        return primary_group, fallback_groups
-
-    image_group, image_fallback_groups = _register_media(image_model, image_fallback_models, "image")
-    video_group, video_fallback_groups = _register_media(video_model, video_fallback_models, "video")
 
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)
@@ -405,6 +332,8 @@ def generate_openclaw_config(
     default_primary = _openclaw_litellm_model_ref(complex_group)
     simple_primary = _openclaw_litellm_model_ref(simple_group)
     mini_primary = _openclaw_litellm_model_ref(mini_group)
+    image_primary = _openclaw_litellm_model_ref(image_group)
+    video_primary = _openclaw_litellm_model_ref(video_group)
     for agent in assembled_agents:
         group = complex_group if _agent_tier_value(agent) == ModelTier.COMPLEX.value else simple_group
         agent_model = _openclaw_litellm_model_ref(group)
@@ -494,26 +423,11 @@ def generate_openclaw_config(
                 "timeoutSeconds": 600,
                 "bootstrapMaxChars": OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
                 "model": {"primary": default_primary},
-                **(
-                    {
-                        "imageGenerationModel": _media_generation_block(
-                            primary_group=image_group,
-                            fallback_groups=image_fallback_groups,
-                        )
-                    }
-                    if image_group is not None
-                    else {}
-                ),
-                **(
-                    {
-                        "videoGenerationModel": _media_generation_block(
-                            primary_group=video_group,
-                            fallback_groups=video_fallback_groups,
-                        )
-                    }
-                    if video_group is not None
-                    else {}
-                ),
+                # `imageGenerationModel` / `videoGenerationModel` always point at the LiteLLM
+                # virtual group. Fallback between concrete provider models is handled inside
+                # LiteLLM's model_list (operator-configured); OpenClaw sees a single ref per kind.
+                "imageGenerationModel": {"primary": image_primary},
+                "videoGenerationModel": {"primary": video_primary},
                 "pdfModel": _build_pdf_model_block(),
                 "thinkingDefault": "off",
                 "blockStreamingDefault": "on",
@@ -558,6 +472,7 @@ def generate_openclaw_config(
             "allow": [
                 "sellerclaw-ui",
                 "browser",
+                OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
                 *(
                     [web_search_plugin_id]
                     if web_search_enabled and web_search_plugin_id is not None
@@ -567,6 +482,7 @@ def generate_openclaw_config(
             "load": {"paths": plugin_load_paths},
             "entries": {
                 "sellerclaw-ui": {"enabled": True, "config": sellerclaw_ui_plugin_config},
+                OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID: {"enabled": True},
                 **(
                     {web_search_plugin_id: web_search_plugin_entry}
                     if web_search_enabled
