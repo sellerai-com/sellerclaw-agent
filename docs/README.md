@@ -1,35 +1,35 @@
 # SellerClaw Agent Documentation
 
-Documentation for the `sellerclaw-agent` package — the local edge agent that wraps the OpenClaw runtime, exposes a local control-plane API, and pairs with a SellerClaw (or compatible) cloud.
+This is the public documentation for **SellerClaw Agent** — the self-hosted runtime for [SellerClaw](https://sellerclaw.ai). It lets a SellerClaw user run the OpenClaw agent on their own machine instead of using the SellerClaw Cloud runtime, while continuing to work in the regular web admin panel at `sellerclaw.ai`.
 
-The pages below are grouped by audience so you can jump straight to what you need.
+For a product overview, see the top-level [`README`](../README.md). The pages here are grouped by what you are trying to do.
 
-## For operators and self-hosters
+## Install and run the agent
 
-Start here if you want to install the agent, connect it to a cloud, and run it on your own machine.
+Start here if you want to install SellerClaw Agent on your own machine and pair it with your SellerClaw account.
 
-- [**CLI — installation and usage**](./cli.md) — install `sellerclaw-agent`, understand `.env.local` / `.env.staging` / `.env.production` and `secrets.env`, run `setup` / `login` / `status`, build the runtime image, and troubleshoot the most common first-run failures.
+- **[CLI — installation and usage](./cli.md)** — install SellerClaw Agent, understand `.env.local` / `.env.staging` / `.env.production` profiles and `secrets.env`, run `setup` / `login` / `status`, build the runtime image, and troubleshoot the most common first-run failures.
 
-## For developers integrating with the agent
+## Integrate with the agent
 
-Start here if you are building a control plane or another system that drives the agent over HTTP.
+Start here if you are working on the SellerClaw Cloud side of the connection, or building a compatible orchestrator on top of the public wire format.
 
-- [**Cloud connection protocol**](./connection-protocol.md) — how the agent opens a session, heartbeats, pulls commands (`start` / `stop` / `restart` / `disconnect`), reports results, and recovers from errors.
-- [**Agent manifest contract**](./contracts/agent-manifest.md) — wire format of `POST /manifest`, how `GET /bundle/archive` renders the OpenClaw config, auth, and versioning rules.
+- **[Cloud connection protocol](./connection-protocol.md)** — how the agent opens a session, heartbeats, pulls commands (`start` / `stop` / `restart` / `disconnect`), reports results, and recovers from errors.
+- **[Agent manifest contract](./contracts/agent-manifest.md)** — wire format of `POST /manifest`, how `GET /bundle/archive` renders the OpenClaw config, auth, and versioning rules.
 - [`agent-manifest-schema.json`](./contracts/agent-manifest-schema.json) — JSON Schema (source of truth) for the manifest; validate against this before posting.
 - [`agent-manifest.example.json`](./contracts/agent-manifest.example.json) — minimal working example payload.
 
-## For contributors to the agent itself
+## Contribute to the agent
 
-Start here if you are changing the agent's code.
+Start here if you are changing the agent's code or its local UI.
 
-- [**Admin UI**](./developer/admin-ui.md) — the Vue 3 SPA for viewing and editing the manifest: structure, hot reload, API contract used by the UI, and backend coverage.
+- **[Admin UI guide](./developer/admin-ui.md)** — the Vue 3 SPA used locally for viewing and editing the manifest: structure, hot reload, API contract, and backend coverage.
 
 See also the top-level [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the contribution workflow and [`ROADMAP.md`](../ROADMAP.md) for current priorities.
 
 ## Quick reference
 
-- **Control-plane port (agent HTTP API):** `8001` (fixed; published from the container in `docker-compose.yml`).
-- **OpenClaw gateway port:** `7788` by default — runs as a separate process inside the same container, managed by `supervisord`.
-- **Admin UI port (dev):** `5174`.
-- **On-disk state:** `agent_token.json`, `local_api_key`, and `edge_session.json` under `SELLERCLAW_DATA_DIR` (default `/data` inside the container, bind-mounted to `./data` on the host).
+- **Local control plane (agent HTTP API):** `http://localhost:8001` — fixed, published from the container in `docker-compose.yml`
+- **OpenClaw gateway:** `:7788` inside the container, supervised alongside the agent server
+- **Admin UI (development):** `http://localhost:5174/admin/`
+- **On-disk state:** `agent_token.json`, `local_api_key`, and `edge_session.json` under `SELLERCLAW_DATA_DIR` (defaults to `/data` inside the container, bind-mounted to `./data` on the host)

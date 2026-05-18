@@ -1,193 +1,198 @@
 # SellerClaw Agent
 
-`sellerclaw-agent` is the local **edge agent** that runs on a user's machine and hosts an **OpenClaw** runtime for e-commerce workflows. OpenClaw is the underlying multi-agent framework that does the actual work (driving a browser, talking to suppliers, running LLM-backed tasks); `sellerclaw-agent` wraps it so that:
+SellerClaw Agent is the self-hosted runtime for **[SellerClaw](https://sellerclaw.ai)** — the e-commerce platform built around OpenClaw.
 
-- a control plane (the SellerClaw cloud or any compatible orchestrator) can configure it over HTTP
-- a non-technical user can install and sign in with a single command
-- credentials, manifest state, and container lifecycle stay contained inside Docker
+It lets you run the OpenClaw agent that powers SellerClaw on your own computer or your own server, while everything you actually *do* — configure stores and suppliers, launch workflows, chat with the agent, review results — stays in the regular SellerClaw web admin panel at [sellerclaw.ai](https://sellerclaw.ai).
 
-In practice the agent is a small, boring runtime wrapper: a **CLI** for onboarding, a **FastAPI control plane**, a **bundle renderer** that turns a JSON manifest into OpenClaw config, and a **Vue 3 admin UI** — all packaged into a single Docker image alongside the OpenClaw gateway itself.
+In other words, SellerClaw Agent moves only the runtime to your hardware. The product experience does not change.
 
-> **Status:** working and open for experimentation. The CLI and wire contracts (manifest, connection protocol) are stable enough to build on; the admin UI and internal structure are still evolving. See the [roadmap](ROADMAP.md) for current priorities.
+> **Status:** SellerClaw Agent is already working and open for experimentation. The CLI and public wire contracts are stable; the local admin UI and internal structure continue to evolve.
 
-## What It Does
+## What SellerClaw Agent Is
 
-- **Pairs with a cloud** over HTTP polling — no inbound ports, no public IP required on the host.
-- **Stores a manifest** sent by the control plane and renders an OpenClaw bundle from it on demand (`GET /bundle/archive`).
-- **Runs OpenClaw** through `supervisord` in the same container (no `docker.sock` required).
-- **Handles auth** — long-lived **agent-scoped** cloud token (`sca_…`); user JWT is not stored or used on the agent. Password and device-flow sign-in both obtain the same token type.
-- **Exposes a local admin UI** at `http://localhost:5174/admin/` for viewing and editing the manifest in the browser.
+SellerClaw consists of a web admin panel, backend APIs, and an OpenClaw-based agent runtime. By default, all three live in the SellerClaw Cloud and you simply log in and use them.
+
+SellerClaw Agent changes one thing: it takes the agent runtime out of the cloud and runs it locally, paired with your SellerClaw account over an outbound HTTPS connection.
+
+From a user's point of view this means:
+
+- you still sign in at `sellerclaw.ai` and use the same web admin panel
+- your stores, suppliers, products, orders, and workflows live in your SellerClaw account
+- when an agent task runs, the actual browser, tools, and LLM calls happen on *your* machine
+- nothing on your network needs to be exposed to the internet — the agent only makes outbound calls
+
+Under the hood, SellerClaw Agent is a small, focused runtime wrapper. It packages OpenClaw, a local control-plane API, an onboarding CLI, and a debugging admin UI into a single Docker image that you bring up with one command.
 
 ## Who It Is For
 
-- self-hosters who want to run an OpenClaw-based e-commerce agent on their own hardware
-- developers building alternative control planes on top of the agent's wire contract
-- teams integrating OpenClaw into their own operational tooling
+SellerClaw Agent is built for people who already want to use SellerClaw, but prefer to keep the agent runtime on hardware they own.
 
-## Quick Start
+That includes:
 
-### Prerequisites
+- sellers and operators who want the agent running on their own desktop or home server
+- dropshippers and store owners who would rather not pay for managed runtime hosting
+- builders and hustlers running long-lived automations cheaply on a small VPS
+- privacy-, residency-, or compliance-driven teams that need the runtime close to their data
+- developers exploring the public agent protocol, the manifest contract, or self-hosted runtime extensions
 
-- **Docker** and **Docker Compose v2** (`docker compose version` must succeed). On macOS, install/start Docker Desktop.
-- **Python 3.12+** (only for the CLI itself — services run inside Docker).
-- [uv](https://docs.astral.sh/uv/) is recommended for managing the Python side.
+It is **not** a standalone OpenClaw distribution. The agent is designed around a SellerClaw account — without one, there is nothing to drive it.
 
-### One-shot setup
+## Why SellerClaw Agent
 
-From the `sellerclaw-agent/` directory:
+Compared with using the default SellerClaw Cloud runtime, SellerClaw Agent is purpose-built for users who want to host the OpenClaw side themselves while keeping the rest of the SellerClaw product experience intact.
 
-```bash
-./setup.sh
-```
+Key advantages include:
 
-This checks for Docker, installs Python dependencies with `uv`, brings up the Docker stack, and runs the interactive sign-in — all in one step. On macOS the installer can use Homebrew to install Docker Desktop if it is available.
+- **Same SellerClaw product, your hardware** — manage everything from the regular web admin panel; only the agent runtime moves
+- **No managed-runtime hosting fee** — you bring the compute (a laptop, a desktop, a home server, a small VPS) and skip the hosting portion of a SellerClaw plan
+- **Safe local execution** — the agent runs in Docker, with no access to the host system and no inbound network exposure
+- **Outbound-only pairing** — no public IP, no port forwarding, no tunnels; the agent connects out to SellerClaw and pulls work
+- **One-command onboarding** — `./setup.sh` checks Docker, builds the stack, signs you in, and starts the runtime
+- **Local control and inspection** — a built-in admin UI for viewing the manifest and the OpenClaw status during installation and debugging
+- **Open wire contracts** — the cloud connection protocol and the manifest format are public, so the runtime is inspectable and extensible
 
-Alternatives:
+## Cloud Runtime and Self-Hosted Runtime
 
-```bash
-uv run sellerclaw-agent setup    # if uv is already installed
-make setup                       # via the project Makefile
-```
+SellerClaw is available in two runtime modes:
 
-After startup:
+- **Cloud-hosted runtime** — the default. The OpenClaw agent runs in the SellerClaw Cloud alongside the web admin panel and APIs. There is nothing to install: log in and use the product.
+- **Self-hosted runtime** — what this repository provides. The web admin panel and APIs still live in the SellerClaw Cloud, but the OpenClaw agent runs on hardware you control. You install SellerClaw Agent once, sign in, and the agent pairs itself with your SellerClaw account.
 
-- Local FastAPI server: `http://localhost:8001`
-- Admin UI: `http://localhost:5174/admin/`
+Both modes use the same web admin panel, the same workflows, and the same agent capabilities. The choice is purely about *where* the agent runs.
 
-### Environments
+## SellerClaw Agent + OpenClaw
 
-Each environment profile is a `.env.<name>` file in the repo root that controls which cloud the agent connects to. **Secrets** (for example `SELLERCLAW_LOCAL_API_KEY`, `AGENT_API_KEY`) belong in `secrets.env` (gitignored); copy `secrets.env.example` as a starting point.
+SellerClaw Agent does not just start OpenClaw and walk away.
 
-| File | Cloud target |
-|------|-------------|
-| `.env.local` | Local development (`http://host.docker.internal:8000`) |
-| `.env.staging` | Staging (`https://api.staging.sellerclaw.ai`) |
-| `.env.production` | Production (`https://api.sellerclaw.ai`) |
+It makes the OpenClaw runtime usable as a piece of the broader SellerClaw product by adding:
 
-Switch with `./setup.sh --env staging` or `export AGENT_ENV=staging`. See [`docs/cli.md`](docs/cli.md) for the full reference.
+- a manifest-driven boot — the SellerClaw Cloud sends a single JSON manifest that describes how this user's OpenClaw should be configured, and the agent renders it into a runtime bundle on demand
+- a long-lived cloud pairing — agent-scoped tokens, automatic reconnection, command pull (start / stop / restart / disconnect) and result reporting
+- Docker-isolated execution — OpenClaw, the local control plane, and the KasmVNC browser run in one container, supervised together
+- one-command CLI onboarding — install, sign in, and start the runtime in a single step
+- a local admin UI for inspection, manifest editing, and troubleshooting
 
-## CLI Commands
+In practice, SellerClaw Agent is the operational and packaging layer that makes the OpenClaw runtime a first-class self-hosted option for the SellerClaw product.
 
-| Command | Description |
-|---------|-------------|
-| `setup` | Default — build + start stack, wait for the server, run interactive sign-in. |
-| `start` | Start the stack only (`docker compose up -d --build`). |
-| `stop` | Stop the stack (`docker compose down`). |
-| `status` | Show cloud connection status (`GET /auth/status`). |
-| `login` | Sign in to the cloud on an already-running agent. |
-| `logout` | Clear stored cloud credentials. |
+## Core Capabilities
 
-See [`docs/cli.md`](docs/cli.md) for full details and env var reference.
+SellerClaw Agent provides the building blocks needed to operate a self-hosted OpenClaw runtime as part of a SellerClaw account, including:
 
-## Building the Runtime Image
+- one-command setup, sign-in, start, stop, and status from the CLI
+- secure pairing with the SellerClaw Cloud over agent-scoped tokens
+- automatic manifest sync and OpenClaw bundle rendering
+- long-running ping / command loop with reconnection and recovery
+- a local FastAPI control plane with a documented HTTP surface
+- a Vue 3 admin UI for local manifest viewing, editing, and runtime inspection
+- a combined Docker image that includes OpenClaw, the KasmVNC browser, and the agent server
+- environment profiles for local, staging, and production SellerClaw clouds
 
-The agent runs inside a combined Docker image that includes the OpenClaw runtime plus the agent server. For normal local use you don't need to build it yourself — `docker compose` will do it on first run. To build or publish a custom image (forks, self-hosted infra), see [Building the runtime image](docs/cli.md#building-the-runtime-image) in [`docs/cli.md`](docs/cli.md).
+New capabilities are added regularly. Contributions around onboarding, runtime observability, and manifest handling are particularly welcome — see the [roadmap](ROADMAP.md).
 
-## Architecture
+## Architecture Overview
 
-```text
-┌─────────────────────────────────┐
-│        Control plane            │   (SellerClaw cloud or compatible)
-│                                 │
-│  sends manifest, enqueues       │
-│  start / stop / restart         │
-└──────────────┬──────────────────┘
-               │  HTTPS (outbound only)
-               ▼
-┌─────────────────────────────────┐
-│        sellerclaw-agent         │
-│                                 │
-│  CLI           (onboarding)     │
-│  FastAPI       (:8001 control)  │
-│  Admin UI      (:5174 Vue 3)    │
-│  Ping loop     (connect / ping) │
-│  Bundle        (render OpenClaw)│
-│  supervisord   (openclaw prog)  │
-│                                 │
-│  OpenClaw gateway (:7788)       │
-│  KasmVNC browser                │
-└─────────────────────────────────┘
-```
+At a high level, a self-hosted SellerClaw setup looks like this:
 
-The agent speaks two HTTP contracts:
+- the **SellerClaw Cloud** hosts the web admin panel, the backend APIs, the user's account, and the dispatch side of the agent connection
+- **SellerClaw Agent** runs on the user's machine, pairs with the cloud over outbound HTTPS, holds the rendered OpenClaw configuration, and supervises the runtime
+- **OpenClaw** runs inside the same Docker container as the agent, alongside a KasmVNC browser, and does the actual automation work
 
-- **Cloud-facing** — the [connection protocol](docs/connection-protocol.md): `connect` → `ping` loop → pull commands → report results.
-- **Control-plane-facing** — the [manifest contract](docs/contracts/agent-manifest.md): `POST /manifest` stores a JSON payload, `GET /bundle/archive` returns the rendered bundle.
+End users never interact with the local agent directly. They work in the web admin panel at `sellerclaw.ai`, which routes commands and results through the cloud connection. The local FastAPI server and admin UI exist for installation, sign-in, and host-side troubleshooting.
 
-Both stay identical whether the agent is self-hosted or driven by a managed cloud.
-
-## Repository Structure
-
-```text
-sellerclaw-agent/
-├── sellerclaw_agent/       # Python package (CLI, server, cloud client, bundle renderer)
-├── admin-ui/               # Vue 3 admin SPA (manifest viewer/editor, sign-in)
-├── agent_resources/        # OpenClaw config templates used by the bundle renderer
-├── runtime/                # Dockerfile for the combined OpenClaw + agent image
-├── tests/                  # unit + contract tests
-├── docs/                   # CLI, protocol, contracts, developer notes
-├── docker-compose.yml      # local stack (server + admin-ui)
-├── Makefile                # common tasks
-├── pyproject.toml          # Python package metadata
-└── setup.sh                # one-shot onboarding script
-```
+See the [cloud connection protocol](docs/connection-protocol.md) and the [agent manifest contract](docs/contracts/agent-manifest.md) for the wire details.
 
 ## Tech Stack
 
 | Category | Technology |
 |---|---|
 | CLI | Python 3.12+, `rich`, `questionary`, `httpx` |
-| Agent server | FastAPI, uvicorn, Pydantic v2 |
+| Local control plane | FastAPI, uvicorn, Pydantic v2 |
 | Admin UI | Vue 3, Vite, TypeScript, axios |
-| Runtime | OpenClaw, Node.js 20, KasmVNC, Playwright, supervisord |
-| Tooling | Docker, Docker Compose, uv |
+| Agent runtime | OpenClaw, Node.js 20, KasmVNC, Playwright |
+| Process supervision | supervisord |
+| Packaging | Docker, Docker Compose |
+| Tooling | uv |
 | Quality | pytest, ruff, pyright |
+
+## Quick Start
+
+### Prerequisites
+
+- Docker + Docker Compose v2
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
+
+### Run locally
+
+```bash
+./setup.sh
+```
+
+This checks Docker, installs Python dependencies, brings up the stack, and runs the interactive SellerClaw sign-in — all in one step.
+
+After startup:
+
+- Local control plane: `http://localhost:8001`
+- Admin UI: `http://localhost:5174/admin/`
+
+For installation details, environment profiles, and CLI usage, see [CLI reference](docs/cli.md).
+
+## Repository Structure
+
+```text
+sellerclaw_agent/       # Python package (CLI, server, cloud client, bundle renderer)
+admin-ui/               # Vue 3 admin SPA (manifest viewer, sign-in)
+agent_resources/        # OpenClaw config templates used by the bundle renderer
+runtime/                # Dockerfile for the combined OpenClaw + agent image
+tests/                  # unit and contract tests
+docs/                   # public technical documentation
+docker-compose.yml      # local stack
+Makefile                # common tasks
+setup.sh                # one-shot onboarding script
+```
 
 ## Documentation
 
-Start with the documentation index at [`docs/README.md`](docs/README.md). Key pages by audience:
+Use the documentation based on what you want to do next:
 
-**For operators / self-hosters:**
+- **[CLI reference](docs/cli.md)** — install SellerClaw Agent, set up environment profiles, sign in, and run the day-to-day commands
+- **[Cloud connection protocol](docs/connection-protocol.md)** — how the agent pairs with the SellerClaw Cloud, heartbeats, pulls commands, and reports results
+- **[Agent manifest contract](docs/contracts/agent-manifest.md)** — the wire format the SellerClaw Cloud uses to configure the OpenClaw runtime
+- **[Admin UI guide](docs/developer/admin-ui.md)** — structure of the local admin SPA, its API surface, and how to extend it
 
-- [CLI reference](docs/cli.md) — install, env profiles, commands, troubleshooting.
-
-**For developers integrating with the agent:**
-
-- [Cloud connection protocol](docs/connection-protocol.md) — session lifecycle, commands, error handling.
-- [Agent manifest contract](docs/contracts/agent-manifest.md) — wire format and versioning.
-- [`agent-manifest-schema.json`](docs/contracts/agent-manifest-schema.json) — JSON Schema (source of truth).
-
-**For contributors to the agent itself:**
-
-- [Admin UI guide](docs/developer/admin-ui.md) — Vue 3 SPA structure, hot reload, API contract.
-- [Contributing guide](CONTRIBUTING.md) — workflow, tests, documentation expectations.
-- [Roadmap](ROADMAP.md) — public direction and good areas to contribute.
+A full index lives in [`docs/README.md`](docs/README.md).
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [roadmap](ROADMAP.md) for a sense of current priorities.
+Contributions are welcome. For details, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+SellerClaw Agent is part of a growing ecosystem, and community contributions help expand it with better onboarding, stronger runtime diagnostics, more resilient cloud pairing, and a cleaner local experience.
 
 When contributing, please:
 
-- keep changes compatible with the documented wire contract (manifest, protocol)
-- avoid importing the upstream SellerClaw monolith — the agent must stay independently installable
-- run `make lint` and `make test_unit` before opening a pull request
+- keep the agent independently installable — do not pull in the broader SellerClaw monolith
+- preserve the public wire contracts (manifest, connection protocol) or version them deliberately
 - update the relevant `docs/*` pages when public behavior changes
+- run `make lint` and `make test_unit` before opening a pull request
 
 ## Security
 
 If you believe you have found a vulnerability, please do **not** open a public GitHub issue. See [SECURITY.md](SECURITY.md) for the private reporting process.
 
-## About
+## About SellerAI
 
-SellerClaw Agent is developed by **SellerAI**, the team behind the broader SellerClaw product.
+SellerClaw Agent is developed by **SellerAI**, the team behind SellerClaw.
+
+SellerAI builds AI infrastructure for e-commerce. SellerClaw is the company's flagship product, available both as a hosted Cloud experience and — through this project — as a self-hosted runtime that keeps the agent on hardware the user controls.
+
+Learn more or get in touch:
 
 - SellerClaw: [sellerclaw.ai](https://sellerclaw.ai)
-- SellerAI: [sellerai.com](https://sellerai.com)
+- SellerAI website: [sellerai.com](https://sellerai.com)
 - Contact: [hello@sellerai.com](mailto:hello@sellerai.com)
 
 ## License
 
-`sellerclaw-agent` is available under the **Business Source License 1.1 (BSL 1.1)**. Self-hosting, modification, and non-production use are permitted. Offering the software as a hosted service to third parties is not allowed. The license converts to **Apache 2.0** on March 2, 2030.
+SellerClaw Agent is available under the **Business Source License 1.1 (BSL 1.1)**. Self-hosting, modification, and non-production use are permitted. Offering the software as a hosted service to third parties is not allowed. The license converts to **Apache 2.0** on March 2, 2030.
 
 See [LICENSE](LICENSE) for full terms.
