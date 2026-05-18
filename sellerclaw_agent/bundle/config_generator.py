@@ -42,11 +42,18 @@ _OPENCLAW_LITELLM_MAX_TOKENS = 8192
 _OPENCLAW_PDF_INPUT: tuple[str, ...] = ("text", "image")
 
 _ANTHROPIC_PASSTHROUGH_SUBPATH = "/anthropic"
-# Google's GenerativeAI SDK builds URLs as ``{base_url}/models/{model}:{action}`` —
-# the API version segment (``v1beta``) is NOT in the SDK's path template, it must
-# already be part of ``base_url``. Anthropic's SDK is opposite: it prepends
-# ``/v1/messages`` itself, so ``/anthropic`` (no version) is correct above.
-_GOOGLE_PASSTHROUGH_SUBPATH = "/gemini/v1beta"
+# OpenClaw's Google provider IGNORES the path component of ``models.providers.google.baseUrl``
+# and always builds the request URL with a hardcoded ``/gemini/models/{model}:{action}``
+# template appended to the host (empirically verified — not in docs). So the path we
+# put here doesn't reach OpenClaw's URL builder; it always becomes ``/gemini/...``.
+# The sellerclaw-api reverse proxy then rewrites ``/litellm/gemini/...`` →
+# ``/litellm/gemini-passthrough/...`` so the request lands on our custom LiteLLM
+# ``pass_through_endpoints`` entry whose ``target`` already embeds ``/v1beta``.
+# (See ``src/litellm_proxy/infra/views.py`` ``_GEMINI_PASSTHROUGH_*`` constants and
+# ``deploy/common/litellm/config.template.yaml`` ``/gemini-passthrough`` entry.)
+# Value here exists for ``baseUrl`` construction only — pick anything that ends in
+# a literal Google-ish path so the configured URL stays self-documenting.
+_GOOGLE_PASSTHROUGH_SUBPATH = "/gemini"
 
 _PDF_ANTHROPIC_MODEL_ID = "claude-sonnet-4-6"
 _PDF_ANTHROPIC_MODEL_NAME = "Claude Sonnet 4.6"
