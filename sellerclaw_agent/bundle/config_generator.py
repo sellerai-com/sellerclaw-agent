@@ -42,7 +42,11 @@ _OPENCLAW_LITELLM_MAX_TOKENS = 8192
 _OPENCLAW_PDF_INPUT: tuple[str, ...] = ("text", "image")
 
 _ANTHROPIC_PASSTHROUGH_SUBPATH = "/anthropic"
-_GOOGLE_PASSTHROUGH_SUBPATH = "/gemini"
+# Google's GenerativeAI SDK builds URLs as ``{base_url}/models/{model}:{action}`` —
+# the API version segment (``v1beta``) is NOT in the SDK's path template, it must
+# already be part of ``base_url``. Anthropic's SDK is opposite: it prepends
+# ``/v1/messages`` itself, so ``/anthropic`` (no version) is correct above.
+_GOOGLE_PASSTHROUGH_SUBPATH = "/gemini/v1beta"
 
 _PDF_ANTHROPIC_MODEL_ID = "claude-sonnet-4-6"
 _PDF_ANTHROPIC_MODEL_NAME = "Claude Sonnet 4.6"

@@ -538,19 +538,19 @@ def _generate_default_config(
         pytest.param(
             "http://litellm",
             "http://litellm/anthropic",
-            "http://litellm/gemini",
+            "http://litellm/gemini/v1beta",
             id="no-trailing-slash",
         ),
         pytest.param(
             "http://litellm/",
             "http://litellm/anthropic",
-            "http://litellm/gemini",
+            "http://litellm/gemini/v1beta",
             id="trailing-slash-stripped",
         ),
         pytest.param(
             "https://host.example.com/litellm",
             "https://host.example.com/litellm/anthropic",
-            "https://host.example.com/litellm/gemini",
+            "https://host.example.com/litellm/gemini/v1beta",
             id="subpath-host",
         ),
     ],
