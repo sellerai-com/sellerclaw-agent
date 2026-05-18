@@ -1,6 +1,6 @@
 ---
 name: source-products
-description: "Source new products from connected suppliers and manage the SellerClaw catalog: find candidates at a supplier, save them as catalog items, list or fetch what's already in the catalog, edit catalog metadata (price, title, attributes), or remove items. Use when the owner says 'find me products to sell', 'add this to the catalog', 'what's in our catalog', 'update the catalog', 'remove from catalog', or any task involving the product catalog itself. For storefront listings use `store-products`."
+description: "Source new products from connected suppliers OR record user-defined products, and manage the SellerClaw catalog: find candidates at a supplier, save them as catalog items (with or without supplier binding), list or fetch what's already in the catalog, edit catalog metadata (price, title, attributes), or remove items. Use when the owner says 'find me products to sell', 'add this to the catalog', 'add my own product', 'create a product without a supplier', 'what's in our catalog', 'update the catalog', 'remove from catalog', or any task involving the product catalog itself. For storefront listings use `store-products`."
 ---
 
 # Source products
@@ -8,14 +8,23 @@ description: "Source new products from connected suppliers and manage the Seller
 This skill covers two linked concerns:
 
 1. **Sourcing** — ask the **`supplier`** subagent (via the **`supplier-search`** skill) to search and pick products at a connected supplier (e.g. CJ Dropshipping).
-2. **Catalog work** — save sourced candidates to the SellerClaw DB (`agent-products batch-create`) and manage rows there (list / get / patch).
+2. **Catalog work** — save sourced candidates **or** owner-supplied products to the SellerClaw DB (`agent-products batch-create`) and manage rows there (list / get / patch).
 
 Without a catalog row no storefront publishing is possible — `store-products` reads catalog **`product_id`**s.
+
+## Two creation modes
+
+A catalog row can be created in one of two ways:
+
+- **Supplier-bound** (dropshipping) — the row carries **`supplier_id`** / **`supplier_provider`** / **`supplier_product_id`** that came from a real **`supplier`** subagent run. Periodic stock/price sync watches the supplier and pushes updates to live listings.
+- **Supplier-less** (user-defined) — the owner is selling their own goods (handmade, locally produced, white-label inventory, etc.). All three **`supplier_*`** keys are **omitted**, the product is created with whatever name / variations / prices the owner provides, and no supplier polling runs for that row. Stock and price stay exactly as written until the owner edits them.
+
+Both modes go through the same **`agent-products batch-create`** endpoint — the only difference is whether you send the **`supplier_*`** keys.
 
 ## Scope (what this skill is NOT)
 
 - **Not for storefront / listing work.** Publish, edit, remove, inspect listings → **`store-products`**.
-- **Cannot create catalog rows from scratch.** Real **`supplier_id`** / **`supplier_provider`** / **`supplier_product_id`** / **`supplier_variant_id`** must come from a real **`supplier`** subagent run. Never invent them.
+- **Supplier-bound rows must use real ids.** When creating a supplier-bound row, never invent **`supplier_id`** / **`supplier_provider`** / **`supplier_product_id`** / **`supplier_variant_id`** — they come from a real **`supplier`** subagent run.
 - **Pricing and variation structure are fixed at create time.** `patch` cannot change supplier binding, variations, prices, or stock — recreate the product instead.
 
 ---
@@ -75,27 +84,29 @@ You **do not** run supplier searches yourself — delegate to the **`supplier`**
 
 **Per item (`ProductCreate`):**
 
-- **`supplier_id`** (required, UUID) — connected supplier account.
-- **`supplier_provider`** (required, string) — provider code, e.g. **`cj`**.
-- **`supplier_product_id`** (required, string) — supplier-side product id.
+- **`supplier_id`** (optional, UUID) — connected supplier account. **All-or-nothing with the other two `supplier_*` keys.** Omit for supplier-less rows.
+- **`supplier_provider`** (optional, string) — provider code, e.g. **`cj`**. Omit for supplier-less rows.
+- **`supplier_product_id`** (optional, string) — supplier-side product id. Omit for supplier-less rows.
 - **`name`** (required) — canonical product name.
 - **`description`** (required) — canonical description.
 - **`category`** (required) — taxonomy path.
 - **`images`** (optional, `string[]`) — strongly recommended; downstream listings reject products without images.
 - **`variations`** (required, array, ≥ 1) — see below.
 
+The three **`supplier_*`** keys are validated together: send all three or none. Sending only some (e.g. only **`supplier_provider`**) fails validation with HTTP 422.
+
 **Per variation (`ProductVariationCreate`):**
 
-- **`supplier_variant_id`** (required) — supplier-side variant id.
+- **`supplier_variant_id`** (required) — variant key. For supplier-bound rows this is the supplier-side variant id; for supplier-less rows it is any unique internal string per product (e.g. **`var-1`**, **`var-2`**). Must be unique among the variations of the product.
 - **`sku`** (required) — internal SKU.
 - **`name`** (required) — variant label (e.g. `Default`, `Red / M`).
-- **`available_quantity`** (required, integer ≥ 0) — supplier stock.
-- **`purchase_price`** (required, decimal string) — supplier unit cost.
-- **`shipping_cost`** (required, decimal string) — supplier shipping for the target market.
+- **`available_quantity`** (required, integer ≥ 0) — on-hand stock.
+- **`purchase_price`** (required, decimal string) — unit cost. For supplier-less rows: the owner's cost basis (use **`"0"`** if they don't track one).
+- **`shipping_cost`** (required, decimal string) — shipping cost for the target market; **`"0"`** if not applicable.
 - **`attributes`** (optional, `{string: string}`) — option map.
 - **`images`** (optional, `string[]`) — variant-specific images.
 
-**Example:**
+**Example (supplier-bound, dropshipping):**
 
 ```bash
 sellerclaw agent-products batch-create --json-body '{
@@ -117,6 +128,43 @@ sellerclaw agent-products batch-create --json-body '{
           "available_quantity": 50,
           "purchase_price": "4.20",
           "shipping_cost": "2.80"
+        }
+      ]
+    }
+  ]
+}'
+```
+
+**Example (supplier-less, user-defined product):**
+
+Omit all three **`supplier_*`** keys. Use any unique internal string for **`supplier_variant_id`** per variation.
+
+```bash
+sellerclaw agent-products batch-create --json-body '{
+  "items": [
+    {
+      "name": "Handmade Ceramic Mug",
+      "description": "300ml, fired locally, dishwasher-safe.",
+      "category": "homeware",
+      "images": ["https://..."],
+      "variations": [
+        {
+          "supplier_variant_id": "var-1",
+          "sku": "MUG-WHITE",
+          "name": "White",
+          "attributes": {"color": "white"},
+          "available_quantity": 12,
+          "purchase_price": "6.50",
+          "shipping_cost": "0"
+        },
+        {
+          "supplier_variant_id": "var-2",
+          "sku": "MUG-BLUE",
+          "name": "Blue",
+          "attributes": {"color": "blue"},
+          "available_quantity": 8,
+          "purchase_price": "6.50",
+          "shipping_cost": "0"
         }
       ]
     }
@@ -172,15 +220,17 @@ Returns the full **`Product`** with **`variations[]`** (see *Catalog entities* a
 
 ## Guardrails
 
-- Never invent **`supplier_*`** ids — they come from a real **`supplier`** subagent run via **`supplier-search`**.
-- Never send **`purchase_price`** / **`shipping_cost`** as **`0`** or made-up values.
-- **`batch-create`** is all-or-nothing — validate every required field before sending.
+- For supplier-bound rows: never invent **`supplier_*`** ids — they come from a real **`supplier`** subagent run via **`supplier-search`**.
+- For supplier-bound rows: never send **`purchase_price`** / **`shipping_cost`** as **`0`** or made-up values — they drive listing prices and are taken from the supplier quote.
+- For supplier-less rows: **`purchase_price`** / **`shipping_cost`** can be **`"0"`** if the owner does not track a cost basis, but warn them that any margin-driven listing price will then equal margin only.
+- **`supplier_*`** keys are all-or-nothing — sending some but not all triggers HTTP 422.
+- **`batch-create`** is all-or-nothing within a single item — validate every required field before sending.
 - Use **`sellerclaw describe <operation_id>`** only when (a) a CLI validation error is unclear, or (b) you need a field not listed in this SKILL or in `references/data-model.md`.
 
 ## Failure handling
 
 - **Validation error** on **`batch-create`** / **`patch`** → report exact field paths the CLI rejected; fix and resend.
-- **Supplier binding unknown / incomplete** → STOP and run **`supplier-search`** first; do not call **`batch-create`** with placeholder ids.
+- **Supplier-bound row, but supplier binding unknown / incomplete** → STOP and run **`supplier-search`** first; do not call **`batch-create`** with placeholder ids. If the owner explicitly says "this is my own product, no supplier", switch to the supplier-less flow instead.
 
 ---
 

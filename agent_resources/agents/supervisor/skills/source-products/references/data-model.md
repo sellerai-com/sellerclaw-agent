@@ -7,9 +7,9 @@
 | --------------------- | ---------------------------- | ------------------------------------------------------------------------------------- |
 | `id`                  | uuid                         | Primary identifier. Pass as `product_id` everywhere.                                  |
 | `user_id`             | uuid                         | Owning workspace user.                                                                |
-| `supplier_id`         | uuid                         | Connected supplier account. Resolve via `sellerclaw agent-context list-integrations`. |
-| `supplier_provider`   | string                       | Provider code, e.g. `cj`.                                                             |
-| `supplier_product_id` | string                       | Supplier-side product id.                                                             |
+| `supplier_id`         | uuid \| null                 | Connected supplier account, or `null` for supplier-less (user-defined) products.      |
+| `supplier_provider`   | string \| null               | Provider code, e.g. `cj`. `null` for supplier-less products.                          |
+| `supplier_product_id` | string \| null               | Supplier-side product id. `null` for supplier-less products.                          |
 | `name`                | string                       | Canonical product name.                                                               |
 | `description`         | string                       | Canonical description.                                                                |
 | `images`              | string[]                     | Image URLs (first = hero).                                                            |
@@ -27,7 +27,7 @@
 
 | Field                 | Type               | Notes                                                    |
 | --------------------- | ------------------ | -------------------------------------------------------- |
-| `supplier_variant_id` | string             | Supplier-side variant id.                                |
+| `supplier_variant_id` | string             | Supplier-side variant id for supplier-bound rows; an internal unique key per variation for supplier-less rows. |
 | `sku`                 | string             | Internal SKU.                                            |
 | `name`                | string             | Variant label.                                           |
 | `images`              | string[]           | Variant-specific images (may be empty).                  |
@@ -41,11 +41,17 @@
 
 ## Create request — `batch-create`
 
-Body: `{"items": ProductCreate[]}`. One batch call is all-or-nothing.
+Body: `{"items": ProductCreate[]}`. One batch call is all-or-nothing **per item**.
 
-`ProductCreate` required: `supplier_id` (uuid), `supplier_provider` (string), `supplier_product_id` (string), `name`, `description`, `category`, `variations` (`ProductVariationCreate[]`, ≥1). Optional: `images` (`string[]`; strongly recommended, because downstream listings reject products without images).
+`ProductCreate` always required: `name`, `description`, `category`, `variations` (`ProductVariationCreate[]`, ≥1).
+
+Supplier binding (`supplier_id` uuid, `supplier_provider` string, `supplier_product_id` string) is **optional but all-or-nothing**: send all three for dropshipping rows, omit all three for user-defined rows. Sending some but not all → HTTP 422.
+
+Optional: `images` (`string[]`; strongly recommended, because downstream listings reject products without images).
 
 `ProductVariationCreate` required: `supplier_variant_id`, `sku`, `name`, `available_quantity` (integer ≥ 0), `purchase_price`, `shipping_cost` (numbers or decimal strings; server normalises to decimal strings). Optional: `images` (`string[]`), `attributes` (`{string: string}`).
+
+For supplier-less rows, `supplier_variant_id` is any unique internal string per variation (e.g. `var-1`, `var-2`) — uniqueness is checked within the product only.
 
 ---
 
@@ -64,9 +70,11 @@ Not editable via `patch`; tell the owner instead of sending:
 
 ## Common validation pitfalls
 
-- `supplier_`* must match an existing connected integration; a fabricated `supplier_id` can pass type validation and fail later.
+- `supplier_*` must match an existing connected integration when present; a fabricated `supplier_id` can pass type validation and fail later. To skip supplier binding entirely, omit **all three** `supplier_*` keys.
+- Sending only some `supplier_*` keys (e.g. just `supplier_provider`) fails with HTTP 422 — the three are validated as a tuple.
 - `images` accepts any URL string; the server does not validate that the URL resolves or is an image. A broken URL will surface later during channel publishing.
 - `status` enum is case-sensitive and lower-case.
+- Supplier-less rows are **not** polled for stock/price by the periodic supplier sync — keep them in `active` only as long as the owner intends to honour the current `available_quantity` and `purchase_price`. Update via *recreate* when stock or price changes.
 
 ---
 

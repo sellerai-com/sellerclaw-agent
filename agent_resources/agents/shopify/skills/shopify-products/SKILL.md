@@ -9,13 +9,13 @@ description: "Manage Shopify products and listings on the connected Shopify stor
 
 ## Scope
 
-This skill **cannot create products from scratch.** New product records require **supplier binding** and are produced by other agents/skills (catalog / supplier side). What this skill can do:
+This skill **cannot create products from scratch in this session.** New product records must first exist as **internal SellerClaw catalog rows** — they are produced by the catalog/supplier side (either supplier-bound or owner-supplied / supplier-less). What this skill can do:
 
 - **Read** what is on the Shopify storefront (overview / specific lookup).
-- **Publish** an **already-existing internal SellerClaw catalog product** (i.e. a row already supplier-bound in our DB) as a Shopify listing.
+- **Publish** an **already-existing internal SellerClaw catalog product** (supplier-bound **or** supplier-less) as a Shopify listing.
 - **Edit / sync / delete** Shopify products that already exist on Shopify (stock, price, attributes, visibility).
 
-If a task asks for a brand-new product that does not yet have an internal catalog row, **stop and route to the catalog/supplier skill** — do not bypass this rule with raw Shopify create commands.
+If a task asks for a brand-new product that does not yet have an internal catalog row, **stop and route to the catalog skill** (which handles both supplier-bound and supplier-less creation) — do not bypass this rule with raw Shopify create commands.
 
 Pick the section by **task intent** below.
 
@@ -107,7 +107,7 @@ The internal ↔ Shopify mapping lives in **draft listings** — see *publish ex
 
 ## If you need to publish an existing internal catalog product as a Shopify listing
 
-**When:** an internal SellerClaw catalog product (already in DB, already supplier-bound) needs to appear as a live Shopify product.
+**When:** an internal SellerClaw catalog product (already in DB — supplier-bound **or** supplier-less) needs to appear as a live Shopify product.
 
 **Two sequential commands** — drafts first, then publish.
 
@@ -117,7 +117,7 @@ The internal ↔ Shopify mapping lives in **draft listings** — see *publish ex
 
 **Body parameters:**
 
-- `product_ids` (required, array of string UUIDs) — **internal SellerClaw catalog product ids** that should gain a draft listing for this Shopify channel. **Must already exist in our DB.** If a caller gives you something that doesn't, stop and route to the catalog skill.
+- `product_ids` (required, array of string UUIDs) — **internal SellerClaw catalog product ids** that should gain a draft listing for this Shopify channel. **Must already exist in our DB** (supplier-bound or supplier-less is both fine). If a caller gives you something that doesn't, stop and route to the catalog skill.
 - `product_type` (optional, string, default `null`) — Shopify `product_type` to force on the draft (taxonomy override). `null` = use default.
 
 **Response per item:** `results[].listing` with:

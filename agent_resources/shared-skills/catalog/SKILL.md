@@ -21,6 +21,8 @@ sellerclaw agent-products get <product_id>
 
 Key fields: `id`, `name`, `description`, `images`, `category`, `status`, `variations[]` (each: `sku`, `attributes`, `available_quantity`, `purchase_price`, `shipping_cost`, `supplier_variant_id`).
 
+Supplier binding (`supplier_id`, `supplier_provider`, `supplier_product_id`) is **optional** — it is set together for dropshipping products sourced from a connected supplier, and is `null` for user-defined products created without a supplier. `--supplier-provider` filters to supplier-bound rows for a specific provider; omit to see everything.
+
 `status`: `sourced` (saved, not published) | `active` (published) | `archived` (retired).
 
 ## Listings (live on a store)

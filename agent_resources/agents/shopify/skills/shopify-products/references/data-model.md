@@ -69,7 +69,7 @@ Per item:
 
 ### Request `ShopifyListingCreateRequest`
 
-- **`product_ids`** — Internal SellerClaw catalog products that should gain **draft listing** shells for this Shopify channel.
+- **`product_ids`** — Internal SellerClaw catalog products that should gain **draft listing** shells for this Shopify channel. May reference supplier-bound or supplier-less catalog rows — the publish path is the same.
 - **`product_type`** — Optional Shopify **`product_type`** string forced onto the draft when taxonomy matters.
 
 **Body:** **`product_ids`** required.
@@ -98,7 +98,7 @@ Per item:
 ### `ShopifyListingVariantResponse`
 
 - **`product_variation_idx`** — Zero-based index of this variation inside the catalog product.
-- **`supplier_variant_id`** — Dropship/supplier variant key for reconciliation.
+- **`supplier_variant_id`** — Internal variation key. For supplier-bound catalog rows this is the supplier-side variant id used for reconciliation; for supplier-less rows it is an arbitrary unique-per-product string.
 - **`sku`** — SKU that will appear on Shopify for this variation.
 - **`sell_price`** — Decimal-string channel sell price computed before publish.
 - **`shopify_variant_id`** — Remote variant id after publish—`null` while still draft-only.

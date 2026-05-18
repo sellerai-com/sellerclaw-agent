@@ -22,12 +22,12 @@ You need the store's `id` (use as `store_id`) and `platform`.
 
 A product can be **published to a storefront only if it already exists as a row in the SellerClaw catalog DB**. There is **no path** that creates a brand-new product directly on the storefront.
 
-A catalog row, in turn, can be created **only from a real supplier-sourced product** at a connected supplier (e.g. CJ Dropshipping). The chain is fixed and lives in the **`source-products`** skill:
+A catalog row can be created in either of two ways — both live in the **`source-products`** skill:
 
-1. **Source + save to catalog** → run the **`source-products`** skill: it briefs the **`supplier`** subagent for sourcing and persists the result via **`agent-products batch-create`**, producing real catalog **`product_id`**s.
-2. **Publish** — only then use *Publish* below with those **`product_ids`**.
+1. **Supplier-bound** — brief the **`supplier`** subagent (via `source-products`) for sourcing, then persist with **`agent-products batch-create`** including the **`supplier_*`** keys.
+2. **Supplier-less** — the owner provides their own product copy/variations (handmade goods, white-label inventory, etc.); persist with **`agent-products batch-create`** with **`supplier_*`** keys omitted. No supplier polling will run for that row.
 
-If the owner names a product that has no DB row, **STOP** and route to **`source-products`** first — never improvise the chain or skip steps.
+Either way, you publish below with the resulting catalog **`product_id`**s. If the owner names a product that has no DB row, **STOP** and route to **`source-products`** first — never improvise the chain or skip steps.
 
 ## Publish
 
