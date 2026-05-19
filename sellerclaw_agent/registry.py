@@ -95,7 +95,20 @@ MARKETING_MANAGER_MODULE = AgentModuleDefinition(
             description="Connect Google Ads for autonomous campaign management",
         ),
     ),
-    tools_allow=("group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf"),
+    # Marketing produces ad creative on demand: needs image_generate / video_generate to
+    # mint marketing images, square crops, logos, and short hero videos for PMax / Meta ads
+    # when the catalog images don't satisfy platform asset minimums.
+    tools_allow=(
+        "group:fs",
+        "exec",
+        "process",
+        "web_fetch",
+        "web_search",
+        "browser",
+        "pdf",
+        "image_generate",
+        "video_generate",
+    ),
     tools_deny=(
         "group:sessions",
         "group:messaging",

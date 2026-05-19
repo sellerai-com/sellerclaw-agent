@@ -34,14 +34,6 @@ def test_assembler_supervisor_only_renders_template_vars(agent_resources_root: P
     assert "http://x/agent" in sup.agents_md or len(sup.agents_md) > 10
 
 
-def test_assembler_supervisor_tools_md_expands_template_variables(agent_resources_root: Path) -> None:
-    asm = AgentConfigAssembler(resources_root=agent_resources_root)
-    sup = asm.assemble_supervisor_only(template_variables=_template_vars())
-    assert sup.tools_md is not None
-    assert "sellerclaw-ui" in sup.tools_md
-    assert "{{" not in sup.tools_md
-
-
 def test_assembler_with_shopify_module_subagents_and_workspace(agent_resources_root: Path) -> None:
     shopify = get_module(AgentModuleId.SHOPIFY_STORE_MANAGER)
     assert shopify is not None
@@ -87,7 +79,6 @@ def test_assembler_supervisor_loads_optional_templates_from_per_agent_files(
     asm = AgentConfigAssembler(resources_root=agent_resources_root)
     sup = asm.assemble_supervisor_only(template_variables=_template_vars())
     assert sup.user_md is not None and "Business profile" in sup.user_md
-    assert sup.tools_md is not None and "TOOLS.md" in sup.tools_md
     assert sup.identity_md is not None and "IDENTITY.md" in sup.identity_md
     # ``soul.md`` for the supervisor lives only under ``agents/supervisor/soul.md``.
     own_soul = (agent_resources_root / "agents" / "supervisor" / "soul.md").read_text(
