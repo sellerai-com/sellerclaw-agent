@@ -99,17 +99,17 @@ Optional: `status` (defaults `PAUSED`).
 
 ### AdCreativeSchema
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | string | Set after creation |
-| `title` | string | Headline |
-| `body` | string | Primary text |
-| `image_url` | string \| null | Hosted image URL or upload result |
-| `video_url` | string \| null | Hosted video URL |
-| `call_to_action` | string | `SHOP_NOW`, `LEARN_MORE`, `SIGN_UP`, … |
-| `link_url` | string | Destination URL |
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `id` | — | string | Set after creation |
+| `title` | yes | string | Headline; ≤40 chars recommended |
+| `body` | yes | string | Primary text; ≤125 chars before "See more" |
+| `image_url` | one of | string \| null | HTTPS; 1080×1080 (1:1) or 1080×1350 (4:5) min |
+| `video_url` | one of | string \| null | HTTPS; MP4/MOV; ≤4 GB; ≤15 min |
+| `call_to_action` | yes | string | Enum: `SHOP_NOW`, `LEARN_MORE`, `SIGN_UP`, `SUBSCRIBE`, `DOWNLOAD`, … |
+| `link_url` | yes | string | HTTPS destination |
 
-`list-creatives` returns these fields (subset) for analysis and creative-refresh planning.
+Either `image_url` or `video_url` is required (exactly one is the usual case). `list-creatives` returns these fields (subset) for analysis and creative-refresh planning.
 
 ---
 

@@ -47,7 +47,18 @@ Optional:
 }
 ```
 
-Required: **`name`**, **`final_url`**. Other arrays are optional but Google requires reasonable variety for PMax to ship — supply at least 3 headlines and 1 description.
+Schema-level required: **`name`**, **`final_url`**.
+
+**Agent-enforced minimums** (the proxy accepts under-spec input and produces a broken campaign — always validate before sending):
+
+| Field | Min | Max | Per-item limit |
+|---|---|---|---|
+| `headlines` | 5 | 15 | ≤30 chars, unique |
+| `descriptions` | 3 | 5 | ≤90 chars (one ≤60 recommended) |
+| `image_urls` | 2 | 20 | ≥1 landscape (1.91:1) + ≥1 square (1:1), HTTPS |
+| `logo_urls` | 1 | 5 | ≥1 square (1:1, 1200×1200), HTTPS |
+| `name` | 1 | 1 | ≤80 chars; keep ≤25 if used as business name |
+| `final_url` | 1 | 1 | HTTPS, must match advertised domain |
 
 ### `patch-campaign` body — `PatchGoogleCampaignRequest`
 
