@@ -200,6 +200,73 @@ describe("inspectAccount", () => {
   });
 });
 
+describe("messaging.targetResolver", () => {
+  /**
+   * Regression for the "Unknown target sellerclaw-ui:direct:<uuid>" failure
+   * mode: OpenClaw's outbound target resolver
+   * (``infra/outbound/target-resolver.ts``) only treats an address as an
+   * opaque id when the plugin's ``messaging.targetResolver.looksLikeId``
+   * returns true; without it the resolver falls into a directory lookup,
+   * gets an empty list (we don't ship one), and raises ``Unknown target``
+   * even though the address belongs to the very session that just dispatched
+   * the inbound. The agent then burns its message-tool retries and the chat
+   * UI surfaces a ``Message failed`` badge.
+   */
+  type PluginWithMessaging = {
+    messaging: {
+      inferTargetChatType: (params: { to: string }) => string | undefined;
+      targetResolver: {
+        hint: string;
+        looksLikeId: (raw: string) => boolean;
+      };
+    };
+  };
+  const messaging = (sellerclawUiChannelPlugin as unknown as PluginWithMessaging).messaging;
+
+  it("accepts the canonical sellerclaw-ui:direct:<uuid> address as an opaque target id", () => {
+    expect(
+      messaging.targetResolver.looksLikeId(
+        "sellerclaw-ui:direct:9ced2cbb-33a8-4284-b021-4eb77e2b6d81",
+      ),
+    ).toBe(true);
+  });
+
+  it("tolerates surrounding whitespace produced by sloppy agent input", () => {
+    expect(
+      messaging.targetResolver.looksLikeId(
+        "  sellerclaw-ui:direct:9ced2cbb-33a8-4284-b021-4eb77e2b6d81\n",
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects look-alike strings that the resolver must NOT treat as ids", () => {
+    // Wrong channel prefix.
+    expect(messaging.targetResolver.looksLikeId("telegram:direct:abc")).toBe(false);
+    // Right channel, wrong kind segment.
+    expect(
+      messaging.targetResolver.looksLikeId(
+        "sellerclaw-ui:group:9ced2cbb-33a8-4284-b021-4eb77e2b6d81",
+      ),
+    ).toBe(false);
+    // Right shape, non-UUID id (we explicitly disambiguate on UUID to avoid
+    // accepting random user input that happens to share the prefix).
+    expect(messaging.targetResolver.looksLikeId("sellerclaw-ui:direct:not-a-uuid")).toBe(false);
+  });
+
+  it("infers ``direct`` chat type for valid addresses and undefined otherwise", () => {
+    expect(
+      messaging.inferTargetChatType({
+        to: "sellerclaw-ui:direct:9ced2cbb-33a8-4284-b021-4eb77e2b6d81",
+      }),
+    ).toBe("direct");
+    expect(messaging.inferTargetChatType({ to: "sellerclaw-ui:group:x" })).toBeUndefined();
+  });
+
+  it("exposes a hint string so error reports tell the operator the expected shape", () => {
+    expect(messaging.targetResolver.hint).toMatch(/sellerclaw-ui:direct:/);
+  });
+});
+
 describe("status", () => {
   const status = (sellerclawUiChannelPlugin as PluginWithStatus).status;
 

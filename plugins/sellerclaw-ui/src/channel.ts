@@ -64,10 +64,26 @@ export function resolveSellerclawUiAccount(
  * Returns null if the format doesn't match.
  */
 export function extractChatIdFromAddress(address: string): string | null {
-  const m = address.match(
-    /^sellerclaw-ui:direct:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
-  );
+  const m = address.match(SELLERCLAW_UI_DIRECT_TARGET_RE);
   return m?.[1] ?? null;
+}
+
+/**
+ * Address shape this plugin uses for direct chats:
+ * ``sellerclaw-ui:direct:<uuid>``. The ``message`` tool's default target (no
+ * explicit ``to`` from the agent) is resolved from the active session's
+ * inbound address — that string matches this regex, but OpenClaw's generic
+ * ``looksLikeTargetId`` only accepts ``channel:|group:|user:|@|#`` prefixes
+ * out of the box. Without a channel-specific resolver the runtime drops into
+ * directory lookup (we don't expose a directory) and raises ``Unknown
+ * target`` even though the address is internally valid. Surfaced as
+ * ``messaging.targetResolver.looksLikeId`` below.
+ */
+export const SELLERCLAW_UI_DIRECT_TARGET_RE =
+  /^sellerclaw-ui:direct:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+export function looksLikeSellerclawUiTarget(raw: string): boolean {
+  return SELLERCLAW_UI_DIRECT_TARGET_RE.test(raw.trim());
 }
 
 export function resolveSessionKey(params: Record<string, unknown>): string | null {
@@ -263,6 +279,38 @@ const sellerclawUiChatPlugin = createChatChannelPlugin<ScwUiAccount>({
 
 export const sellerclawUiChannelPlugin = {
   ...sellerclawUiChatPlugin,
+  /**
+   * OpenClaw's outbound target resolver (``infra/outbound/target-resolver.ts``)
+   * uses three messaging hooks to turn the agent's free-form ``to`` argument
+   * — or the session's default inbound address when ``to`` is omitted — into
+   * a concrete delivery target:
+   *
+   *   - ``inferTargetChatType``: picks the directory ``kind`` (``user`` /
+   *     ``group`` / ``channel``). We always run as direct DMs, so ``"direct"``.
+   *   - ``targetResolver.looksLikeId``: declares a raw address as a valid
+   *     opaque id so the resolver skips its directory-lookup branch (we don't
+   *     publish a peer/group directory — every chat is identified by the
+   *     ``chat_id`` UUID baked into the address).
+   *   - ``targetResolver.hint``: human-readable hint surfaced in
+   *     ``Unknown target`` / ``Ambiguous target`` errors when a malformed
+   *     address still gets through.
+   *
+   * Without ``looksLikeId`` the resolver falls through to a directory query,
+   * gets an empty list, and raises ``Unknown target
+   * "sellerclaw-ui:direct:<uuid>" for sellerclaw-ui`` — even though that
+   * address is exactly the one the active session is bound to. Symptom in
+   * the wild: the ``message`` tool throws on every call, the agent burns
+   * retries, and the failure surfaces as a ``Message failed`` badge stacked
+   * against the agent's text reply.
+   */
+  messaging: {
+    inferTargetChatType: ({ to }: { to: string }): "direct" | undefined =>
+      looksLikeSellerclawUiTarget(to) ? "direct" : undefined,
+    targetResolver: {
+      hint: "Expected sellerclaw-ui:direct:<chat_id-uuid>.",
+      looksLikeId: (raw: string) => looksLikeSellerclawUiTarget(raw),
+    },
+  },
   status: {
     defaultRuntime: {
       running: true,
