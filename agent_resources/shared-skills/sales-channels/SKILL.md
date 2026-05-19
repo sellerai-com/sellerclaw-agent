@@ -31,18 +31,16 @@ A **sales channel** is a user's online store on a marketplace platform (Shopify,
 sellerclaw agent-sales-channels list-for-user
 ```
 
-**Filter by platform (e.g. only Shopify)** — pass the `platform` query. Prefer the typed subcommand (see `list-for-user --help` for the exact flag name, typically `--platform`):
+**Filter by platform (e.g. only Shopify)** — pass the `platform` query (always lowercase, matches the API: `shopify`, `ebay`, …):
 
 ```bash
 sellerclaw agent-sales-channels list-for-user --platform shopify
 ```
 
-Values match the API (e.g. `shopify`, `ebay`).
-
-**Active only** — default is **active-only** channels. To include inactive or credential-invalid rows:
+**Status filter** — repeat `--status` for multiple values (e.g. include accounts that need credential refresh):
 
 ```bash
-sellerclaw agent-sales-channels list-for-user --active_only=false
+sellerclaw agent-sales-channels list-for-user --status active --status credentials_invalid
 ```
 
 **One row by id** — pass the UUID as a **positional** argument:

@@ -6,7 +6,7 @@
 
 ## Subagents you coordinate
 
-Each subagent runs in its own session — delegate, track, and synthesize for the owner. The available skills list (`<available_skills>`) is your authoritative catalog; this file only tells you **which subagent owns which integration class**:
+Each subagent runs in its own session — delegate, track, and synthesize for the owner. The available skills list (`<available_skills>`) is your authoritative catalog; this file only tells you **which subagent owns which integration class** (pass the id verbatim as `agentId` to `sessions_spawn`):
 
 - `shopify` — Shopify storefronts (`shopify_store`)
 - `ebay` — eBay storefronts (`ebay_store`); future platforms (`amazon`, …) plug in the same way — pick by the channel's `platform`

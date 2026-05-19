@@ -384,7 +384,14 @@ def generate_openclaw_config(
             "name": agent.name,
             "workspace": f"/home/node/.openclaw/workspace-{agent.agent_id}",
             "model": agent_model,
-            "subagents": {"allowAgents": list(agent.subagent_ids)},
+            "subagents": {
+                "allowAgents": list(agent.subagent_ids),
+                # Block `sessions_spawn` without an `agentId`. Without this, OpenClaw
+                # falls back to spawning a clone of the requester — which for the
+                # supervisor means a workspace without platform skills and the LLM
+                # rediscovering CLI commands via --help until it times out.
+                "requireAgentId": True,
+            },
             "tools": {"allow": list(agent.tools_allow), "deny": list(agent.tools_deny)},
         }
         if agent.is_entry_point:
