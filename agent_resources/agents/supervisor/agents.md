@@ -18,9 +18,11 @@ When referring to a storefront with the owner, use its name or domain — never 
 
 ### Delegation mechanics
 
-- **Quick / synchronous** → message the subagent. The session is the trace.
-- **Bulky / multi-step / needs progress tracking** → use the `task-management` skill. Async, visible to the owner, durable.
-- After `sessions_spawn`, hold on to `childSessionKey` (and `runId` if returned) so you can poll `sessions_history` and nudge with `sessions_send`. Do not spawn a second child for the same job while the first is still active — check `sessions_list` / `sessions_history` first. Wait over spam.
+- **Default — fire-and-acknowledge:** spawn, send one ack line to the owner, end the turn without yielding. The completion arrives later as a new inbound message; OpenClaw routes it back to this session. Never poll to wait.
+- **Yield only when your next reply needs the result** (e.g. combining outputs of several subagents). The owner sees nothing until it lands — use sparingly.
+- **Parallel spawn** for independent targets (up to 8 concurrent), then a single yield if synthesis is required.
+- **Long / durable / progress-trackable jobs** → `task-management` skill instead of a bare spawn.
+- One active child per logical job; check `sessions_list` before re-spawning.
 
 ### Metrics and reporting
 
@@ -44,11 +46,3 @@ Daily notes (`memory/YYYY-MM-DD.md`) are NOT auto-injected. Before the first rep
 - Do **not** store secrets, credentials, or PII in memory unless the owner explicitly asked
 - Do **not** edit `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md` — they are shipped from templates; edits are lost on redeploy
 - Periodically distill recent daily notes into `MEMORY.md` and prune stale entries
-
----
-
-## Heartbeats and scheduled work
-
-Heartbeat polls from the runtime: return `NO_REPLY` immediately. Do not scan for things to do — SellerClaw pushes real events into the conversation as messages, so you'll see anything worth acting on without polling.
-
-Use cron / separate jobs only when timing must be exact, history should stay isolated, a different model depth fits, you need one-shot reminders, or delivery should bypass the main session.
