@@ -661,15 +661,17 @@ def test_generate_openclaw_config_video_generation_routes_through_google_passthr
     }
 
 
-def test_generate_openclaw_config_pdf_model_default_prefers_google_with_anthropic_fallback(
+def test_generate_openclaw_config_pdf_model_default_prefers_anthropic_with_gemini_fallback(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """Gemini is primary because OpenClaw's `google.baseUrl` override is explicitly
-    documented; Anthropic baseUrl override is implied but unverified, so it sits in the fallback."""
+    """Anthropic Sonnet is primary because it's stable (not Preview tier) and has a
+    cleaner structured-extraction track record on invoices/tables/multilingual docs.
+    Gemini Pro Preview sits in the fallback — useful for 1M-context outliers and as
+    a circuit-breaker if the Anthropic API is degraded."""
     defaults = _generate_default_config(make_assembled_agent)["agents"]["defaults"]
     assert defaults["pdfModel"] == {
-        "primary": "google/gemini-3.1-pro-preview",
-        "fallbacks": ["anthropic/claude-sonnet-4-6"],
+        "primary": "anthropic/claude-sonnet-4-6",
+        "fallbacks": ["google/gemini-3.1-pro-preview"],
     }
 
 
@@ -708,4 +710,4 @@ def test_generate_openclaw_config_model_name_prefix_does_not_leak_into_pdf_provi
     google_ids = {m["id"] for m in payload["models"]["providers"]["google"]["models"]}
     assert anthropic_ids == {"claude-sonnet-4-6"}
     assert google_ids == {"gemini-3.1-pro-preview", "veo-3.1-fast-generate-preview"}
-    assert payload["agents"]["defaults"]["pdfModel"]["primary"] == "google/gemini-3.1-pro-preview"
+    assert payload["agents"]["defaults"]["pdfModel"]["primary"] == "anthropic/claude-sonnet-4-6"

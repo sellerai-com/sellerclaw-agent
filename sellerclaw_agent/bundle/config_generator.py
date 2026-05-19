@@ -201,12 +201,13 @@ def _build_google_passthrough_provider(
 
 
 def _build_pdf_model_block() -> dict[str, object]:
-    """OpenClaw `agents.defaults.pdfModel`. Primary picks Gemini (whose baseUrl
-    override is explicitly documented for the Google provider); falls back to
-    Anthropic Sonnet (also through LiteLLM passthrough)."""
+    """OpenClaw `agents.defaults.pdfModel`. Primary picks Anthropic Sonnet (stable,
+    cleaner structured-extraction track record on invoices/tables/multilingual
+    docs); falls back to Gemini Pro (Preview tier — useful for 1M-context outliers
+    and as a circuit-breaker if Anthropic API is degraded)."""
     return {
-        "primary": f"google/{_PDF_GOOGLE_MODEL_ID}",
-        "fallbacks": [f"anthropic/{_PDF_ANTHROPIC_MODEL_ID}"],
+        "primary": f"anthropic/{_PDF_ANTHROPIC_MODEL_ID}",
+        "fallbacks": [f"google/{_PDF_GOOGLE_MODEL_ID}"],
     }
 
 
