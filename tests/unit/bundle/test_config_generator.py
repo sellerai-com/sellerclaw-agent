@@ -444,6 +444,60 @@ def test_generate_openclaw_config_system_runs_route_per_tier(
     assert entry_point_payload["heartbeat"]["model"] == expected_mini_ref
 
 
+def test_generate_openclaw_config_thinking_defaults_and_overrides(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Global default is `adaptive`; pure-executor subagents (shopify/ebay/supplier) opt out to `off`."""
+    assembled = [
+        make_assembled_agent(
+            agent_id=agent_id,
+            name=agent_id.capitalize(),
+            model_tier=ModelTier.SIMPLE,
+            is_entry_point=False,
+            subagent_ids=[],
+            tools_allow=[],
+            tools_deny=[],
+            agents_md=f"# {agent_id}",
+            memory_md=f"# m-{agent_id}",
+            soul_md=None,
+            user_md=None,
+            skills={},
+        )
+        for agent_id in ("shopify", "ebay", "supplier", "marketing", "scout")
+    ] + [
+        make_assembled_agent(
+            subagent_ids=["shopify", "ebay", "supplier", "marketing", "scout"],
+            tools_allow=["browser"],
+            agents_md="# hi",
+            memory_md="# m",
+            soul_md=None,
+            user_md=None,
+            skills={},
+        ),
+    ]
+    raw = generate_openclaw_config(
+        assembled_agents=assembled,
+        gateway_token="g",
+        hooks_token="h",
+        agent_api_key=_AGENT_API_KEY,
+        user_id=_USER_ID,
+        sellerclaw_api_url="http://api",
+        litellm_base_url="http://litellm",
+        litellm_api_key="k",
+        telegram_enabled=False,
+        telegram_bot_token="",
+        telegram_allowed_user_ids=(),
+        telegram_allowed_group_ids=(),
+    )
+    payload = json.loads(raw)
+    assert payload["agents"]["defaults"]["thinkingDefault"] == "adaptive"
+    by_id = {a["id"]: a for a in payload["agents"]["list"]}
+    for opted_out in ("shopify", "ebay", "supplier"):
+        assert by_id[opted_out]["thinkingDefault"] == "off", opted_out
+    for inherits_default in ("supervisor", "marketing", "scout"):
+        assert "thinkingDefault" not in by_id[inherits_default], inherits_default
+
+
 def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:

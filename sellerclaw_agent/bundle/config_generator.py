@@ -86,6 +86,10 @@ OPENCLAW_BUNDLE_REDACT_SENSITIVE = "tools"
 
 OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 30000
 
+# Pure-executor subagents whose work is API call → parse → return. Reasoning adds latency
+# and cost without changing outcomes here, so they opt out of the global adaptive default.
+_NO_THINKING_AGENT_IDS = frozenset({"shopify", "ebay", "supplier"})
+
 # Local sellerclaw-agent HTTP port inside the runtime container; plugins call back to it
 # via loopback for media upload proxying. Kept as a module constant so bundle tests can
 # assert the emitted config.
@@ -386,6 +390,8 @@ def generate_openclaw_config(
         if agent.is_entry_point:
             payload["default"] = True
             payload["heartbeat"] = {"model": mini_primary}
+        if agent.agent_id in _NO_THINKING_AGENT_IDS:
+            payload["thinkingDefault"] = "off"
         agents_list.append(payload)
 
     sellerclaw_ui_plugin_config: dict[str, object] = {
@@ -467,7 +473,7 @@ def generate_openclaw_config(
                 "imageGenerationModel": {"primary": image_primary},
                 "videoGenerationModel": {"primary": video_primary},
                 "pdfModel": _build_pdf_model_block(),
-                "thinkingDefault": "off",
+                "thinkingDefault": "adaptive",
                 "blockStreamingDefault": "on",
                 "blockStreamingChunk": {
                     "minChars": 100,
