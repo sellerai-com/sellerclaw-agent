@@ -1,27 +1,22 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable
 from typing import Any
-from uuid import UUID
 
 import pytest
 from sellerclaw_agent.server.schemas import SaveManifestRequest
+from sellerclaw_agent.test_manifest_fixtures import load_manifest_v2_mapping
 
 
 @pytest.fixture()
 def make_manifest_data() -> Callable[..., dict[str, Any]]:
-    """Factory for the raw dict accepted by ``POST /manifest``."""
+    """Factory for the generic v2 dict accepted by ``POST /manifest``."""
 
     def _factory(**overrides: Any) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "user_id": "11111111-1111-4111-8111-111111111111",
-            "litellm_base_url": "http://litellm",
-            "litellm_api_key": "k",
-            "template_variables": {},
-            "agent_api_base_path": "/agent",
-            "enabled_modules": [],
-            "connected_integrations": [],
-        }
+        data = copy.deepcopy(load_manifest_v2_mapping())
+        # Tests assert on a stable user_id; pin it to the canonical unit-test UUID.
+        data["user_id"] = "11111111-1111-4111-8111-111111111111"
         data.update(overrides)
         return data
 
@@ -30,19 +25,12 @@ def make_manifest_data() -> Callable[..., dict[str, Any]]:
 
 @pytest.fixture()
 def make_save_manifest_request() -> Callable[..., SaveManifestRequest]:
-    """Factory for ``SaveManifestRequest`` Pydantic objects."""
+    """Factory for ``SaveManifestRequest`` Pydantic objects (generic v2 shape)."""
 
     def _factory(**overrides: Any) -> SaveManifestRequest:
-        defaults: dict[str, Any] = {
-            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
-            "litellm_base_url": "http://litellm",
-            "litellm_api_key": "k",
-            "template_variables": {"x": "y"},
-            "agent_api_base_path": "/agent",
-            "enabled_modules": [],
-            "connected_integrations": [],
-        }
-        defaults.update(overrides)
-        return SaveManifestRequest(**defaults)
+        data = copy.deepcopy(load_manifest_v2_mapping())
+        data["user_id"] = "11111111-1111-4111-8111-111111111111"
+        data.update(overrides)
+        return SaveManifestRequest.model_validate(data)
 
     return _factory

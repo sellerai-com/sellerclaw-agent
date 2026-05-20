@@ -170,10 +170,13 @@ def test_post_manifest_bundle_validation_400(
     client: TestClient,
     make_manifest_data: Callable[..., dict[str, Any]],
 ) -> None:
-    bad = make_manifest_data(connected_integrations=["not_a_valid_kind"])
+    # Pydantic accepts the shape (llm/agents are loosely typed), but the deeper
+    # ``bundle_manifest_from_mapping`` parse rejects a missing text_model.primary.
+    bad = make_manifest_data()
+    bad["llm"] = {**bad["llm"], "text_model": {}}
     response = client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=bad)
     assert response.status_code == 400
-    assert "not_a_valid_kind" in response.json()["detail"]
+    assert "text_model.primary" in response.json()["detail"]
 
 
 def test_get_manifest_empty_returns_404(client: TestClient) -> None:
@@ -198,7 +201,7 @@ def test_get_manifest_after_save_returns_content(
     assert body["manifest"]["user_id"] == "11111111-1111-4111-8111-111111111111"
     assert "gateway_token" not in body["manifest"]
     assert "hooks_token" not in body["manifest"]
-    assert body["manifest"]["litellm_base_url"] == "http://litellm"
+    assert body["manifest"]["llm"]["groups"]["litellm"]["base_url"].endswith("/litellm")
 
 
 def test_get_manifest_strips_tokens_if_reintroduced_on_disk(
@@ -224,7 +227,7 @@ def test_post_manifest_validation_422_when_required_field_missing(
     make_manifest_data: Callable[..., dict[str, Any]],
 ) -> None:
     payload = make_manifest_data()
-    del payload["litellm_base_url"]
+    del payload["agents"]
     assert client.post("/manifest", headers=_CONTROL_PLANE_AUTH, json=payload).status_code == 422
 
 

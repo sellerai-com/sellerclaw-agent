@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 import {
   enqueueSend,
+  postWebhookMediaMessage,
   postWebhookMessage,
   resolveOutboundExtId,
   resolveOutboundMediaUrl,
@@ -237,6 +238,50 @@ async function outboundSendImage(params: unknown): Promise<{ messageId: string }
   );
 }
 
+/**
+ * Generic media delivery for OpenClaw's normalized outbound pipeline
+ * (``infra/outbound/deliver`` → ``createPluginHandler``). Unlike
+ * {@link outboundSendImage} — which the ``message`` tool invokes with an
+ * ``imageUrl``/``imagePath`` — the runtime calls ``sendMedia`` with a
+ * ``{ text: caption, mediaUrl }`` context whenever a reply or completion
+ * carries media. The requester-agent handoff that delivers background
+ * ``image_generate`` results takes exactly this path, so without ``sendMedia``
+ * the runtime logs "outbound adapter does not implement sendMedia; media URLs
+ * will be dropped" and the user only sees the caption text.
+ *
+ * Mirrors the inbound ``deliver`` media branch (see ``inbound.ts``): local
+ * container artifacts are proxy-uploaded to a public URL, then delivered with
+ * the same ``raw_content`` shape so images and files render identically
+ * regardless of which path produced them.
+ */
+async function outboundSendMedia(params: unknown): Promise<{ messageId: string }> {
+  const p = params as OutboundParams;
+  if (p.silent) {
+    return { messageId: "silent" };
+  }
+  const account = resolveOutboundAccount(p);
+  const sessionKey = resolveSessionKey(p);
+  if (!sessionKey) {
+    throw new Error("sellerclaw-ui: missing session key on outbound sendMedia params");
+  }
+  const rawMediaUrl = typeof p.mediaUrl === "string" ? p.mediaUrl.trim() : "";
+  if (!rawMediaUrl) {
+    throw new Error("sellerclaw-ui: mediaUrl is required for sendMedia");
+  }
+  const caption = typeof p.text === "string" ? p.text : "";
+  const { url, contentType } = await resolveOutboundMediaUrl(account, rawMediaUrl);
+  const chatId = extractChatIdFromAddress(sessionKey);
+  return enqueueSend(sessionKey, () =>
+    postWebhookMediaMessage(account, sessionKey, {
+      mediaUrl: url,
+      contentType,
+      caption,
+      chatId,
+      messageId: resolveOutboundExtId(p),
+    }),
+  );
+}
+
 const sellerclawUiChatPlugin = createChatChannelPlugin<ScwUiAccount>({
   base: createChannelPluginBase({
     id: "sellerclaw-ui",
@@ -270,9 +315,11 @@ const sellerclawUiChatPlugin = createChatChannelPlugin<ScwUiAccount>({
   outbound: {
     sendText: outboundSendText,
     sendImage: outboundSendImage,
+    sendMedia: outboundSendMedia,
     attachedResults: {
       sendText: outboundSendText,
       sendImage: outboundSendImage,
+      sendMedia: outboundSendMedia,
     },
   },
 });

@@ -397,7 +397,12 @@ def generate_openclaw_config(
         if agent.is_entry_point:
             payload["default"] = True
             payload["heartbeat"] = {"model": mini_primary}
-        if agent.agent_id in _NO_THINKING_AGENT_IDS:
+        # Per-agent thinking override comes from the manifest; fall back to the static
+        # pure-executor allowlist when the manifest doesn't carry an explicit value.
+        thinking_default = getattr(agent, "thinking_default", None)
+        if isinstance(thinking_default, str) and thinking_default.strip():
+            payload["thinkingDefault"] = thinking_default.strip()
+        elif agent.agent_id in _NO_THINKING_AGENT_IDS:
             payload["thinkingDefault"] = "off"
         agents_list.append(payload)
 

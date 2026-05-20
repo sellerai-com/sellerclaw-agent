@@ -1,82 +1,156 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://sellerclaw.ai/contracts/agent-manifest-v1.json",
-  "title": "SellerClaw edge agent manifest (POST /manifest body)",
-  "description": "Wire format aligned with sellerclaw-agent SaveManifestRequest / BundleManifest.to_save_manifest_mapping(). OpenClaw LiteLLM model metadata is generated in-code, not from this payload.",
+  "$id": "https://sellerclaw.ai/contracts/agent-manifest-v2.json",
+  "title": "SellerClaw edge agent manifest (POST /manifest body, v2 generic)",
+  "description": "Generic agent manifest. Carries pre-rendered per-agent prompt content (instructions + skills) and LLM/channel wiring. The agent generates the OpenClaw config + workspaces purely from this payload; it no longer reads on-disk templates.",
   "type": "object",
   "additionalProperties": true,
-  "required": [
-    "user_id",
-    "litellm_base_url",
-    "litellm_api_key"
-  ],
+  "required": ["user_id", "llm", "agents"],
   "properties": {
     "user_id": { "type": "string", "format": "uuid" },
-    "litellm_base_url": { "type": "string" },
-    "litellm_api_key": { "type": "string" },
     "agent_api_base_path": {
       "type": "string",
-      "description": "Path segment appended to `SELLERCLAW_API_URL` to form the agent API base URL (e.g. `/agent`). The agent derives `SELLERCLAW_AGENT_API_BASE_URL = SELLERCLAW_API_URL + agent_api_base_path` and uses it both as the `{{api_base_url}}` prompt template variable and as the `baseUrl` for the `sellerclaw-web-search` OpenClaw plugin."
+      "description": "Path segment appended to `SELLERCLAW_API_URL` to form the agent API base URL (e.g. `/agent`)."
     },
-    "template_variables": {
-      "type": "object",
-      "additionalProperties": { "type": "string" },
-      "description": "Wire-level prompt template variables. The `api_base_url` variable is **not** shipped here — the agent injects it automatically from `SELLERCLAW_API_URL + agent_api_base_path`."
-    },
-    "enabled_modules": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "enum": [
-          "dropshipping_supplier",
-          "ebay_store_manager",
-          "marketing_manager",
-          "product_scout",
-          "shopify_store_manager"
-        ]
-      }
-    },
-    "connected_integrations": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "enum": [
-          "ebay_store",
-          "facebook_ads",
-          "google_ads",
-          "research_seo",
-          "research_social",
-          "research_trends",
-          "shopify_store",
-          "shopify_themes",
-          "supplier_any",
-          "supplier_cj"
-        ]
-      }
-    },
-    "global_browser_enabled": { "type": "boolean" },
-    "per_module_browser": {
-      "type": "object",
-      "additionalProperties": { "type": "boolean" }
-    },
-    "telegram": {
-      "type": "object",
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "bot_token": { "type": "string" },
-        "allowed_user_ids": { "type": "array", "items": { "type": "string" } },
-        "allowed_group_ids": { "type": "array", "items": { "type": "string" } }
-      }
-    },
+    "proxy_url": { "type": "string" },
     "web_search": {
       "type": "object",
-      "description": "Only `enabled` is honored; extra keys (legacy provider/api_key) are ignored by the agent but may appear during monolith migration.",
+      "additionalProperties": true,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "llm": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["text_model", "groups"],
       "properties": {
-        "enabled": { "type": "boolean" }
+        "text_model": {
+          "type": "object",
+          "required": ["primary"],
+          "properties": {
+            "primary": { "$ref": "#/$defs/modelRef" },
+            "secondary": { "$ref": "#/$defs/modelRef" }
+          }
+        },
+        "image_model": { "$ref": "#/$defs/modelChoice" },
+        "video_model": { "$ref": "#/$defs/modelChoice" },
+        "pdf_model": { "$ref": "#/$defs/modelChoice" },
+        "compaction_model": { "$ref": "#/$defs/modelRef" },
+        "memory_flush_model": { "$ref": "#/$defs/modelRef" },
+        "groups": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/modelGroup" }
+        }
       }
     },
-    "primary_channel": { "type": "string" },
-    "proxy_url": { "type": "string" },
-    "model_name_prefix": { "type": "string" }
+    "agents": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["main_agent"],
+      "properties": {
+        "thinking_default": { "type": "string" },
+        "model_default": { "type": "string" },
+        "browser_enabled_default": { "type": "boolean" },
+        "image_generation_default": { "type": "boolean" },
+        "video_generation_default": { "type": "boolean" },
+        "main_agent": { "$ref": "#/$defs/agent" },
+        "subagents": { "type": "array", "items": { "$ref": "#/$defs/agent" } }
+      }
+    },
+    "channels": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "primary": { "type": "string" },
+        "telegram": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "bot_token": { "type": "string" },
+            "allowed_user_ids": { "type": "array", "items": { "type": "string" } },
+            "allowed_group_ids": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "modelRef": {
+      "type": "object",
+      "required": ["group", "model"],
+      "properties": {
+        "group": { "type": "string" },
+        "model": { "type": "string" }
+      }
+    },
+    "modelChoice": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "primary": { "oneOf": [{ "$ref": "#/$defs/modelRef" }, { "type": "null" }] },
+        "fallbacks": { "type": "array", "items": { "$ref": "#/$defs/modelRef" } }
+      }
+    },
+    "modelInfo": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "reasoning": { "type": "boolean" },
+        "input": { "type": "array", "items": { "type": "string" } },
+        "contextWindow": { "type": "integer" },
+        "maxTokens": { "type": "integer" }
+      }
+    },
+    "modelGroup": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["base_url", "api_key", "models"],
+      "properties": {
+        "base_url": { "type": "string" },
+        "api_key": { "type": "string" },
+        "model_name_prefix": { "type": "string" },
+        "models": { "type": "array", "items": { "$ref": "#/$defs/modelInfo" } }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "required": ["name", "content"],
+      "properties": {
+        "name": { "type": "string" },
+        "content": { "type": "string" }
+      }
+    },
+    "agentContent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["instructions", "skills"],
+      "properties": {
+        "instructions": { "type": "string" },
+        "soul": { "type": ["string", "null"] },
+        "identity": { "type": ["string", "null"] },
+        "user_context": { "type": ["string", "null"] },
+        "tools_doc": { "type": ["string", "null"] },
+        "heartbeat": { "type": ["string", "null"] },
+        "skills": { "type": "array", "items": { "$ref": "#/$defs/skill" } }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "name", "model", "content"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "model": { "type": "string", "enum": ["primary", "secondary"] },
+        "thinking": { "type": ["string", "null"] },
+        "browser_enabled": { "type": ["boolean", "null"] },
+        "image_generation": { "type": ["boolean", "null"] },
+        "video_generation": { "type": ["boolean", "null"] },
+        "content": { "$ref": "#/$defs/agentContent" }
+      }
+    }
   }
 }

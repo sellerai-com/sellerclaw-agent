@@ -173,7 +173,6 @@ RUN cd /tmp/proj \
     && rm -rf /tmp/proj /tmp/requirements.txt
 
 COPY sellerclaw-agent/sellerclaw_agent/ /app/sellerclaw_agent/
-COPY sellerclaw-agent/agent_resources/ /app/agent_resources/
 COPY --from=ui-build /ui/dist /app/admin-ui/dist
 
 ENV AGENT_ADMIN_UI_DIST=/app/admin-ui/dist
@@ -181,7 +180,7 @@ ENV OPENCLAW_BUNDLE_VOLUME_PATH=/opt/config-bundle
 ENV SELLERCLAW_EDGE_PING=1
 ENV OPENCLAW_GATEWAY_HTTP_BASE=http://127.0.0.1:7789
 
-RUN chown -R node:node /app/sellerclaw_agent /app/agent_resources /app/admin-ui
+RUN chown -R node:node /app/sellerclaw_agent /app/admin-ui
 
 COPY sellerclaw-agent/runtime/supervisord-staging.conf /etc/supervisor/conf.d/openclaw.conf
 

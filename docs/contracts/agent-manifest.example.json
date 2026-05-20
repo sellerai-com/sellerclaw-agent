@@ -1,25 +1,139 @@
 {
-  "user_id": "11111111-1111-4111-8111-111111111111",
-  "litellm_base_url": "https://litellm.example/v1",
-  "litellm_api_key": "sk-virtual-key",
+  "user_id": "5fdc144e-fe03-4339-9b43-5bd62b99bfac",
   "agent_api_base_path": "/agent",
-  "template_variables": {
-    "user_name": "Ada"
+  "llm": {
+    "text_model": {
+      "primary": { "group": "litellm", "model": "complex" },
+      "secondary": { "group": "litellm", "model": "simple" }
+    },
+    "image_model": {
+      "primary": { "group": "litellm", "model": "image" },
+      "fallbacks": []
+    },
+    "video_model": {
+      "primary": { "group": "google", "model": "veo-3.1-fast-generate-preview" },
+      "fallbacks": []
+    },
+    "pdf_model": {
+      "primary": { "group": "anthropic", "model": "claude-sonnet-4-6" },
+      "fallbacks": [{ "group": "google", "model": "gemini-3.1-pro-preview" }]
+    },
+    "compaction_model": { "group": "litellm", "model": "simple" },
+    "memory_flush_model": { "group": "litellm", "model": "simple" },
+    "groups": {
+      "litellm": {
+        "base_url": "https://example.ngrok-free.dev/litellm",
+        "api_key": "sk-EXAMPLEKEY",
+        "model_name_prefix": "u:5fdc144e/",
+        "models": [
+          { "id": "complex", "name": "Frontier (auto)", "reasoning": true, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192 },
+          { "id": "simple", "name": "Mid (auto)", "reasoning": false, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192 },
+          { "id": "mini", "name": "Mini (auto)", "reasoning": false, "input": ["text"], "contextWindow": 128000, "maxTokens": 8192 },
+          { "id": "image", "name": "Image (auto)", "reasoning": false, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192 },
+          { "id": "video", "name": "Video (auto)", "reasoning": false, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192 }
+        ]
+      },
+      "anthropic": {
+        "base_url": "https://example.ngrok-free.dev/litellm/anthropic",
+        "api_key": "sk-EXAMPLEKEY",
+        "model_name_prefix": "",
+        "models": [
+          { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "reasoning": false, "input": ["text", "image"], "contextWindow": 200000, "maxTokens": 8192 }
+        ]
+      },
+      "google": {
+        "base_url": "https://example.ngrok-free.dev/litellm/gemini",
+        "api_key": "sk-EXAMPLEKEY",
+        "model_name_prefix": "",
+        "models": [
+          { "id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro (Preview)", "reasoning": false, "input": ["text", "image"], "contextWindow": 1000000, "maxTokens": 8192 },
+          { "id": "veo-3.1-fast-generate-preview", "name": "Google Veo 3.1 Fast", "reasoning": false, "input": ["text", "image"], "contextWindow": 32000, "maxTokens": 8192 }
+        ]
+      }
+    }
   },
-  "enabled_modules": ["shopify_store_manager"],
-  "connected_integrations": ["shopify_store"],
-  "global_browser_enabled": true,
-  "per_module_browser": {},
-  "telegram": {
-    "enabled": false,
-    "bot_token": "",
-    "allowed_user_ids": [],
-    "allowed_group_ids": []
+  "agents": {
+    "thinking_default": "adaptive",
+    "model_default": "primary",
+    "browser_enabled_default": true,
+    "image_generation_default": false,
+    "video_generation_default": false,
+    "main_agent": {
+      "id": "supervisor",
+      "name": "Supervisor",
+      "model": "primary",
+      "image_generation": true,
+      "video_generation": true,
+      "content": {
+        "instructions": "# Supervisor\n\nYou orchestrate subagents for the SellerClaw operator.\n",
+        "soul": "# Soul\n\nCalm, decisive operator.\n",
+        "identity": null,
+        "user_context": "# User\n\nName: Operator\n",
+        "tools_doc": null,
+        "heartbeat": "# Heartbeat\n\nReview pending tasks.\n",
+        "skills": [
+          { "name": "task-management", "content": "---\nname: task-management\ndescription: Manage tasks\n---\n\nUse the tasks API to track work.\n" },
+          { "name": "tasks", "content": "---\nname: tasks\ndescription: Shared tasks skill\n---\n\nShared task helpers.\n" }
+        ]
+      }
+    },
+    "subagents": [
+      {
+        "id": "scout",
+        "name": "Product Scout",
+        "model": "primary",
+        "thinking": null,
+        "browser_enabled": true,
+        "image_generation": false,
+        "video_generation": false,
+        "content": {
+          "instructions": "# Product Scout\n\nResearch product opportunities and niches.\n",
+          "skills": [
+            { "name": "trend-analysis", "content": "---\nname: trend-analysis\ndescription: Analyze trends\n---\n\nAnalyze demand signals.\n" }
+          ]
+        }
+      },
+      {
+        "id": "supplier",
+        "name": "Dropshipping Supplier",
+        "model": "secondary",
+        "thinking": "off",
+        "browser_enabled": false,
+        "image_generation": false,
+        "video_generation": false,
+        "content": {
+          "instructions": "# Dropshipping Supplier\n\nSource products and manage purchases.\n",
+          "skills": [
+            { "name": "product-search", "content": "---\nname: product-search\ndescription: Search supplier catalogs\n---\n\nSearch CJ Dropshipping.\n" }
+          ]
+        }
+      },
+      {
+        "id": "marketing",
+        "name": "Marketing Manager",
+        "model": "primary",
+        "thinking": null,
+        "browser_enabled": true,
+        "image_generation": true,
+        "video_generation": true,
+        "content": {
+          "instructions": "# Marketing Manager\n\nManage paid advertising campaigns.\n",
+          "skills": [
+            { "name": "campaign-playbook", "content": "---\nname: campaign-playbook\ndescription: Campaign playbook\n---\n\nPlaybook for campaigns.\n" }
+          ]
+        }
+      }
+    ]
   },
-  "web_search": {
-    "enabled": false
+  "channels": {
+    "primary": "telegram",
+    "telegram": {
+      "enabled": true,
+      "bot_token": "1234567890",
+      "allowed_user_ids": ["1234567890"],
+      "allowed_group_ids": ["1234567891"]
+    }
   },
-  "primary_channel": "sellerclaw-ui",
-  "proxy_url": "",
-  "model_name_prefix": "u:11111111/"
+  "web_search": { "enabled": false },
+  "proxy_url": ""
 }

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from sellerclaw_agent.bundle.builder import BundleBuilder
-from sellerclaw_agent.bundle.manifest import WebSearchManifest
-from sellerclaw_agent.models import AgentModuleId
-from sellerclaw_agent.registry import get_module
+from sellerclaw_agent.bundle.builder import BundleBuilder, derive_agent_tools
+from sellerclaw_agent.bundle.manifest import GenericManifest
 
 pytestmark = pytest.mark.unit
 
@@ -16,59 +15,92 @@ _GW = "gw"
 _HOOKS = "hooks"
 
 
+def _agent_payload(cfg: dict, agent_id: str) -> dict:
+    for agent in cfg["agents"]["list"]:
+        if agent["id"] == agent_id:
+            return agent
+    raise AssertionError(f"agent {agent_id!r} not in config")
+
+
 def test_bundle_builder_produces_config_and_workspaces(
-    agent_resources_root: Path,
-    make_manifest,
+    make_manifest: Callable[..., GenericManifest],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AGENT_API_KEY", "unit-test-agent-key")
     manifest = make_manifest()
-    builder = BundleBuilder(resources_root=agent_resources_root)
-    result = builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
     assert '"gateway"' in result.openclaw_config
     assert "supervisor/AGENTS.md" in result.workspaces
     assert len(result.version) == 64
     assert result.shared_skills == {}
-    assert "supervisor/skills/file-storage/SKILL.md" in result.workspaces
+    assert "supervisor/skills/task-management/SKILL.md" in result.workspaces
     assert "supervisor/skills/tasks/SKILL.md" in result.workspaces
 
 
-def test_bundle_builder_invalid_module_id_raises(
-    agent_resources_root: Path,
-    make_manifest,
+def test_bundle_builder_includes_subagent_workspaces(
+    make_manifest: Callable[..., GenericManifest],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AGENT_API_KEY", "unit-test-agent-key")
-    manifest = make_manifest(enabled_module_ids=("not_a_real_module",))
-    builder = BundleBuilder(resources_root=agent_resources_root)
-    with pytest.raises(ValueError, match="not a valid AgentModuleId"):
-        builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
+    manifest = make_manifest()
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
+    assert "scout/AGENTS.md" in result.workspaces
+    assert "scout/MEMORY.md" in result.workspaces
+    assert "supplier/AGENTS.md" in result.workspaces
+    assert "marketing/AGENTS.md" in result.workspaces
+    # Subagent skills are embedded under the subagent workspace.
+    assert "scout/skills/trend-analysis/SKILL.md" in result.workspaces
 
 
-def test_bundle_builder_with_enabled_module_includes_module_workspace(
-    agent_resources_root: Path,
-    make_manifest,
+def test_bundle_builder_entry_point_tools_and_subagents(
+    make_manifest: Callable[..., GenericManifest],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AGENT_API_KEY", "unit-test-agent-key")
-    shopify = get_module(AgentModuleId.SHOPIFY_STORE_MANAGER)
-    assert shopify is not None
-    manifest = make_manifest(enabled_module_ids=(str(shopify.id.value),))
-    builder = BundleBuilder(resources_root=agent_resources_root)
-    result = builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
-    assert "shopify/AGENTS.md" in result.workspaces
-    assert "shopify/MEMORY.md" in result.workspaces
+    manifest = make_manifest()
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
+    cfg = json.loads(result.openclaw_config)
+    supervisor = _agent_payload(cfg, "supervisor")
+    assert supervisor["default"] is True
+    assert "group:sessions" in supervisor["tools"]["allow"]
+    assert supervisor["subagents"]["allowAgents"] == ["scout", "supplier", "marketing"]
+
+
+def test_bundle_builder_supplier_thinking_off_from_manifest(
+    make_manifest: Callable[..., GenericManifest],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_API_KEY", "unit-test-agent-key")
+    manifest = make_manifest()
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
+    cfg = json.loads(result.openclaw_config)
+    supplier = _agent_payload(cfg, "supplier")
+    assert supplier["thinkingDefault"] == "off"
+
+
+def test_bundle_builder_browser_disabled_removes_browser_tool(
+    make_manifest: Callable[..., GenericManifest],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The supplier subagent has browser_enabled:false in the fixture."""
+    monkeypatch.setenv("AGENT_API_KEY", "unit-test-agent-key")
+    manifest = make_manifest()
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
+    cfg = json.loads(result.openclaw_config)
+    supplier = _agent_payload(cfg, "supplier")
+    assert "browser" not in supplier["tools"]["allow"]
+    scout = _agent_payload(cfg, "scout")
+    assert "browser" in scout["tools"]["allow"]
 
 
 def test_bundle_builder_created_at_override(
-    agent_resources_root: Path,
-    make_manifest,
+    make_manifest: Callable[..., GenericManifest],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AGENT_API_KEY", "unit-test-agent-key")
     manifest = make_manifest()
     fixed = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
-    result = BundleBuilder(resources_root=agent_resources_root).build(
+    result = BundleBuilder().build(
         manifest,
         gateway_token=_GW,
         hooks_token=_HOOKS,
@@ -77,22 +109,19 @@ def test_bundle_builder_created_at_override(
     assert result.created_at == fixed
 
 
-def test_bundle_builder_web_search_enabled_requires_bearer(
-    agent_resources_root: Path,
-    make_manifest,
+def test_bundle_builder_requires_agent_api_key(
+    make_manifest: Callable[..., GenericManifest],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AGENT_API_KEY", raising=False)
-    manifest = make_manifest(web_search=WebSearchManifest(enabled=True))
-    builder = BundleBuilder(resources_root=agent_resources_root)
+    manifest = make_manifest()
     with pytest.raises(ValueError, match="agent API key is required"):
-        builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
+        BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
 
 
 def test_bundle_builder_web_search_enabled_uses_agent_api_key_env(
-    agent_resources_root: Path,
-    make_manifest,
+    make_manifest: Callable[..., GenericManifest],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -101,9 +130,8 @@ def test_bundle_builder_web_search_enabled_uses_agent_api_key_env(
         "sellerclaw_agent.bundle.builder.get_sellerclaw_api_url",
         lambda: "https://sellerclaw.example",
     )
-    manifest = make_manifest(web_search=WebSearchManifest(enabled=True))
-    builder = BundleBuilder(resources_root=agent_resources_root)
-    result = builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
+    manifest = make_manifest(web_search_enabled=True)
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
     cfg = json.loads(result.openclaw_config)
     web_search_cfg = cfg["plugins"]["entries"]["sellerclaw-web-search"]["config"]["webSearch"]
     assert web_search_cfg["authToken"] == "sca_from_env"
@@ -114,8 +142,7 @@ def test_bundle_builder_web_search_enabled_uses_agent_api_key_env(
 
 
 def test_bundle_builder_web_search_baseurl_respects_manifest_agent_api_base_path(
-    agent_resources_root: Path,
-    make_manifest,
+    make_manifest: Callable[..., GenericManifest],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -125,15 +152,23 @@ def test_bundle_builder_web_search_baseurl_respects_manifest_agent_api_base_path
         "sellerclaw_agent.bundle.builder.get_sellerclaw_api_url",
         lambda: "https://api.example.com",
     )
-    manifest = make_manifest(
-        web_search=WebSearchManifest(enabled=True),
-        agent_api_base_path="/custom/agent",
-    )
-    builder = BundleBuilder(resources_root=agent_resources_root)
-    result = builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
+    manifest = make_manifest(web_search_enabled=True, agent_api_base_path="/custom/agent")
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
     cfg = json.loads(result.openclaw_config)
     web_search_cfg = cfg["plugins"]["entries"]["sellerclaw-web-search"]["config"]["webSearch"]
     assert web_search_cfg["baseUrl"] == "https://api.example.com/custom/agent"
+
+
+def test_bundle_builder_web_search_enabled_requires_sellerclaw_api_url(
+    make_manifest: Callable[..., GenericManifest],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_API_KEY", "sca_from_env")
+    monkeypatch.setattr("sellerclaw_agent.bundle.builder.get_sellerclaw_api_url", lambda: "   ")
+    manifest = make_manifest(web_search_enabled=True)
+    with pytest.raises(ValueError, match="SELLERCLAW_API_URL"):
+        BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -187,38 +222,109 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
     )
 
 
-def test_resolve_template_variables_injects_api_base_url() -> None:
-    """`api_base_url` must come from the derived value, never from manifest input."""
-    from sellerclaw_agent.bundle.builder import _resolve_template_variables
-
-    resolved = _resolve_template_variables(
-        {"user_name": "Ada", "api_base_url": "should-be-overwritten"},
-        agent_api_base_url="https://api.example.com/agent",
-        global_browser_enabled=False,
-        web_search_enabled=True,
-        primary_channel="telegram",
-        telegram_enabled=True,
-        proxy_url="http://proxy:8080",
-    )
-    assert resolved["api_base_url"] == "https://api.example.com/agent"
-    assert resolved["user_name"] == "Ada"
-    assert resolved["global_browser_enabled"] == "disabled"
-    assert resolved["web_search_enabled"] == "enabled"
-    assert resolved["primary_channel"] == "telegram"
-    assert resolved["telegram_enabled"] == "enabled"
-    assert resolved["proxy_configured"] == "yes"
-    assert resolved["tools_browser_media_root"] == "/home/node/.openclaw/media"
-
-
-def test_bundle_builder_web_search_enabled_requires_sellerclaw_api_url(
-    agent_resources_root: Path,
-    make_manifest,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("is_entry_point", "has_subagents", "browser", "image", "video", "expected_allow", "expected_deny"),
+    [
+        pytest.param(
+            True,
+            True,
+            True,
+            True,
+            True,
+            [
+                "group:sessions",
+                "group:web",
+                "web_search",
+                "message",
+                "browser",
+                "cron",
+                "exec",
+                "image_generate",
+                "video_generate",
+                "pdf",
+            ],
+            [],
+            id="entry-point-with-subagents",
+        ),
+        pytest.param(
+            True,
+            False,
+            True,
+            True,
+            True,
+            [
+                "group:web",
+                "web_search",
+                "message",
+                "browser",
+                "cron",
+                "exec",
+                "image_generate",
+                "video_generate",
+                "pdf",
+                "group:fs",
+                "process",
+            ],
+            [],
+            id="entry-point-no-subagents",
+        ),
+        pytest.param(
+            False,
+            False,
+            True,
+            False,
+            False,
+            ["group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf"],
+            ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
+            id="subagent-no-media",
+        ),
+        pytest.param(
+            False,
+            False,
+            True,
+            True,
+            True,
+            [
+                "group:fs",
+                "exec",
+                "process",
+                "web_fetch",
+                "web_search",
+                "browser",
+                "pdf",
+                "image_generate",
+                "video_generate",
+            ],
+            ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
+            id="subagent-with-media",
+        ),
+        pytest.param(
+            False,
+            False,
+            False,
+            False,
+            False,
+            ["group:fs", "exec", "process", "web_fetch", "web_search", "pdf"],
+            ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
+            id="subagent-browser-disabled",
+        ),
+    ],
+)
+def test_derive_agent_tools(
+    is_entry_point: bool,
+    has_subagents: bool,
+    browser: bool,
+    image: bool,
+    video: bool,
+    expected_allow: list[str],
+    expected_deny: list[str],
 ) -> None:
-    monkeypatch.setenv("AGENT_API_KEY", "sca_from_env")
-    monkeypatch.setattr("sellerclaw_agent.bundle.builder.get_sellerclaw_api_url", lambda: "   ")
-    manifest = make_manifest(web_search=WebSearchManifest(enabled=True))
-    builder = BundleBuilder(resources_root=agent_resources_root)
-    with pytest.raises(ValueError, match="SELLERCLAW_API_URL"):
-        builder.build(manifest, gateway_token=_GW, hooks_token=_HOOKS, data_dir=tmp_path)
+    allow, deny = derive_agent_tools(
+        is_entry_point=is_entry_point,
+        has_subagents=has_subagents,
+        browser_enabled=browser,
+        image_generation=image,
+        video_generation=video,
+    )
+    assert allow == expected_allow
+    assert deny == expected_deny

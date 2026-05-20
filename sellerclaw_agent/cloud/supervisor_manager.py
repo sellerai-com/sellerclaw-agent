@@ -15,8 +15,7 @@ from typing import Any
 import structlog
 
 from sellerclaw_agent.bundle.builder import BundleBuilder
-from sellerclaw_agent.bundle.manifest import BundleManifest
-from sellerclaw_agent.paths import get_agent_resources_root
+from sellerclaw_agent.bundle.manifest import GenericManifest
 from sellerclaw_agent.server.secrets_store import get_secrets
 
 _log = structlog.get_logger(__name__)
@@ -191,25 +190,22 @@ class SupervisorContainerManager:
             timeout=timeout,
         )
 
-    def _build_bundle(self, manifest: BundleManifest):
-        """Build OpenClaw bundle honoring manifest-side model prefix.
+    def _build_bundle(self, manifest: GenericManifest):
+        """Build the OpenClaw bundle from the generic manifest.
 
-        ``model_name_prefix`` is part of the manifest contract and must be threaded
-        into ``BundleBuilder.build`` so the rendered ``openclaw.json`` namespaces
-        model IDs (``u:<prefix>/complex``/``simple``). Dropping it would produce
-        bare model IDs that get rejected by LiteLLM with 401
+        The LiteLLM ``model_name_prefix`` now lives inside the manifest's litellm
+        group, so ``BundleBuilder.build`` derives it directly — no need to thread it
+        through here. It namespaces model IDs (``u:<prefix>/complex``/``simple``);
+        bare model IDs would get rejected by LiteLLM with 401
         ``key not allowed to access model``.
         """
         if self.credentials_data_dir is None:
             raise ValueError("credentials_data_dir is required to build OpenClaw bundles")
         sec = get_secrets(self.credentials_data_dir)
-        prefix_raw = (manifest.model_name_prefix or "").strip()
-        model_prefix = prefix_raw if prefix_raw else None
         return self.bundle_builder.build(
             manifest,
             gateway_token=sec.gateway_token,
             hooks_token=sec.hooks_token,
-            model_name_prefix=model_prefix,
             data_dir=self.credentials_data_dir,
         )
 
@@ -548,7 +544,7 @@ class SupervisorContainerManager:
             return "completed", None
         return "failed", out.strip()[:500] or f"exit {proc.returncode}"
 
-    def start(self, manifest: BundleManifest) -> tuple[str, str | None]:
+    def start(self, manifest: GenericManifest) -> tuple[str, str | None]:
         probe, _ = self.probe_openclaw_status()
         if probe == "running":
             return "rejected", REJECT_ALREADY_RUNNING
@@ -578,7 +574,7 @@ class SupervisorContainerManager:
             return "rejected", REJECT_ALREADY_RUNNING
         return "failed", out.strip()[:500] or f"exit {proc.returncode}"
 
-    def restart(self, manifest: BundleManifest) -> tuple[str, str | None]:
+    def restart(self, manifest: GenericManifest) -> tuple[str, str | None]:
         try:
             built = self._build_bundle(manifest)
             write_bundle_to_disk(
@@ -608,7 +604,7 @@ def create_supervisor_manager(
     bundle_builder: BundleBuilder | None = None,
 ) -> SupervisorContainerManager:
     """Build manager from environment (used by FastAPI deps and ping loop)."""
-    bb = bundle_builder or BundleBuilder(resources_root=get_agent_resources_root())
+    bb = bundle_builder or BundleBuilder()
     raw_image = (os.environ.get("OPENCLAW_RUNTIME_IMAGE") or "").strip()
     data_dir = Path(os.environ.get("SELLERCLAW_DATA_DIR", "/data"))
     return SupervisorContainerManager(

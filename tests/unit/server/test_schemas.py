@@ -17,6 +17,7 @@ def test_save_manifest_request_to_mapping_passes_bundle_validation(
     body = make_save_manifest_request()
     manifest = bundle_manifest_from_mapping(body.to_mapping())
     assert manifest.user_id == UUID("11111111-1111-4111-8111-111111111111")
+    assert manifest.agents.main_agent.id == "supervisor"
 
 
 @pytest.mark.parametrize(
@@ -36,14 +37,13 @@ def test_save_manifest_request_rejects_invalid_user_id(
         SaveManifestRequest.model_validate(data)
 
 
-def test_to_mapping_rejected_by_bundle_for_unknown_integration(
+def test_save_manifest_request_requires_llm_and_agents(
     make_save_manifest_request: Callable[..., SaveManifestRequest],
 ) -> None:
-    body = make_save_manifest_request()
-    mapping = body.to_mapping()
-    mapping = {**mapping, "connected_integrations": ["unknown_integration_xyz"]}
-    with pytest.raises(ValueError, match="unknown_integration_xyz"):
-        bundle_manifest_from_mapping(mapping)
+    data = make_save_manifest_request().model_dump(mode="json")
+    del data["agents"]
+    with pytest.raises(ValidationError):
+        SaveManifestRequest.model_validate(data)
 
 
 def test_save_manifest_request_web_search_ignores_legacy_wire_fields(
@@ -64,3 +64,12 @@ def test_save_manifest_request_web_search_ignores_legacy_wire_fields(
     ws = parsed.to_mapping()["web_search"]
     assert isinstance(ws, dict)
     assert ws == {"enabled": True}
+
+
+def test_save_manifest_request_roundtrips_agents_and_channels(
+    make_save_manifest_request: Callable[..., SaveManifestRequest],
+) -> None:
+    body = make_save_manifest_request()
+    manifest = bundle_manifest_from_mapping(body.to_mapping())
+    assert [s.id for s in manifest.agents.subagents] == ["scout", "supplier", "marketing"]
+    assert manifest.channels.telegram.bot_token == "1234567890"

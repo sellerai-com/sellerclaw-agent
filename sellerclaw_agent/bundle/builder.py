@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sellerclaw_agent.assembly import AssembledAgentConfig
 from sellerclaw_agent.bundle.archive import build_gateway_version, build_workspaces_from_assembled
-from sellerclaw_agent.bundle.assembler import AgentConfigAssembler
 from sellerclaw_agent.bundle.config_generator import generate_openclaw_config
-from sellerclaw_agent.bundle.manifest import BundleManifest
+from sellerclaw_agent.bundle.manifest import AgentSpec, GenericManifest, ModelRef
 from sellerclaw_agent.bundle.result import BundleResult
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
 from sellerclaw_agent.cloud.settings import (
@@ -16,10 +16,7 @@ from sellerclaw_agent.cloud.settings import (
     get_sellerclaw_api_url,
     get_sellerclaw_web_url,
 )
-from sellerclaw_agent.registry import get_module
-
-
-_API_BASE_URL_KEY = "api_base_url"
+from sellerclaw_agent.models import ModelTier
 
 
 def _compose_agent_api_base_url(
@@ -30,8 +27,7 @@ def _compose_agent_api_base_url(
     """Derive the agent API base URL (``SELLERCLAW_AGENT_API_BASE_URL``).
 
     Concatenates the deployment-level host (``SELLERCLAW_API_URL``) with the
-    manifest-supplied ``agent_api_base_path`` (e.g. ``/agent``). Used both for
-    the ``{{ api_base_url }}`` prompt template variable and for the
+    manifest-supplied ``agent_api_base_path`` (e.g. ``/agent``). Used for the
     ``sellerclaw-web-search`` plugin ``baseUrl``.
 
     Returns an empty string when the deployment host is unset so downstream
@@ -44,37 +40,6 @@ def _compose_agent_api_base_url(
     if path and not path.startswith("/"):
         path = f"/{path}"
     return f"{base}{path}"
-
-
-def _resolve_template_variables(
-    manifest_variables: dict[str, str],
-    *,
-    agent_api_base_url: str,
-    global_browser_enabled: bool = True,
-    web_search_enabled: bool = False,
-    primary_channel: str = "sellerclaw-ui",
-    telegram_enabled: bool = False,
-    proxy_url: str = "",
-) -> dict[str, str]:
-    """Merge manifest ``template_variables`` with derived deployment fields.
-
-    - ``api_base_url`` is always set from ``SELLERCLAW_API_URL`` + ``agent_api_base_path``
-      (manifest must not ship it; any manifest copy is overwritten).
-    - Boolean toggles are exposed as ``enabled`` / ``disabled`` for prompts (e.g. ``TOOLS.md``).
-    - ``tools_browser_media_root`` / ``tools_temp_exports_root`` default to common OpenClaw
-      paths but can be overridden via manifest ``template_variables``.
-    """
-    resolved = dict(manifest_variables)
-    resolved[_API_BASE_URL_KEY] = agent_api_base_url
-    resolved["global_browser_enabled"] = "enabled" if global_browser_enabled else "disabled"
-    resolved["web_search_enabled"] = "enabled" if web_search_enabled else "disabled"
-    resolved["primary_channel"] = (primary_channel or "sellerclaw-ui").strip() or "sellerclaw-ui"
-    resolved["telegram_enabled"] = "enabled" if telegram_enabled else "disabled"
-    resolved["proxy_configured"] = "yes" if proxy_url.strip() else "no"
-    resolved.setdefault("tools_browser_media_root", "/home/node/.openclaw/media")
-    resolved.setdefault("tools_temp_exports_root", "/tmp")
-    resolved.setdefault("tools_quirks", "")
-    return resolved
 
 
 def _resolve_allowed_origins() -> tuple[str, ...]:
@@ -90,100 +55,206 @@ def _resolve_allowed_origins() -> tuple[str, ...]:
     return tuple(unique)
 
 
+def derive_agent_tools(
+    *,
+    is_entry_point: bool,
+    has_subagents: bool,
+    browser_enabled: bool,
+    image_generation: bool,
+    video_generation: bool,
+) -> tuple[list[str], list[str]]:
+    """Derive the OpenClaw ``tools.allow`` / ``tools.deny`` lists for one agent.
+
+    Returns ``(allow, deny)``. Mirrors the prior assembler behavior:
+
+    - Entry point (supervisor): broad allow; ``group:sessions`` when it has subagents,
+      otherwise ``group:fs`` + ``process``. No denies.
+    - Subagent: filesystem/exec/process/web + browser/pdf; image/video gated by flags;
+      denies the orchestration/messaging surface.
+    - ``browser`` is stripped from allow when ``browser_enabled`` is False.
+    """
+    if is_entry_point:
+        allow = [
+            "group:web",
+            "web_search",
+            "message",
+            "browser",
+            "cron",
+            "exec",
+            "image_generate",
+            "video_generate",
+            "pdf",
+        ]
+        if has_subagents:
+            allow = ["group:sessions", *allow]
+        else:
+            allow.extend(["group:fs", "process"])
+        deny: list[str] = []
+    else:
+        allow = [
+            "group:fs",
+            "exec",
+            "process",
+            "web_fetch",
+            "web_search",
+            "browser",
+            "pdf",
+        ]
+        if image_generation:
+            allow.append("image_generate")
+        if video_generation:
+            allow.append("video_generate")
+        deny = [
+            "group:sessions",
+            "group:messaging",
+            "canvas",
+            "nodes",
+            "cron",
+            "gateway",
+        ]
+    if not browser_enabled:
+        allow = [tool for tool in allow if tool != "browser"]
+    return allow, deny
+
+
+def _resolve_model_tier(manifest: GenericManifest, model_role: str) -> ModelTier:
+    """Resolve an agent's ``model`` role to a :class:`ModelTier`.
+
+    ``primary``/``secondary`` index into ``llm.text_model``. A LiteLLM ``complex``
+    ref maps to ``COMPLEX``; everything else maps to ``SIMPLE``.
+    """
+    ref: ModelRef | None = manifest.llm.text_model.get(model_role)
+    if ref is None:
+        ref = manifest.llm.text_model.get("primary")
+    if ref is not None and ref.group == "litellm" and ref.model == "complex":
+        return ModelTier.COMPLEX
+    return ModelTier.SIMPLE
+
+
 @dataclass
 class BundleBuilder:
-    """Build OpenClaw gateway bundle from a flat manifest and on-disk agent_resources."""
-
-    resources_root: Path
+    """Build an OpenClaw gateway bundle from a pre-rendered :class:`GenericManifest`."""
 
     def build(
         self,
-        manifest: BundleManifest,
+        manifest: GenericManifest,
         *,
         gateway_token: str,
         hooks_token: str,
-        model_name_prefix: str | None = None,
-        created_at: datetime | None = None,
+        agent_api_key: str | None = None,
         data_dir: Path | None = None,
+        created_at: datetime | None = None,
     ) -> BundleResult:
-        enabled_definitions = []
-        for mid in manifest.resolved_enabled_modules():
-            definition = get_module(mid)
-            if definition is None:
-                raise ValueError(f"Unknown module id: {mid!r}")
-            enabled_definitions.append(definition)
+        # The agent API key is mandatory for every bundle: it authenticates the
+        # sellerclaw-ui plugin's outbound calls and (when enabled) OpenClaw's
+        # web-search tool. Fail fast with a single actionable message.
+        resolved_api_key = self._resolve_agent_api_key(agent_api_key, data_dir)
+        if not resolved_api_key:
+            raise ValueError(
+                "An agent API key is required in openclaw config (sellerclaw-ui). "
+                "Sign in to SellerClaw (agent_token.json under SELLERCLAW_DATA_DIR) or set AGENT_API_KEY."
+            )
+
+        assembled = [
+            self._assemble_agent(manifest, agent) for agent in manifest.all_agents()
+        ]
 
         sellerclaw_api_url = get_sellerclaw_api_url()
         agent_api_base_url = _compose_agent_api_base_url(
             sellerclaw_api_url=sellerclaw_api_url,
             agent_api_base_path=manifest.agent_api_base_path,
         )
-        template_variables = _resolve_template_variables(
-            dict(manifest.template_variables),
-            agent_api_base_url=agent_api_base_url,
-            global_browser_enabled=manifest.global_browser_enabled,
-            web_search_enabled=manifest.web_search.enabled,
-            primary_channel=manifest.primary_channel,
-            telegram_enabled=manifest.telegram.enabled,
-            proxy_url=manifest.proxy_url,
-        )
         allowed_origins = _resolve_allowed_origins()
 
-        assembler = AgentConfigAssembler(resources_root=self.resources_root)
-        assembled = assembler.assemble(
-            enabled_modules=enabled_definitions,
-            template_variables=template_variables,
-            connected_integrations=manifest.connected_integrations,
-            global_browser_enabled=manifest.global_browser_enabled,
-            per_module_browser=manifest.resolved_per_module_browser(),
-        )
-        shared_skills = assembler.assemble_shared_skills(template_variables)
-        workspaces = build_workspaces_from_assembled(assembled)
-        if data_dir is not None:
-            agent_api_key = resolve_agent_bearer_token_from_data_dir(data_dir)
-        else:
-            agent_api_key = (os.environ.get("AGENT_API_KEY") or "").strip() or None
-        # The agent API key is now mandatory for every bundle: it authenticates the
-        # sellerclaw-ui plugin's outbound calls to the cloud and (when enabled)
-        # OpenClaw's web-search tool. Fail fast with a single actionable message.
-        if not agent_api_key:
-            raise ValueError(
-                "An agent API key is required in openclaw config (sellerclaw-ui). "
-                "Sign in to SellerClaw (agent_token.json under SELLERCLAW_DATA_DIR) or set AGENT_API_KEY."
-            )
-        web_search_auth_token = agent_api_key if manifest.web_search.enabled else ""
+        litellm_group = manifest.litellm_group()
+        litellm_base_url = litellm_group.base_url if litellm_group is not None else ""
+        litellm_api_key = litellm_group.api_key if litellm_group is not None else ""
+        prefix = manifest.model_name_prefix
+        model_name_prefix = prefix if prefix else None
+
+        web_search_enabled = manifest.web_search.enabled
+        web_search_auth_token = resolved_api_key if web_search_enabled else ""
+
         ts = created_at or datetime.now(tz=UTC)
+        workspaces = build_workspaces_from_assembled(assembled)
         openclaw_config = generate_openclaw_config(
             assembled_agents=assembled,
             gateway_token=gateway_token,
             hooks_token=hooks_token,
-            agent_api_key=agent_api_key,
+            agent_api_key=resolved_api_key,
             user_id=manifest.user_id,
             sellerclaw_api_url=sellerclaw_api_url,
             sellerclaw_agent_api_base_url=agent_api_base_url,
-            litellm_base_url=manifest.litellm_base_url,
-            litellm_api_key=manifest.litellm_api_key,
+            litellm_base_url=litellm_base_url,
+            litellm_api_key=litellm_api_key,
             model_name_prefix=model_name_prefix,
             created_at=ts,
-            telegram_enabled=manifest.telegram.enabled,
-            telegram_bot_token=manifest.telegram.bot_token,
-            telegram_allowed_user_ids=manifest.telegram.allowed_user_ids,
-            telegram_allowed_group_ids=manifest.telegram.allowed_group_ids,
+            telegram_enabled=manifest.channels.telegram.enabled,
+            telegram_bot_token=manifest.channels.telegram.bot_token,
+            telegram_allowed_user_ids=manifest.channels.telegram.allowed_user_ids,
+            telegram_allowed_group_ids=manifest.channels.telegram.allowed_group_ids,
             allowed_origins=allowed_origins,
-            browser_enabled=manifest.global_browser_enabled,
-            web_search_enabled=manifest.web_search.enabled,
+            browser_enabled=manifest.agents.browser_enabled_default,
+            web_search_enabled=web_search_enabled,
             web_search_auth_token=web_search_auth_token,
-            primary_channel=manifest.primary_channel,
+            primary_channel=manifest.channels.primary,
         )
         version = build_gateway_version(
             openclaw_config=openclaw_config,
             workspaces=workspaces,
-            shared_skills=shared_skills,
+            shared_skills={},
         )
         return BundleResult(
             openclaw_config=openclaw_config,
             workspaces=workspaces,
-            shared_skills=shared_skills,
+            shared_skills={},
             version=version,
             created_at=ts,
+        )
+
+    @staticmethod
+    def _resolve_agent_api_key(
+        agent_api_key: str | None,
+        data_dir: Path | None,
+    ) -> str | None:
+        if agent_api_key and agent_api_key.strip():
+            return agent_api_key.strip()
+        if data_dir is not None:
+            resolved = resolve_agent_bearer_token_from_data_dir(data_dir)
+            if resolved:
+                return resolved
+        return (os.environ.get("AGENT_API_KEY") or "").strip() or None
+
+    def _assemble_agent(
+        self,
+        manifest: GenericManifest,
+        agent: AgentSpec,
+    ) -> AssembledAgentConfig:
+        tools_allow, tools_deny = derive_agent_tools(
+            is_entry_point=agent.is_entry_point,
+            has_subagents=bool(agent.subagent_ids),
+            browser_enabled=agent.browser_enabled,
+            image_generation=agent.image_generation,
+            video_generation=agent.video_generation,
+        )
+        content = agent.content
+        # Heartbeat is honored only for the main (entry-point) agent, matching prior behavior.
+        heartbeat_md = content.heartbeat if agent.is_entry_point else None
+        return AssembledAgentConfig(
+            agent_id=agent.id,
+            name=agent.name,
+            model_tier=_resolve_model_tier(manifest, agent.model),
+            is_entry_point=agent.is_entry_point,
+            subagent_ids=list(agent.subagent_ids),
+            tools_allow=tools_allow,
+            tools_deny=tools_deny,
+            agents_md=content.instructions,
+            memory_md=f"# Agent memory: {agent.id}\n",
+            soul_md=content.soul,
+            user_md=content.user_context,
+            tools_md=content.tools_doc,
+            identity_md=content.identity,
+            heartbeat_md=heartbeat_md,
+            thinking_default=agent.thinking,
+            skills=content.skills_mapping(),
         )

@@ -1,76 +1,56 @@
-"""Pytest fixtures for BundleManifest (plugin: ``pytest_plugins`` in repo ``sellerclaw-agent/conftest.py``)."""
+"""Pytest fixtures for the generic manifest (``pytest_plugins`` in repo ``conftest.py``)."""
 
 from __future__ import annotations
 
+import copy
+import json
 from collections.abc import Callable
 from pathlib import Path
-from uuid import UUID
+from typing import Any
 
 import pytest
 
 from sellerclaw_agent.assembly import AssembledAgentConfig
-from sellerclaw_agent.bundle.manifest import (
-    BundleManifest,
-    TelegramManifest,
-    WebSearchManifest,
+from sellerclaw_agent.bundle.manifest import GenericManifest, bundle_manifest_from_mapping
+from sellerclaw_agent.models import ModelTier
+
+_MANIFEST_V2_PATH = (
+    Path(__file__).resolve().parent.parent / "tests" / "unit" / "bundle" / "data" / "manifest_v2.json"
 )
-from sellerclaw_agent.models import IntegrationKind, ModelTier
 
-_DEFAULT_TEMPLATE_VARIABLES: dict[str, str] = {
-    "user_name": "Test",
-    "config_generated_at": "2026-01-01 00:00 UTC",
-    "telegram_group_id": "",
-}
 
-_DEFAULT_AGENT_API_BASE_PATH = "/agent"
+def load_manifest_v2_mapping() -> dict[str, Any]:
+    """Load the frozen v2 manifest contract fixture as a plain mapping."""
+    raw = json.loads(_MANIFEST_V2_PATH.read_text(encoding="utf-8"))
+    return {str(k): v for k, v in raw.items()}
 
 
 @pytest.fixture
-def agent_resources_root() -> Path:
-    # sellerclaw_agent/test_manifest_fixtures.py -> parent.parent = sellerclaw-agent repo root
-    return Path(__file__).resolve().parent.parent / "agent_resources"
+def make_manifest() -> Callable[..., GenericManifest]:
+    """Factory returning a parsed :class:`GenericManifest` from the v2 fixture.
 
+    Supports a few common keyword overrides applied to the mapping before parsing:
+    ``web_search_enabled``, ``agent_api_base_path``, ``proxy_url`` and a generic
+    ``overrides`` dict merged shallowly at the top level.
+    """
 
-@pytest.fixture
-def make_manifest() -> Callable[..., BundleManifest]:
     def _build(
         *,
-        user_id: UUID | None = None,
-        litellm_base_url: str = "http://litellm:4000",
-        litellm_api_key: str = "key",
-        template_variables: dict[str, str] | None = None,
-        enabled_module_ids: tuple[str, ...] = (),
-        connected_integrations: frozenset[IntegrationKind] | None = None,
-        global_browser_enabled: bool = True,
-        per_module_browser: dict[str, bool] | None = None,
-        telegram: TelegramManifest | None = None,
-        web_search: WebSearchManifest | None = None,
-        primary_channel: str = "sellerclaw-ui",
-        proxy_url: str = "",
-        model_name_prefix: str = "",
-        agent_api_base_path: str = _DEFAULT_AGENT_API_BASE_PATH,
-    ) -> BundleManifest:
-        tv = dict(_DEFAULT_TEMPLATE_VARIABLES)
-        if template_variables is not None:
-            tv.update(template_variables)
-        pmb = per_module_browser if per_module_browser is not None else {}
-        conn = connected_integrations if connected_integrations is not None else frozenset()
-        return BundleManifest(
-            user_id=user_id or UUID("11111111-1111-4111-8111-111111111111"),
-            litellm_base_url=litellm_base_url,
-            litellm_api_key=litellm_api_key,
-            template_variables=tv,
-            enabled_module_ids=enabled_module_ids,
-            connected_integrations=conn,
-            global_browser_enabled=global_browser_enabled,
-            per_module_browser=pmb,
-            telegram=telegram if telegram is not None else TelegramManifest(),
-            web_search=web_search if web_search is not None else WebSearchManifest(),
-            primary_channel=primary_channel,
-            proxy_url=proxy_url,
-            model_name_prefix=model_name_prefix,
-            agent_api_base_path=agent_api_base_path,
-        )
+        web_search_enabled: bool | None = None,
+        agent_api_base_path: str | None = None,
+        proxy_url: str | None = None,
+        overrides: dict[str, Any] | None = None,
+    ) -> GenericManifest:
+        mapping = copy.deepcopy(load_manifest_v2_mapping())
+        if web_search_enabled is not None:
+            mapping["web_search"] = {"enabled": web_search_enabled}
+        if agent_api_base_path is not None:
+            mapping["agent_api_base_path"] = agent_api_base_path
+        if proxy_url is not None:
+            mapping["proxy_url"] = proxy_url
+        if overrides:
+            mapping.update(overrides)
+        return bundle_manifest_from_mapping(mapping)
 
     return _build
 
@@ -93,6 +73,7 @@ def make_assembled_agent() -> Callable[..., AssembledAgentConfig]:
         tools_md: str | None = "# TOOLS.md\n",
         identity_md: str | None = "# IDENTITY.md\n",
         heartbeat_md: str | None = None,
+        thinking_default: str | None = None,
         skills: dict[str, str] | None = None,
     ) -> AssembledAgentConfig:
         return AssembledAgentConfig(
@@ -110,6 +91,7 @@ def make_assembled_agent() -> Callable[..., AssembledAgentConfig]:
             tools_md=tools_md,
             identity_md=identity_md,
             heartbeat_md=heartbeat_md,
+            thinking_default=thinking_default,
             skills=skills if skills is not None else {"file-storage": "# File Storage"},
         )
 

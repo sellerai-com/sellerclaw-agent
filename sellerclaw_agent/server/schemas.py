@@ -6,13 +6,6 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ManifestTelegram(BaseModel):
-    enabled: bool = False
-    bot_token: str = ""
-    allowed_user_ids: list[str] = Field(default_factory=list)
-    allowed_group_ids: list[str] = Field(default_factory=list)
-
-
 class ManifestWebSearch(BaseModel):
     """Monolith computes BYOK vs corporate; the manifest only toggles tool availability."""
 
@@ -110,45 +103,31 @@ class SaveManifestResponse(BaseModel):
 
 
 class SaveManifestRequest(BaseModel):
-    """Request body mirroring `bundle_manifest_from_mapping` input."""
+    """Request body for the generic v2 manifest (``POST /manifest``).
+
+    Nested ``llm`` / ``agents`` / ``channels`` blocks are kept loosely typed and
+    validated downstream by :func:`bundle_manifest_from_mapping`; this schema only
+    enforces the top-level required fields (``user_id``, ``llm``, ``agents``).
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     user_id: UUID
-    litellm_base_url: str
-    litellm_api_key: str
-    template_variables: dict[str, str] = Field(default_factory=dict)
-    enabled_modules: list[str] = Field(default_factory=list)
-    connected_integrations: list[str] = Field(default_factory=list)
-    global_browser_enabled: bool = True
-    per_module_browser: dict[str, bool] = Field(default_factory=dict)
-    telegram: ManifestTelegram = Field(default_factory=ManifestTelegram)
-    web_search: ManifestWebSearch = Field(default_factory=ManifestWebSearch)
-    primary_channel: str = "sellerclaw-ui"
-    proxy_url: str = ""
-    model_name_prefix: str = ""
     agent_api_base_path: str = ""
+    proxy_url: str = ""
+    web_search: ManifestWebSearch = Field(default_factory=ManifestWebSearch)
+    llm: dict[str, Any]
+    agents: dict[str, Any]
+    channels: dict[str, Any] = Field(default_factory=dict)
 
     def to_mapping(self) -> dict[str, object]:
         """Plain dict for `bundle_manifest_from_mapping` / JSON persistence."""
         return {
             "user_id": str(self.user_id),
-            "litellm_base_url": self.litellm_base_url,
-            "litellm_api_key": self.litellm_api_key,
-            "template_variables": dict(self.template_variables),
-            "enabled_modules": list(self.enabled_modules),
-            "connected_integrations": list(self.connected_integrations),
-            "global_browser_enabled": self.global_browser_enabled,
-            "per_module_browser": dict(self.per_module_browser),
-            "telegram": {
-                "enabled": self.telegram.enabled,
-                "bot_token": self.telegram.bot_token,
-                "allowed_user_ids": list(self.telegram.allowed_user_ids),
-                "allowed_group_ids": list(self.telegram.allowed_group_ids),
-            },
-            "web_search": {
-                "enabled": self.web_search.enabled,
-            },
-            "primary_channel": self.primary_channel,
-            "proxy_url": self.proxy_url,
-            "model_name_prefix": self.model_name_prefix,
             "agent_api_base_path": self.agent_api_base_path,
+            "proxy_url": self.proxy_url,
+            "web_search": {"enabled": self.web_search.enabled},
+            "llm": self.llm,
+            "agents": self.agents,
+            "channels": self.channels,
         }

@@ -8,10 +8,8 @@ from datetime import datetime
 class BundleResult:
     """Output of BundleBuilder.build(): OpenClaw JSON + workspace files + content hash.
 
-    ``shared_skills`` is kept for a stable field shape; shared skill content is
-    embedded per agent under each workspace's ``skills/`` (see
-    :meth:`AgentConfigAssembler._build_agent_skills`). The value is currently
-    always empty.
+    ``shared_skills`` is kept for a stable field shape; per-agent skill content is
+    embedded under each workspace's ``skills/``. The value is currently always empty.
     """
 
     openclaw_config: str

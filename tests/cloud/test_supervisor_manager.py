@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sellerclaw_agent.bundle.builder import BundleBuilder
-from sellerclaw_agent.bundle.manifest import BundleManifest
+from sellerclaw_agent.bundle.manifest import GenericManifest
 from sellerclaw_agent.cloud.supervisor_manager import (
     REJECT_ALREADY_RUNNING,
     REJECT_OPENCLAW_RUNNING_BROWSER,
@@ -29,13 +29,12 @@ def with_agent_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _mgr(
     tmp_path: Path,
-    agent_resources_root: Path,
     **kwargs: object,
 ) -> SupervisorContainerManager:
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     defaults: dict[str, object] = {
-        "bundle_builder": BundleBuilder(resources_root=agent_resources_root),
+        "bundle_builder": BundleBuilder(),
         "bundle_volume_path": bundle_dir,
         "display_name": "sellerclaw-openclaw",
         "program_name": "openclaw",
@@ -53,9 +52,8 @@ def _mgr(
 
 def test_probe_running_stopped_fatal_starting(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with (
         patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run,
         patch.object(mgr, "_gateway_is_ready", return_value=True),
@@ -102,7 +100,6 @@ def test_probe_running_stopped_fatal_starting(
 
 def test_probe_supervisor_running_but_gateway_not_ready_is_starting(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
     """Supervisor reports RUNNING before openclaw HTTP listener is up; probe must downgrade to starting.
 
@@ -110,7 +107,7 @@ def test_probe_supervisor_running_but_gateway_not_ready_is_starting(
     OpenClaw inbound endpoint while the gateway HTTP server is still booting,
     and they would drop with ``httpx.ConnectError``.
     """
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with (
         patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run,
         patch.object(mgr, "_gateway_is_ready", return_value=False),
@@ -140,9 +137,8 @@ def test_is_ready_payload(body: str, expected: bool) -> None:
 
 def test_probe_exited_maps_to_stopped(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
         run.return_value = MagicMock(
             returncode=0,
@@ -154,9 +150,8 @@ def test_probe_exited_maps_to_stopped(
 
 def test_probe_empty_stdout_is_error(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
         run.return_value = MagicMock(returncode=3, stdout="", stderr="refused connection")
         st, err = mgr.probe_openclaw_status()
@@ -166,9 +161,8 @@ def test_probe_empty_stdout_is_error(
 
 def test_probe_subprocess_timeout(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
         run.side_effect = TimeoutError("boom")
         st, err = mgr.probe_openclaw_status()
@@ -178,11 +172,10 @@ def test_probe_subprocess_timeout(
 
 def test_start_writes_bundle_and_supervisorctl_start(
     tmp_path: Path,
-    agent_resources_root: Path,
-    make_manifest: Callable[..., BundleManifest],
+    make_manifest: Callable[..., GenericManifest],
     with_agent_api_key: None,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     manifest = make_manifest()
 
     def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
@@ -204,7 +197,7 @@ def test_start_writes_bundle_and_supervisorctl_start(
     # runtime.env is written alongside bundle so shell scripts pick manifest values up.
     assert (mgr.bundle_volume_path / "runtime.env").is_file()
     # Shared skills are embedded under each agent workspace (no separate shared-skills dir).
-    ws_skill = mgr.bundle_volume_path / "workspaces" / "supervisor" / "skills" / "file-storage" / "SKILL.md"
+    ws_skill = mgr.bundle_volume_path / "workspaces" / "supervisor" / "skills" / "task-management" / "SKILL.md"
     assert ws_skill.is_file()
     assert ws_skill.read_text(encoding="utf-8").strip()
 
@@ -232,10 +225,9 @@ def test_write_runtime_env_empty_proxy(tmp_path: Path) -> None:
 
 def test_start_rejects_when_running(
     tmp_path: Path,
-    agent_resources_root: Path,
-    make_manifest: Callable[..., BundleManifest],
+    make_manifest: Callable[..., GenericManifest],
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with (
         patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run,
         patch.object(mgr, "_gateway_is_ready", return_value=True),
@@ -252,11 +244,10 @@ def test_start_rejects_when_running(
 
 def test_start_maps_already_started_to_rejected(
     tmp_path: Path,
-    agent_resources_root: Path,
-    make_manifest: Callable[..., BundleManifest],
+    make_manifest: Callable[..., GenericManifest],
     with_agent_api_key: None,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
 
     def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
         if "status" in cmd:
@@ -279,11 +270,10 @@ def test_start_maps_already_started_to_rejected(
 
 def test_start_supervisorctl_failure(
     tmp_path: Path,
-    agent_resources_root: Path,
-    make_manifest: Callable[..., BundleManifest],
+    make_manifest: Callable[..., GenericManifest],
     with_agent_api_key: None,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
 
     def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
         if "status" in cmd:
@@ -302,9 +292,8 @@ def test_start_supervisorctl_failure(
 
 def test_stop_success_and_idempotent_not_running(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
         run.return_value = MagicMock(returncode=0, stdout="stopped\n", stderr="")
         assert mgr.stop() == ("completed", None)
@@ -319,9 +308,8 @@ def test_stop_success_and_idempotent_not_running(
 
 def test_stop_failure(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
         run.return_value = MagicMock(returncode=1, stdout="", stderr="permission denied")
         outcome, err = mgr.stop()
@@ -331,11 +319,10 @@ def test_stop_failure(
 
 def test_restart_writes_bundle_and_calls_restart(
     tmp_path: Path,
-    agent_resources_root: Path,
-    make_manifest: Callable[..., BundleManifest],
+    make_manifest: Callable[..., GenericManifest],
     with_agent_api_key: None,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     manifest = make_manifest()
     calls: list[list[str]] = []
 
@@ -355,11 +342,10 @@ def test_restart_writes_bundle_and_calls_restart(
 
 def test_restart_supervisorctl_failure(
     tmp_path: Path,
-    agent_resources_root: Path,
-    make_manifest: Callable[..., BundleManifest],
+    make_manifest: Callable[..., GenericManifest],
     with_agent_api_key: None,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
 
     def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
         if "restart" in cmd:
@@ -374,9 +360,8 @@ def test_restart_supervisorctl_failure(
 
 def test_get_status_detail_running_with_uptime(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
         run.return_value = MagicMock(
             returncode=0,
@@ -394,9 +379,8 @@ def test_get_status_detail_running_with_uptime(
 
 def test_get_status_detail_stopped(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
         run.return_value = MagicMock(
             returncode=0,
@@ -411,9 +395,8 @@ def test_get_status_detail_stopped(
 
 def test_get_status_detail_starting(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
         run.return_value = MagicMock(
             returncode=0,
@@ -488,9 +471,8 @@ def test_create_supervisor_manager_uses_env(
 
 def test_probe_browser_status_kasm_stopped(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
 
     def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
         if "status" in cmd and mgr.kasm_program_name in cmd:
@@ -511,9 +493,8 @@ def test_probe_browser_status_kasm_stopped(
 
 def test_probe_browser_status_kasm_starting(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
 
     def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
         if "status" in cmd and mgr.kasm_program_name in cmd:
@@ -532,9 +513,8 @@ def test_probe_browser_status_kasm_starting(
 
 def test_probe_browser_cdp_timeout_short_uptime_is_starting(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
 
     def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
         if "status" in cmd and mgr.kasm_program_name in cmd:
@@ -558,9 +538,8 @@ def test_probe_browser_cdp_timeout_short_uptime_is_starting(
 
 def test_probe_browser_cdp_timeout_long_uptime_is_error(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
 
     def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
         if "status" in cmd and mgr.kasm_program_name in cmd:
@@ -585,9 +564,8 @@ def test_probe_browser_cdp_timeout_long_uptime_is_error(
 
 def test_probe_browser_running_with_page_targets(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     cdp_payload = [
         {"type": "page", "url": "https://seller.shopify.com/orders", "title": "Orders"},
         {"type": "service_worker", "url": "ignored"},
@@ -630,10 +608,9 @@ def test_probe_browser_running_with_page_targets(
 
 def test_probe_browser_cdp_ok_no_page_targets_long_uptime_is_running(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
     """Kasm RUNNING + reachable CDP + zero page targets after warm-up → running (not stopped)."""
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
 
     class _Resp:
         def __enter__(self) -> "_Resp":
@@ -670,9 +647,8 @@ def test_probe_browser_cdp_ok_no_page_targets_long_uptime_is_running(
 
 def test_open_browser_rejected_when_openclaw_running(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     with patch.object(mgr, "probe_openclaw_status", return_value=("running", None)):
         outcome, err = mgr.open_browser()
     assert outcome == "rejected"
@@ -681,10 +657,9 @@ def test_open_browser_rejected_when_openclaw_running(
 
 def test_open_browser_starts_sidecars_and_chrome(
     tmp_path: Path,
-    agent_resources_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
     sock = tmp_path / "X1"
     sock.parent.mkdir(parents=True, exist_ok=True)
     sock.write_bytes(b"")
@@ -707,9 +682,8 @@ def test_open_browser_starts_sidecars_and_chrome(
 
 def test_close_browser_idempotent(
     tmp_path: Path,
-    agent_resources_root: Path,
 ) -> None:
-    mgr = _mgr(tmp_path, agent_resources_root)
+    mgr = _mgr(tmp_path)
 
     def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
         if cmd and cmd[0] == "/bin/sh":

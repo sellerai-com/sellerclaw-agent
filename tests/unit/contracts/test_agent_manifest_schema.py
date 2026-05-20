@@ -1,13 +1,15 @@
-"""Monorepo copy of agent-manifest-schema.json must validate SaveManifestRequest.to_mapping()."""
+"""Packaged agent-manifest-schema.json (v2) must validate SaveManifestRequest.to_mapping()."""
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 import jsonschema
 import pytest
 from sellerclaw_agent.server.schemas import SaveManifestRequest
+from sellerclaw_agent.test_manifest_fixtures import load_manifest_v2_mapping
 
 pytestmark = pytest.mark.unit
 
@@ -24,18 +26,7 @@ def agent_manifest_schema() -> dict[str, object]:
 def test_save_manifest_request_mapping_validates_against_packaged_schema(
     agent_manifest_schema: dict[str, object],
 ) -> None:
-    req = SaveManifestRequest.model_validate(
-        {
-            "user_id": "11111111-1111-4111-8111-111111111111",
-            "litellm_base_url": "http://litellm",
-            "litellm_api_key": "k",
-            "template_variables": {},
-            "agent_api_base_path": "/agent",
-            "enabled_modules": ["product_scout"],
-            "connected_integrations": ["research_trends"],
-            "model_name_prefix": "u:abc/",
-        }
-    )
+    req = SaveManifestRequest.model_validate(load_manifest_v2_mapping())
     jsonschema.validate(instance=req.to_mapping(), schema=agent_manifest_schema)
 
 
@@ -43,45 +34,20 @@ def test_agent_manifest_schema_allows_extra_web_search_properties(
     agent_manifest_schema: dict[str, object],
 ) -> None:
     """Raw JSON may still include legacy web_search keys during monolith migration."""
-    instance = {
-        "user_id": "11111111-1111-4111-8111-111111111111",
-        "litellm_base_url": "http://litellm",
-        "litellm_api_key": "k",
-        "web_search": {
-            "enabled": True,
-            "provider": "brave",
-            "api_key": "legacy-key",
-            "base_url": "https://old.example",
-        },
+    instance = copy.deepcopy(load_manifest_v2_mapping())
+    instance["web_search"] = {
+        "enabled": True,
+        "provider": "brave",
+        "api_key": "legacy-key",
+        "base_url": "https://old.example",
     }
     jsonschema.validate(instance=instance, schema=agent_manifest_schema)
 
 
-def test_agent_manifest_schema_allows_legacy_models_key(
+def test_agent_manifest_schema_rejects_missing_agents(
     agent_manifest_schema: dict[str, object],
 ) -> None:
-    """Older monolith payloads may still include `models`; schema allows via additionalProperties."""
-    instance = {
-        "user_id": "11111111-1111-4111-8111-111111111111",
-        "litellm_base_url": "http://litellm",
-        "litellm_api_key": "k",
-        "models": {
-            "complex": {
-                "id": "c1",
-                "name": "C",
-                "reasoning": True,
-                "input": ["text"],
-                "context_window": 100,
-                "max_tokens": 50,
-            },
-            "simple": {
-                "id": "s1",
-                "name": "S",
-                "reasoning": False,
-                "input": ["text"],
-                "context_window": 100,
-                "max_tokens": 50,
-            },
-        },
-    }
-    jsonschema.validate(instance=instance, schema=agent_manifest_schema)
+    instance = copy.deepcopy(load_manifest_v2_mapping())
+    del instance["agents"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=instance, schema=agent_manifest_schema)

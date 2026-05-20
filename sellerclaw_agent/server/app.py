@@ -18,8 +18,7 @@ from starlette.responses import Response
 
 from sellerclaw_agent.bundle import GatewayArchivePayload, build_gateway_archive
 from sellerclaw_agent.bundle.builder import BundleBuilder
-from sellerclaw_agent.bundle.manifest import BundleManifest, bundle_manifest_from_mapping
-from sellerclaw_agent.paths import get_agent_resources_root
+from sellerclaw_agent.bundle.manifest import GenericManifest, bundle_manifest_from_mapping
 from sellerclaw_agent.cloud.auth_client import SellerClawAuthClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
@@ -250,7 +249,7 @@ def get_openclaw_manager() -> SupervisorContainerManager:
     return create_supervisor_manager()
 
 
-def _load_saved_bundle_manifest(storage: ManifestStorage) -> BundleManifest:
+def _load_saved_bundle_manifest(storage: ManifestStorage) -> GenericManifest:
     data = storage.load()
     if data is None:
         raise HTTPException(
@@ -586,7 +585,7 @@ def save_manifest(
     bundle_volume_path = Path(
         os.environ.get("OPENCLAW_BUNDLE_VOLUME_PATH", "/opt/config-bundle")
     )
-    write_runtime_env(bundle_volume_path, proxy_url=manifest.proxy_url)
+    write_runtime_env(bundle_volume_path, proxy_url=manifest.resolved_proxy_url)
     return SaveManifestResponse(
         status="ok",
         manifest_path=str(path),
@@ -603,15 +602,12 @@ def download_bundle_archive(
     The control plane should ``POST /manifest`` first so storage contains the latest mapping.
     """
     manifest = _load_saved_bundle_manifest(storage)
-    builder = BundleBuilder(resources_root=get_agent_resources_root())
+    builder = BundleBuilder()
     sec = get_secrets(_get_data_dir())
-    prefix_raw = (manifest.model_name_prefix or "").strip()
-    model_prefix = prefix_raw if prefix_raw else None
     result = builder.build(
         manifest,
         gateway_token=sec.gateway_token,
         hooks_token=sec.hooks_token,
-        model_name_prefix=model_prefix,
         data_dir=_get_data_dir(),
     )
     archive_bytes = build_gateway_archive(
