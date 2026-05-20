@@ -479,6 +479,19 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
     )
 
 
+def test_generate_openclaw_config_visible_replies_is_automatic(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Source replies must be ``automatic`` so the agent's prose is never suppressed.
+
+    Regression guard: with the harness default (``message_tool_only``) OpenClaw drops the
+    run's final assistant text on any turn that also used the ``message`` tool — the user
+    saw the attached image but never the explanation. ``automatic`` keeps the prose visible.
+    """
+    raw = _generate(_supervisor_only(make_assembled_agent))
+    assert json.loads(raw)["messages"]["visibleReplies"] == "automatic"
+
+
 def test_generate_openclaw_config_web_search_enabled_requires_auth_token(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
