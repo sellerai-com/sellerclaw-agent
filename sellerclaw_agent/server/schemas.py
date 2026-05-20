@@ -7,11 +7,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ManifestWebSearch(BaseModel):
-    """Monolith computes BYOK vs corporate; the manifest only toggles tool availability."""
+    """Monolith computes BYOK vs corporate; the manifest only toggles tool availability.
+
+    ``enabled`` is required: when a caller supplies a ``web_search`` block it must state
+    the toggle explicitly (legacy provider/api_key wire fields are ignored, never persisted).
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    enabled: bool = False
+    enabled: bool
 
 
 class GetManifestResponse(BaseModel):
@@ -113,21 +117,27 @@ class SaveManifestRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     user_id: UUID
-    agent_api_base_path: str = ""
+    agent_api_base_path: str
     proxy_url: str = ""
-    web_search: ManifestWebSearch = Field(default_factory=ManifestWebSearch)
+    web_search: ManifestWebSearch | None = None
     llm: dict[str, Any]
     agents: dict[str, Any]
-    channels: dict[str, Any] = Field(default_factory=dict)
+    channels: dict[str, Any]
 
     def to_mapping(self) -> dict[str, object]:
-        """Plain dict for `bundle_manifest_from_mapping` / JSON persistence."""
-        return {
+        """Plain dict for `bundle_manifest_from_mapping` / JSON persistence.
+
+        ``web_search`` is omitted entirely when absent so the parser applies its
+        disabled-by-default; when present only the ``enabled`` toggle round-trips.
+        """
+        mapping: dict[str, object] = {
             "user_id": str(self.user_id),
             "agent_api_base_path": self.agent_api_base_path,
             "proxy_url": self.proxy_url,
-            "web_search": {"enabled": self.web_search.enabled},
             "llm": self.llm,
             "agents": self.agents,
             "channels": self.channels,
         }
+        if self.web_search is not None:
+            mapping["web_search"] = {"enabled": self.web_search.enabled}
+        return mapping

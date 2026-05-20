@@ -148,6 +148,11 @@ export async function postWebhookMessage(
 
 const IMAGE_URL_EXT_RE = /\.(png|jpe?g|webp|gif)(?:[?#]|$)/i;
 
+/** Classify a resolved media reference as an image or a generic file. */
+export function resolveMediaKind(url: string, contentType: string): "image" | "file" {
+  return contentType.startsWith("image/") || IMAGE_URL_EXT_RE.test(url) ? "image" : "file";
+}
+
 /**
  * Resolve one agent-produced media reference to a publicly deliverable URL.
  *
@@ -193,8 +198,7 @@ export async function postWebhookMediaMessage(
     messageId: string;
   },
 ): Promise<{ messageId: string }> {
-  const isImage =
-    params.contentType.startsWith("image/") || IMAGE_URL_EXT_RE.test(params.mediaUrl);
+  const isImage = resolveMediaKind(params.mediaUrl, params.contentType) === "image";
   const rawContent: Record<string, unknown>[] = [];
   if (params.caption.trim()) {
     rawContent.push({ type: "text", text: params.caption });
@@ -213,5 +217,81 @@ export async function postWebhookMediaMessage(
     raw_content: rawContent,
     message_id: params.messageId,
     ...(params.chatId ? { chat_id: params.chatId } : {}),
+  });
+}
+
+// --- Parts pipeline (unified ordered streaming) -------------------------------------
+//
+// ``/internal/openclaw/turn`` opens an assistant message; ``…/{id}/part`` appends one
+// ordered typed part (text delta / image / file); ``…/{id}/end`` finalizes it. ``chatId``
+// is passed as a fallback so the outbound ``sellerclaw-ui:direct:<uuid>`` address (which
+// does not match ``openclaw_session_key``) still resolves the chat server-side.
+
+const TURN_PATH = "/internal/openclaw/turn";
+
+export type OutboundPart =
+  | { part_id: string; kind: "text"; text: string }
+  | {
+      part_id: string;
+      kind: "image" | "file";
+      url: string;
+      filename?: string;
+      content_type?: string;
+    };
+
+async function postTurnRequest(
+  account: ScwUiAccount,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<void> {
+  const url = `${account.apiBaseUrl.replace(/\/$/, "")}${path}`;
+  await postOpenclawWebhook(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${account.agentApiKey}`,
+    },
+    body: JSON.stringify({ user_id: account.userId, ...body }),
+  });
+}
+
+export async function postTurnStart(
+  account: ScwUiAccount,
+  sessionKey: string,
+  messageId: string,
+  chatId: string | null,
+): Promise<void> {
+  await postTurnRequest(account, TURN_PATH, {
+    session_key: sessionKey,
+    message_id: messageId,
+    ...(chatId ? { chat_id: chatId } : {}),
+  });
+}
+
+export async function postTurnPart(
+  account: ScwUiAccount,
+  sessionKey: string,
+  messageId: string,
+  part: OutboundPart,
+  chatId: string | null,
+): Promise<void> {
+  await postTurnRequest(account, `${TURN_PATH}/${messageId}/part`, {
+    session_key: sessionKey,
+    ...(chatId ? { chat_id: chatId } : {}),
+    ...part,
+  });
+}
+
+export async function postTurnEnd(
+  account: ScwUiAccount,
+  sessionKey: string,
+  messageId: string,
+  chatId: string | null,
+  status: "completed" | "failed" = "completed",
+): Promise<void> {
+  await postTurnRequest(account, `${TURN_PATH}/${messageId}/end`, {
+    session_key: sessionKey,
+    status,
+    ...(chatId ? { chat_id: chatId } : {}),
   });
 }

@@ -16,6 +16,9 @@ class AssembledAgentLike(Protocol):
     def model_tier(self) -> object: ...
 
     @property
+    def model_ref(self) -> str: ...
+
+    @property
     def is_entry_point(self) -> bool: ...
 
     @property

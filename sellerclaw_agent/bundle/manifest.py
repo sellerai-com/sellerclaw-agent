@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 from uuid import UUID
 
 
@@ -26,12 +27,18 @@ class ModelInfo:
 
 @dataclass(frozen=True)
 class ModelGroup:
-    """A provider group: base URL + key + the models it exposes."""
+    """A provider group: base URL + key + the models it exposes.
+
+    ``api`` is the OpenClaw provider API hint (e.g. ``openai-completions`` for the
+    LiteLLM virtual group). It is ``None`` for native passthrough providers
+    (anthropic/google) which OpenClaw drives through their own SDKs.
+    """
 
     base_url: str
     api_key: str
     model_name_prefix: str
     models: tuple[ModelInfo, ...]
+    api: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +138,8 @@ class GenericManifest:
     llm: LlmManifest
     agents: AgentsManifest
     channels: ChannelsManifest
+    cron_enabled: bool = True
+    web_fetch_enabled: bool = True
     raw: dict[str, object] = field(default_factory=dict)
 
     def litellm_group(self) -> ModelGroup | None:
@@ -168,6 +177,8 @@ class GenericManifest:
                     "allowed_group_ids": list(self.channels.telegram.allowed_group_ids),
                 },
             },
+            "cron": {"enabled": self.cron_enabled},
+            "web_fetch": {"enabled": self.web_fetch_enabled},
         }
 
 
@@ -222,9 +233,14 @@ def _coerce_int(value: object, default: int = 0) -> int:
 
 def _parse_model_info(value: object, label: str) -> ModelInfo:
     data = _require_mapping(value, label)
+    if "id" not in data or data.get("id") is None:
+        raise ValueError(f"{label}.id is required")
+    model_id = str(data["id"]).strip()
+    if not model_id:
+        raise ValueError(f"{label}.id must not be empty")
     return ModelInfo(
-        id=str(data["id"]),
-        name=str(data.get("name", data["id"])),
+        id=model_id,
+        name=str(data.get("name", model_id)),
         reasoning=bool(data.get("reasoning", False)),
         input=_tuple_str(data.get("input")),
         context_window=_coerce_int(data.get("contextWindow", 0)),
@@ -232,17 +248,64 @@ def _parse_model_info(value: object, label: str) -> ModelInfo:
     )
 
 
+def _looks_like_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
 def _parse_model_group(value: object, label: str) -> ModelGroup:
     data = _require_mapping(value, label)
-    models_raw = data.get("models") or []
+
+    base_url = str(data.get("base_url") or "").strip()
+    if not base_url:
+        raise ValueError(f"{label}.base_url is required")
+    if not _looks_like_url(base_url):
+        raise ValueError(f"{label}.base_url must be a valid http(s) URL, got {base_url!r}")
+
+    if "api_key" not in data or data.get("api_key") is None:
+        raise ValueError(f"{label}.api_key is required")
+    api_key = str(data["api_key"])
+    if not api_key.strip():
+        raise ValueError(f"{label}.api_key must not be empty")
+
+    if "models" not in data or data.get("models") is None:
+        raise ValueError(f"{label}.models is required")
+    models_raw = data["models"]
     if not isinstance(models_raw, (list, tuple)):
         raise TypeError(f"{label}.models must be a list")
+    if not models_raw:
+        raise ValueError(f"{label}.models must not be empty")
+
+    api_raw = data.get("api")
+    if api_raw is not None and not isinstance(api_raw, str):
+        raise ValueError(f"{label}.api must be a string when provided")
+    api = api_raw if isinstance(api_raw, str) and api_raw.strip() else None
+
     return ModelGroup(
-        base_url=str(data.get("base_url", "")),
-        api_key=str(data.get("api_key", "")),
+        base_url=base_url,
+        api_key=api_key,
         model_name_prefix=str(data.get("model_name_prefix") or ""),
         models=tuple(_parse_model_info(m, f"{label}.models[]") for m in models_raw),
+        api=api,
     )
+
+
+def _parse_media_model_block(
+    data: dict[str, object], key: str
+) -> tuple[ModelRef | None, tuple[ModelRef, ...]]:
+    """Parse an ``image_model`` / ``video_model`` / ``pdf_model`` block.
+
+    The block itself is optional, but when present its ``primary`` ref is
+    required and must be a ``{group, model}`` mapping; ``fallbacks`` stay optional.
+    """
+    if key not in data or data.get(key) is None:
+        return None, ()
+    block = _require_mapping(data[key], f"llm.{key}")
+    if "primary" not in block or block.get("primary") is None:
+        raise ValueError(f"llm.{key}.primary is required when llm.{key} is provided")
+    primary = _parse_model_ref(block["primary"], f"llm.{key}.primary")
+    fallbacks = _parse_model_ref_list(block.get("fallbacks"), f"llm.{key}.fallbacks")
+    return primary, fallbacks
 
 
 def _parse_llm(value: object) -> LlmManifest:
@@ -251,42 +314,30 @@ def _parse_llm(value: object) -> LlmManifest:
     text_raw = _require_mapping(data.get("text_model"), "llm.text_model")
     text_model: dict[str, ModelRef] = {}
     for role in ("primary", "secondary"):
-        if role in text_raw and text_raw[role] is not None:
-            text_model[role] = _parse_model_ref(text_raw[role], f"llm.text_model.{role}")
-    if "primary" not in text_model:
-        raise ValueError("llm.text_model.primary is required")
-    text_model.setdefault("secondary", text_model["primary"])
+        if role not in text_raw or text_raw[role] is None:
+            raise ValueError(f"llm.text_model.{role} is required")
+        text_model[role] = _parse_model_ref(text_raw[role], f"llm.text_model.{role}")
 
-    image_raw = _require_mapping(data.get("image_model") or {}, "llm.image_model")
-    video_raw = _require_mapping(data.get("video_model") or {}, "llm.video_model")
-    pdf_raw = _require_mapping(data.get("pdf_model") or {}, "llm.pdf_model")
+    image_primary, image_fallbacks = _parse_media_model_block(data, "image_model")
+    video_primary, video_fallbacks = _parse_media_model_block(data, "video_model")
+    pdf_primary, pdf_fallbacks = _parse_media_model_block(data, "pdf_model")
 
-    groups_raw = _require_mapping(data.get("groups") or {}, "llm.groups")
+    if "groups" not in data or data.get("groups") is None:
+        raise ValueError("llm.groups is required")
+    groups_raw = _require_mapping(data.get("groups"), "llm.groups")
     groups = {
         name: _parse_model_group(group, f"llm.groups.{name}")
         for name, group in groups_raw.items()
     }
 
-    return LlmManifest(
+    llm = LlmManifest(
         text_model=text_model,
-        image_model_primary=_parse_optional_model_ref(
-            image_raw.get("primary"), "llm.image_model.primary"
-        ),
-        image_model_fallbacks=_parse_model_ref_list(
-            image_raw.get("fallbacks"), "llm.image_model.fallbacks"
-        ),
-        video_model_primary=_parse_optional_model_ref(
-            video_raw.get("primary"), "llm.video_model.primary"
-        ),
-        video_model_fallbacks=_parse_model_ref_list(
-            video_raw.get("fallbacks"), "llm.video_model.fallbacks"
-        ),
-        pdf_model_primary=_parse_optional_model_ref(
-            pdf_raw.get("primary"), "llm.pdf_model.primary"
-        ),
-        pdf_model_fallbacks=_parse_model_ref_list(
-            pdf_raw.get("fallbacks"), "llm.pdf_model.fallbacks"
-        ),
+        image_model_primary=image_primary,
+        image_model_fallbacks=image_fallbacks,
+        video_model_primary=video_primary,
+        video_model_fallbacks=video_fallbacks,
+        pdf_model_primary=pdf_primary,
+        pdf_model_fallbacks=pdf_fallbacks,
         compaction_model=_parse_optional_model_ref(
             data.get("compaction_model"), "llm.compaction_model"
         ),
@@ -295,6 +346,43 @@ def _parse_llm(value: object) -> LlmManifest:
         ),
         groups=groups,
     )
+    _validate_model_refs_resolve(llm)
+    return llm
+
+
+def _validate_model_refs_resolve(llm: LlmManifest) -> None:
+    """Every model ref must point at a declared group (and, when the group lists
+    models, at a declared model id). Catches typos / drift between the routing
+    block and the provider groups before they reach the OpenClaw config."""
+    group_model_ids = {name: {m.id for m in group.models} for name, group in llm.groups.items()}
+
+    def _check(ref: ModelRef | None, label: str) -> None:
+        if ref is None:
+            return
+        if ref.group not in group_model_ids:
+            raise ValueError(
+                f"{label} references unknown group {ref.group!r}; "
+                f"must be one of {sorted(group_model_ids)}"
+            )
+        known = group_model_ids[ref.group]
+        if known and ref.model not in known:
+            raise ValueError(
+                f"{label} references model {ref.model!r} not declared in group {ref.group!r}"
+            )
+
+    for role, ref in llm.text_model.items():
+        _check(ref, f"llm.text_model.{role}")
+    _check(llm.image_model_primary, "llm.image_model.primary")
+    for i, ref in enumerate(llm.image_model_fallbacks):
+        _check(ref, f"llm.image_model.fallbacks[{i}]")
+    _check(llm.video_model_primary, "llm.video_model.primary")
+    for i, ref in enumerate(llm.video_model_fallbacks):
+        _check(ref, f"llm.video_model.fallbacks[{i}]")
+    _check(llm.pdf_model_primary, "llm.pdf_model.primary")
+    for i, ref in enumerate(llm.pdf_model_fallbacks):
+        _check(ref, f"llm.pdf_model.fallbacks[{i}]")
+    _check(llm.compaction_model, "llm.compaction_model")
+    _check(llm.memory_flush_model, "llm.memory_flush_model")
 
 
 def _parse_agent_content(value: object, label: str) -> AgentContent:
@@ -353,6 +441,7 @@ def _parse_agent_spec(
     is_entry_point: bool,
     subagent_ids: tuple[str, ...],
     thinking_default: str,
+    model_default: str,
     browser_enabled_default: bool,
     image_generation_default: bool,
     video_generation_default: bool,
@@ -364,7 +453,7 @@ def _parse_agent_spec(
         raise ValueError(f"{label}.id must not be empty")
     if not name:
         raise ValueError(f"{label}.name must not be empty")
-    model = str(data.get("model") or "primary").strip() or "primary"
+    model = str(data.get("model") or model_default).strip() or model_default
     if model not in ("primary", "secondary"):
         raise ValueError(f"{label}.model must be 'primary' or 'secondary', got {model!r}")
 
@@ -391,6 +480,10 @@ def _parse_agents(value: object) -> AgentsManifest:
     data = _require_mapping(value, "agents")
     thinking_default = str(data.get("thinking_default") or "adaptive").strip() or "adaptive"
     model_default = str(data.get("model_default") or "primary").strip() or "primary"
+    if model_default not in ("primary", "secondary"):
+        raise ValueError(
+            f"agents.model_default must be 'primary' or 'secondary', got {model_default!r}"
+        )
     browser_enabled_default = bool(data.get("browser_enabled_default", True))
     image_generation_default = bool(data.get("image_generation_default", False))
     video_generation_default = bool(data.get("video_generation_default", False))
@@ -405,6 +498,7 @@ def _parse_agents(value: object) -> AgentsManifest:
             is_entry_point=False,
             subagent_ids=(),
             thinking_default=thinking_default,
+            model_default=model_default,
             browser_enabled_default=browser_enabled_default,
             image_generation_default=image_generation_default,
             video_generation_default=video_generation_default,
@@ -419,10 +513,15 @@ def _parse_agents(value: object) -> AgentsManifest:
         is_entry_point=True,
         subagent_ids=subagent_ids,
         thinking_default=thinking_default,
+        model_default=model_default,
         browser_enabled_default=browser_enabled_default,
         image_generation_default=image_generation_default,
         video_generation_default=video_generation_default,
     )
+
+    all_ids = [main_agent.id, *subagent_ids]
+    if len(set(all_ids)) != len(all_ids):
+        raise ValueError(f"agent ids must be unique across main_agent and subagents, got {all_ids}")
 
     return AgentsManifest(
         thinking_default=thinking_default,
@@ -435,8 +534,21 @@ def _parse_agents(value: object) -> AgentsManifest:
     )
 
 
+_ALLOWED_PRIMARY_CHANNELS = ("sellerclaw-ui", "telegram")
+
+
 def _parse_channels(value: object) -> ChannelsManifest:
-    data = _require_mapping(value or {}, "channels")
+    data = _require_mapping(value, "channels")
+
+    if "primary" not in data or data.get("primary") is None:
+        raise ValueError("channels.primary is required")
+    primary = str(data.get("primary") or "").strip()
+    if primary not in _ALLOWED_PRIMARY_CHANNELS:
+        raise ValueError(
+            f"channels.primary must be one of {list(_ALLOWED_PRIMARY_CHANNELS)}, got {primary!r}"
+        )
+
+    telegram_present = "telegram" in data and data.get("telegram") is not None
     tg_raw = data.get("telegram") or {}
     if not isinstance(tg_raw, dict):
         raise ValueError("channels.telegram must be a mapping")
@@ -446,10 +558,27 @@ def _parse_channels(value: object) -> ChannelsManifest:
         allowed_user_ids=_tuple_str(tg_raw.get("allowed_user_ids")),
         allowed_group_ids=_tuple_str(tg_raw.get("allowed_group_ids")),
     )
-    return ChannelsManifest(
-        primary=str(data.get("primary") or "sellerclaw-ui").strip() or "sellerclaw-ui",
-        telegram=telegram,
-    )
+
+    if primary == "telegram":
+        if not telegram_present:
+            raise ValueError("channels.telegram is required when channels.primary is 'telegram'")
+        if not telegram.enabled:
+            raise ValueError(
+                "channels.telegram.enabled must be true when channels.primary is 'telegram'"
+            )
+
+    if telegram.enabled:
+        if not telegram.bot_token.strip():
+            raise ValueError("channels.telegram.bot_token is required when telegram is enabled")
+        allowed_user_ids_raw = tg_raw.get("allowed_user_ids")
+        if allowed_user_ids_raw is None:
+            raise ValueError(
+                "channels.telegram.allowed_user_ids is required when telegram is enabled"
+            )
+        if not isinstance(allowed_user_ids_raw, list):
+            raise ValueError("channels.telegram.allowed_user_ids must be a list")
+
+    return ChannelsManifest(primary=primary, telegram=telegram)
 
 
 def _normalize_agent_api_base_path(value: object) -> str:
@@ -468,18 +597,44 @@ def _normalize_agent_api_base_path(value: object) -> str:
     return normalized
 
 
+_REQUIRED_TOP_LEVEL_FIELDS = ("user_id", "agent_api_base_path", "llm", "agents", "channels")
+
+
+def _parse_enabled_toggle(data: dict[str, object], key: str, *, default: bool) -> bool:
+    """Parse an optional ``{key: {"enabled": bool}}`` toggle block.
+
+    Absent block -> ``default``. When the block is present its ``enabled`` flag must
+    be present and a boolean (mirrors ``web_search`` strictness).
+    """
+    if key not in data or data.get(key) is None:
+        return default
+    raw = data[key]
+    if not isinstance(raw, dict):
+        raise ValueError(f"{key} must be a mapping")
+    if "enabled" not in raw:
+        raise ValueError(f"{key}.enabled is required when {key} is provided")
+    enabled = raw["enabled"]
+    if not isinstance(enabled, bool):
+        raise ValueError(f"{key}.enabled must be a boolean")
+    return enabled
+
+
+def _parse_web_search(data: dict[str, object]) -> WebSearchManifest:
+    """``web_search`` is optional (defaults to disabled), but when supplied its
+    ``enabled`` flag must be present and a boolean."""
+    return WebSearchManifest(enabled=_parse_enabled_toggle(data, "web_search", default=False))
+
+
 def bundle_manifest_from_mapping(data: dict[str, object]) -> GenericManifest:
     """Build :class:`GenericManifest` from a plain dict (the v2 contract).
 
     Raises ``ValueError``/``TypeError`` on malformed input.
     """
-    if "user_id" not in data:
-        raise ValueError("user_id is required")
+    for field_name in _REQUIRED_TOP_LEVEL_FIELDS:
+        if field_name not in data:
+            raise ValueError(f"{field_name} is required")
 
-    ws_raw = data.get("web_search") or {}
-    if not isinstance(ws_raw, dict):
-        raise ValueError("web_search must be a mapping")
-    web_search = WebSearchManifest(enabled=bool(ws_raw.get("enabled", False)))
+    web_search = _parse_web_search(data)
 
     return GenericManifest(
         user_id=UUID(str(data["user_id"])),
@@ -489,6 +644,8 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> GenericManifest:
         llm=_parse_llm(data.get("llm")),
         agents=_parse_agents(data.get("agents")),
         channels=_parse_channels(data.get("channels")),
+        cron_enabled=_parse_enabled_toggle(data, "cron", default=True),
+        web_fetch_enabled=_parse_enabled_toggle(data, "web_fetch", default=True),
         raw={str(k): v for k, v in data.items()},
     )
 
@@ -509,12 +666,15 @@ def _model_info_to_mapping(info: ModelInfo) -> dict[str, object]:
 
 
 def _model_group_to_mapping(group: ModelGroup) -> dict[str, object]:
-    return {
+    out: dict[str, object] = {
         "base_url": group.base_url,
         "api_key": group.api_key,
         "model_name_prefix": group.model_name_prefix,
         "models": [_model_info_to_mapping(m) for m in group.models],
     }
+    if group.api is not None:
+        out["api"] = group.api
+    return out
 
 
 def _llm_to_mapping(llm: LlmManifest) -> dict[str, object]:

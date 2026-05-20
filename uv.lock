@@ -667,7 +667,7 @@ dev = [
 
 [[package]]
 name = "sellerclaw-cli"
-version = "0.7.0"
+version = "0.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
@@ -678,9 +678,9 @@ dependencies = [
     { name = "tomli-w" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f0/76/c3498180614fd487e028de04200fab7c42b5bf25795ea07c9b1c0e8a6702/sellerclaw_cli-0.7.0.tar.gz", hash = "sha256:c1b237d3240485478dbf4270ccef934fe283b709ce0f8ffb7d698823e2935c74", size = 71144, upload-time = "2026-04-29T11:15:47.891Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/9e/f2efc202251715f2d130a56aed6aa6f760e135c3fc2afe85ecaa19ef3066/sellerclaw_cli-0.13.0.tar.gz", hash = "sha256:8c7153dfd7a5ff6d65c29d679463be16ce4db322a2ae0fa97ac92e2ce9c37fe7", size = 88267, upload-time = "2026-05-19T14:59:54.24Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/d9/f403a60e8976f7624fd63819a34cbaeadfd3620426df98bec524c1f0c778/sellerclaw_cli-0.7.0-py3-none-any.whl", hash = "sha256:14102a9ab1cbb4c4efbf1a2e2e9b36e59e52df60079c8b8e11f83c6711d38a04", size = 90461, upload-time = "2026-04-29T11:15:46.508Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/8b/cdc440b664cb768f231f7d01a150ca31d04c630017dc9f71ee2ca8f244c2/sellerclaw_cli-0.13.0-py3-none-any.whl", hash = "sha256:f21b75681769279e1f009840602ab347dba6477aeb06dfa25075998915b67e1e", size = 108773, upload-time = "2026-05-19T14:59:52.534Z" },
 ]
 
 [[package]]

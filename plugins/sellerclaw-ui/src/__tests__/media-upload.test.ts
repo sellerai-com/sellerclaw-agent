@@ -95,288 +95,198 @@ describe("uploadLocalMedia", () => {
   });
 });
 
-describe("outboundSendImage auto-uploads local paths", () => {
+/**
+ * All outbound sends funnel through the turn/part/end endpoints — each send is its own
+ * assistant message. Local artifacts are proxy-uploaded before the media part is posted.
+ */
+describe("outbound parts pipeline", () => {
   const originalFetch = globalThis.fetch;
+  const partsAccount: ScwUiAccount = { ...account };
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
   });
 
-  it("uploads when imagePath is provided and forwards download_url to webhook", async () => {
-    const uploadResponse = jsonResponse({
-      file_id: "f1",
-      filename: "shot.png",
-      content_type: "image/png",
-      size_bytes: 11,
-      download_url: "https://cloud.example/files/f1/shot.png",
-      expires_at: "2099-01-01T00:00:00Z",
-    });
-    const webhookResponse = jsonResponse({ message: { id: "m-ok" } });
+  it("sendText delivers as turn → text part → end", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
+
+    const plugin = sellerclawUiChannelPlugin as {
+      outbound: { sendText: (p: unknown) => Promise<{ messageId: string }> };
+    };
+    await plugin.outbound.sendText({ account: partsAccount, to: SESSION_KEY, text: "hello" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+    expect(urls[0]).toBe("https://api.example.com/internal/openclaw/turn");
+    expect(urls[1]).toMatch(/\/internal\/openclaw\/turn\/[0-9a-f-]+\/part$/);
+    expect(urls[2]).toMatch(/\/internal\/openclaw\/turn\/[0-9a-f-]+\/end$/);
+    const startBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(startBody).toMatchObject({ chat_id: "550e8400-e29b-41d4-a716-446655440000" });
+    const partBody = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string);
+    expect(partBody).toMatchObject({ kind: "text", text: "hello" });
+  });
+
+  it("sendMedia uploads a local path then delivers caption + image parts", async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(uploadResponse)
-      .mockResolvedValueOnce(webhookResponse);
+      .mockResolvedValueOnce(
+        jsonResponse({
+          download_url: "https://cloud.example/f/cat.png",
+          content_type: "image/png",
+          filename: "cat.png",
+        }),
+      )
+      .mockResolvedValue(jsonResponse({ ok: true }));
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
-    const result = await plugin.outbound.sendImage({
-      account,
-      sessionKey: "sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
+    await plugin.outbound.sendMedia({
+      account: partsAccount,
+      to: SESSION_KEY,
+      text: "caption",
+      mediaUrl: "/home/node/.openclaw/media/cat.png",
+    });
+
+    // upload + turn + part(text) + part(image) + end
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+    expect(urls[0]).toBe("http://127.0.0.1:8001/internal/openclaw/media/upload-local");
+    expect(urls[1]).toBe("https://api.example.com/internal/openclaw/turn");
+    expect(urls[urls.length - 1]).toMatch(/\/end$/);
+    const textPart = JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string);
+    expect(textPart).toMatchObject({ kind: "text", text: "caption" });
+    const imagePart = JSON.parse((fetchMock.mock.calls[3][1] as RequestInit).body as string);
+    expect(imagePart).toMatchObject({
+      kind: "image",
+      url: "https://cloud.example/f/cat.png",
+      content_type: "image/png",
+    });
+  });
+
+  it("sendImage uploads a local imagePath and delivers an image part", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ download_url: "https://cloud.example/f/shot.png", content_type: "image/png" }),
+      )
+      .mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
+
+    const plugin = sellerclawUiChannelPlugin as PluginOutbound;
+    await plugin.outbound.sendImage({
+      account: partsAccount,
+      to: SESSION_KEY,
       text: "here is the page",
       imagePath: "/home/node/.openclaw/media/browser/abc.jpg",
     });
 
-    expect(result).toEqual({ messageId: "m-ok" });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-
-    const [uploadUrl, uploadInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(uploadUrl).toBe("http://127.0.0.1:8001/internal/openclaw/media/upload-local");
-    expect(JSON.parse(uploadInit.body as string)).toEqual({
+    const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+    expect(urls[0]).toBe("http://127.0.0.1:8001/internal/openclaw/media/upload-local");
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
       local_path: "/home/node/.openclaw/media/browser/abc.jpg",
     });
-
-    const [webhookUrl, webhookInit] = fetchMock.mock.calls[1] as [string, RequestInit];
-    expect(webhookUrl).toBe("https://api.example.com/internal/openclaw/messages");
-    const body = JSON.parse(webhookInit.body as string) as {
-      raw_content: Array<{ type: string; image_url?: { url: string } }>;
-      text: string;
-    };
-    const image = body.raw_content.find((e) => e.type === "image_url");
-    expect(image?.image_url?.url).toBe("https://cloud.example/files/f1/shot.png");
-    expect(body.text).toBe("here is the page");
+    expect(urls[1]).toBe("https://api.example.com/internal/openclaw/turn");
+    expect(urls[urls.length - 1]).toMatch(/\/end$/);
+    const parts = fetchMock.mock.calls
+      .slice(2)
+      .map((c) => JSON.parse((c[1] as RequestInit).body as string) as Record<string, unknown>);
+    expect(parts).toContainEqual(expect.objectContaining({ kind: "text", text: "here is the page" }));
+    expect(parts).toContainEqual(
+      expect.objectContaining({ kind: "image", url: "https://cloud.example/f/shot.png" }),
+    );
   });
 
-  it("uploads when imageUrl is a local path", async () => {
+  it("sendImage strips a file:// prefix before upload", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        jsonResponse({
-          file_id: "f2",
-          filename: "x.png",
-          content_type: "image/png",
-          size_bytes: 1,
-          download_url: "https://cloud.example/files/f2/x.png",
-          expires_at: "z",
-        }),
+        jsonResponse({ download_url: "https://cloud.example/f/x.png", content_type: "image/png" }),
       )
-      .mockResolvedValueOnce(jsonResponse({ message: { id: "m2" } }));
+      .mockResolvedValue(jsonResponse({ ok: true }));
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
     await plugin.outbound.sendImage({
-      account,
-      sessionKey: "sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
-      imageUrl: "/tmp/snapshot.png",
-    });
-
-    const [uploadUrl, uploadInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(uploadUrl).toBe("http://127.0.0.1:8001/internal/openclaw/media/upload-local");
-    expect(JSON.parse(uploadInit.body as string)).toEqual({
-      local_path: "/tmp/snapshot.png",
-    });
-  });
-
-  it("strips file:// prefix before upload", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse({
-          file_id: "f3",
-          filename: "x.png",
-          content_type: "image/png",
-          size_bytes: 1,
-          download_url: "https://cloud.example/files/f3/x.png",
-          expires_at: "z",
-        }),
-      )
-      .mockResolvedValueOnce(jsonResponse({ message: { id: "m3" } }));
-    globalThis.fetch = fetchMock;
-
-    const plugin = sellerclawUiChannelPlugin as PluginOutbound;
-    await plugin.outbound.sendImage({
-      account,
-      sessionKey: "sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
+      account: partsAccount,
+      to: SESSION_KEY,
       imagePath: "file:///home/node/.openclaw/media/abc.png",
     });
 
-    const [, uploadInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(uploadInit.body as string)).toEqual({
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
       local_path: "/home/node/.openclaw/media/abc.png",
     });
   });
 
-  it("does not upload when imageUrl is already HTTPS", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse({ message: { id: "m-direct" } }));
+  it("sendImage passes a public https URL straight through (no upload)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
-    const result = await plugin.outbound.sendImage({
-      account,
-      sessionKey: "sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
+    await plugin.outbound.sendImage({
+      account: partsAccount,
+      to: SESSION_KEY,
       imageUrl: "https://cdn.example/already-public.png",
     });
 
-    expect(result).toEqual({ messageId: "m-direct" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://api.example.com/internal/openclaw/messages");
+    const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+    expect(urls.some((u) => u.includes("upload-local"))).toBe(false);
+    expect(urls[0]).toBe("https://api.example.com/internal/openclaw/turn");
+    const imagePart = fetchMock.mock.calls
+      .map((c) => {
+        try {
+          return JSON.parse((c[1] as RequestInit).body as string) as Record<string, unknown>;
+        } catch {
+          return {};
+        }
+      })
+      .find((b) => b.kind === "image");
+    expect(imagePart?.url).toBe("https://cdn.example/already-public.png");
   });
 
-  it("throws when neither imageUrl nor imagePath is provided", async () => {
+  it("sendImage throws when neither imageUrl nor imagePath is provided", async () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
     await expect(
-      plugin.outbound.sendImage({
-        account,
-        sessionKey: "sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
-      }),
+      plugin.outbound.sendImage({ account: partsAccount, to: SESSION_KEY }),
     ).rejects.toThrow("imageUrl or imagePath is required");
     expect(fetchMock).not.toHaveBeenCalled();
   });
-});
 
-/**
- * `outbound.sendMedia` is the path OpenClaw's normalized outbound deliverer uses
- * (incl. the requester-agent handoff that delivers background `image_generate`
- * results). The runtime calls it with `{ text: caption, mediaUrl }`.
- */
-describe("outboundSendMedia delivers media via the outbound deliver pipeline", () => {
-  const originalFetch = globalThis.fetch;
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-    vi.restoreAllMocks();
-  });
-
-  it("uploads a local mediaUrl and delivers it as an image part with the caption", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse({
-          file_id: "f1",
-          filename: "cat.png",
-          content_type: "image/png",
-          size_bytes: 11,
-          download_url: "https://cloud.example/files/f1/cat.png",
-          expires_at: "2099-01-01T00:00:00Z",
-        }),
-      )
-      .mockResolvedValueOnce(jsonResponse({ message: { id: "m-media" } }));
-    globalThis.fetch = fetchMock;
-
-    const plugin = sellerclawUiChannelPlugin as PluginOutbound;
-    const result = await plugin.outbound.sendMedia({
-      account,
-      to: SESSION_KEY,
-      text: "Here is the blue Cornish Rex.",
-      mediaUrl: "/home/node/.openclaw/media/tool-image-generation/cat.png",
-    });
-
-    expect(result).toEqual({ messageId: "m-media" });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-
-    const [uploadUrl, uploadInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(uploadUrl).toBe("http://127.0.0.1:8001/internal/openclaw/media/upload-local");
-    expect(JSON.parse(uploadInit.body as string)).toEqual({
-      local_path: "/home/node/.openclaw/media/tool-image-generation/cat.png",
-    });
-
-    const [webhookUrl, webhookInit] = fetchMock.mock.calls[1] as [string, RequestInit];
-    expect(webhookUrl).toBe("https://api.example.com/internal/openclaw/messages");
-    const body = JSON.parse(webhookInit.body as string) as {
-      raw_content: Array<{ type: string; text?: string; image_url?: { url: string } }>;
-      text: string;
-      chat_id: string;
-    };
-    expect(body.text).toBe("Here is the blue Cornish Rex.");
-    expect(body.chat_id).toBe("550e8400-e29b-41d4-a716-446655440000");
-    expect(body.raw_content).toContainEqual({
-      type: "text",
-      text: "Here is the blue Cornish Rex.",
-    });
-    expect(body.raw_content).toContainEqual({
-      type: "image_url",
-      image_url: { url: "https://cloud.example/files/f1/cat.png" },
-    });
-  });
-
-  it("passes through a public https image URL without uploading", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ message: { id: "m2" } }));
+  it("sendMedia delivers a non-image URL as a file part", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
     await plugin.outbound.sendMedia({
-      account,
+      account: partsAccount,
       to: SESSION_KEY,
-      mediaUrl: "https://cdn.example/already-public.png",
-    });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [webhookUrl, webhookInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(webhookUrl).toBe("https://api.example.com/internal/openclaw/messages");
-    const body = JSON.parse(webhookInit.body as string) as {
-      raw_content: Array<{ type: string; image_url?: { url: string } }>;
-      text: string;
-    };
-    // No caption → a single space keeps backend `text` validation happy while
-    // rendering as an image-only bubble.
-    expect(body.text).toBe(" ");
-    expect(body.raw_content).toEqual([
-      { type: "image_url", image_url: { url: "https://cdn.example/already-public.png" } },
-    ]);
-  });
-
-  it("delivers a non-image URL as a file part", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ message: { id: "m3" } }));
-    globalThis.fetch = fetchMock;
-
-    const plugin = sellerclawUiChannelPlugin as PluginOutbound;
-    await plugin.outbound.sendMedia({
-      account,
-      to: SESSION_KEY,
-      text: "Your report",
       mediaUrl: "https://cdn.example/report.pdf",
     });
 
-    const [, webhookInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(webhookInit.body as string) as {
-      raw_content: Array<{ type: string; file_url?: { url: string } }>;
-    };
-    expect(body.raw_content).toContainEqual({
-      type: "file_url",
-      file_url: { url: "https://cdn.example/report.pdf" },
-    });
+    const filePart = fetchMock.mock.calls
+      .map((c) => {
+        try {
+          return JSON.parse((c[1] as RequestInit).body as string) as Record<string, unknown>;
+        } catch {
+          return {};
+        }
+      })
+      .find((b) => b.kind === "file");
+    expect(filePart?.url).toBe("https://cdn.example/report.pdf");
   });
 
-  it("throws when mediaUrl is missing", async () => {
+  it("sendMedia throws when mediaUrl is missing", async () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
     await expect(
-      plugin.outbound.sendMedia({ account, to: SESSION_KEY, text: "no media" }),
+      plugin.outbound.sendMedia({ account: partsAccount, to: SESSION_KEY, text: "no media" }),
     ).rejects.toThrow("mediaUrl is required");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("does not deliver when the silent flag is set", async () => {
-    const fetchMock = vi.fn();
-    globalThis.fetch = fetchMock;
-
-    const plugin = sellerclawUiChannelPlugin as PluginOutbound;
-    const result = await plugin.outbound.sendMedia({
-      account,
-      to: SESSION_KEY,
-      mediaUrl: "https://cdn.example/x.png",
-      silent: true,
-    });
-
-    expect(result).toEqual({ messageId: "silent" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

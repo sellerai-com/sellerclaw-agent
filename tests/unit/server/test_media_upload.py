@@ -183,6 +183,20 @@ class TestValidateLocalPath:
         resolved = media_upload._validate_local_path(str(allowed_file))
         assert resolved == allowed_file.resolve()
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("/home/node/.openclaw/media/", id="media"),
+            pytest.param("/home/node/.openclaw/workspace-", id="workspace-prefix"),
+            pytest.param("/tmp/", id="tmp"),
+        ],
+    )
+    def test_default_allowed_prefixes_cover_known_artifact_dirs(self, path: str) -> None:
+        # Regression: OpenClaw skills (e.g. `diagram-maker`) write artifacts under
+        # ``workspace-<agent>/diagrams/``; an earlier whitelist only covered ``media/``
+        # and ``/tmp/``, so every diagram upload failed with 403 ``path_not_allowed``.
+        assert path in media_upload.ALLOWED_PATH_PREFIXES
+
 
 class TestValidateExtension:
     @pytest.mark.parametrize(
@@ -191,6 +205,11 @@ class TestValidateExtension:
             pytest.param("shot.png", ".png", id="png"),
             pytest.param("report.CSV", ".csv", id="case-insensitive"),
             pytest.param("doc.md", ".md", id="markdown"),
+            # Cloud-accepted artifacts the proxy must not reject (regression for the
+            # 415 that dropped agent-generated diagrams/reports from chat).
+            pytest.param("diagram.html", ".html", id="html"),
+            pytest.param("report.pdf", ".pdf", id="pdf"),
+            pytest.param("sheet.xlsx", ".xlsx", id="xlsx"),
         ],
     )
     def test_allowed(self, filename: str, expected: str) -> None:

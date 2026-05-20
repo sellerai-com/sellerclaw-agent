@@ -430,9 +430,7 @@ describe("sendText resolves account from stored plugin config", () => {
   });
 
   it("falls back to plugin config when params lack account and config", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ message: { id: "cfg-fallback" } }, 200),
-    );
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     globalThis.fetch = fetchMock;
 
     setPluginConfig({
@@ -452,8 +450,12 @@ describe("sendText resolves account from stored plugin config", () => {
       text: "hello from subagent",
     });
 
-    expect(result).toEqual({ messageId: "cfg-fallback" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Account resolved from stored plugin config → the turn endpoints are reached.
+    expect(typeof result.messageId).toBe("string");
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls[0]).toBe("https://api.example.com/internal/openclaw/turn");
+    expect(urls.some((u) => /\/turn\/[0-9a-f-]+\/part$/.test(u))).toBe(true);
+    expect(urls.some((u) => /\/turn\/[0-9a-f-]+\/end$/.test(u))).toBe(true);
   });
 
   it("throws when no account, no config, and no plugin config stored", async () => {
@@ -496,9 +498,7 @@ describe("top-level outbound sendText", () => {
   });
 
   it("sends via top-level outbound.sendText (proactive path)", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ message: { id: "proactive-1" } }, 200),
-    );
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
@@ -508,25 +508,26 @@ describe("top-level outbound sendText", () => {
       text: "proactive message",
     });
 
-    expect(result).toEqual({ messageId: "proactive-1" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(typeof result.messageId).toBe("string");
+    // Self-contained turn: start → text part → end.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls[0]).toBe("https://api.example.com/internal/openclaw/turn");
+    expect(urls[2]).toMatch(/\/turn\/[0-9a-f-]+\/end$/);
   });
 
   it("includes chat_id when to is a channel address with UUID", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ message: { id: "announce-1" } }, 200),
-    );
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
-    const result = await plugin.outbound.sendText({
+    await plugin.outbound.sendText({
       account,
       to: "sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
       text: "subagent result",
     });
 
-    expect(result).toEqual({ messageId: "announce-1" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // chat_id fallback rides every turn request so the bare channel address resolves.
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.chat_id).toBe("550e8400-e29b-41d4-a716-446655440000");
@@ -534,19 +535,16 @@ describe("top-level outbound sendText", () => {
   });
 
   it("does not include chat_id when sessionKey is a full session key", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ message: { id: "direct-1" } }, 200),
-    );
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
-    const result = await plugin.outbound.sendText({
+    await plugin.outbound.sendText({
       account,
       sessionKey: "agent:supervisor:sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
       text: "reply message",
     });
 
-    expect(result).toEqual({ messageId: "direct-1" });
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body.chat_id).toBeUndefined();

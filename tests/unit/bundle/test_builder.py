@@ -1,18 +1,31 @@
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sellerclaw_agent.bundle.builder import BundleBuilder, derive_agent_tools
-from sellerclaw_agent.bundle.manifest import GenericManifest
+from sellerclaw_agent.bundle.manifest import GenericManifest, bundle_manifest_from_mapping
+from sellerclaw_agent.test_manifest_fixtures import load_manifest_v2_mapping
 
 pytestmark = pytest.mark.unit
 
 _GW = "gw"
 _HOOKS = "hooks"
+
+
+def _config_from_llm(mutate_llm: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
+    """Build the OpenClaw config from the v2 fixture, optionally mutating its ``llm`` block."""
+    mapping = copy.deepcopy(load_manifest_v2_mapping())
+    if mutate_llm is not None:
+        mutate_llm(mapping["llm"])
+    manifest = bundle_manifest_from_mapping(mapping)
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS, agent_api_key="k")
+    return json.loads(result.openclaw_config)
 
 
 def _agent_payload(cfg: dict, agent_id: str) -> dict:
@@ -52,6 +65,139 @@ def test_bundle_builder_includes_subagent_workspaces(
     assert "scout/skills/trend-analysis/SKILL.md" in result.workspaces
 
 
+def test_defaults_models_derived_from_manifest_llm() -> None:
+    defaults = _config_from_llm()["agents"]["defaults"]
+    assert defaults["model"] == {"primary": "litellm/u:5fdc144e/complex"}
+    assert defaults["imageGenerationModel"] == {"primary": "litellm/u:5fdc144e/image"}
+    assert defaults["videoGenerationModel"] == {"primary": "google/veo-3.1-fast-generate-preview"}
+    assert defaults["pdfModel"] == {
+        "primary": "anthropic/claude-sonnet-4-6",
+        "fallbacks": ["google/gemini-3.1-pro-preview"],
+    }
+    assert defaults["compaction"]["model"] == "litellm/u:5fdc144e/simple"
+    assert defaults["compaction"]["memoryFlush"]["model"] == "litellm/u:5fdc144e/simple"
+
+
+def test_defaults_omit_media_models_when_manifest_omits_them() -> None:
+    def _drop(llm: dict[str, Any]) -> None:
+        llm.pop("image_model")
+        llm.pop("video_model")
+        llm.pop("pdf_model")
+
+    defaults = _config_from_llm(_drop)["agents"]["defaults"]
+    assert "imageGenerationModel" not in defaults
+    assert "videoGenerationModel" not in defaults
+    assert "pdfModel" not in defaults
+    # text_model.primary -> model stays present.
+    assert defaults["model"] == {"primary": "litellm/u:5fdc144e/complex"}
+
+
+def test_compaction_falls_back_to_text_primary_when_manifest_omits() -> None:
+    def _drop(llm: dict[str, Any]) -> None:
+        llm.pop("compaction_model")
+        llm.pop("memory_flush_model")
+
+    compaction = _config_from_llm(_drop)["agents"]["defaults"]["compaction"]
+    assert compaction["model"] == "litellm/u:5fdc144e/complex"
+    assert compaction["memoryFlush"]["model"] == "litellm/u:5fdc144e/complex"
+
+
+def test_providers_built_from_manifest_groups() -> None:
+    """``models.providers`` is built strictly from the manifest groups: the litellm
+    virtual group carries ``api`` + prefixed ids + manifest metadata; the native
+    passthrough providers keep their own (independent) baseUrls and omit ``api``."""
+    providers = _config_from_llm()["models"]["providers"]
+
+    litellm = providers["litellm"]
+    assert litellm["baseUrl"] == "https://example.ngrok-free.dev/litellm"
+    assert litellm["apiKey"] == "sk-EXAMPLEKEY"
+    assert litellm["api"] == "openai-completions"
+    by_id = {m["id"]: m for m in litellm["models"]}
+    assert set(by_id) == {
+        "u:5fdc144e/complex",
+        "u:5fdc144e/simple",
+        "u:5fdc144e/mini",
+        "u:5fdc144e/image",
+        "u:5fdc144e/video",
+    }
+    assert by_id["u:5fdc144e/complex"] == {
+        "id": "u:5fdc144e/complex",
+        "name": "Frontier (auto)",
+        "reasoning": True,
+        "input": ["text", "image"],
+        "contextWindow": 128000,
+        "maxTokens": 8192,
+    }
+
+    anthropic = providers["anthropic"]
+    assert anthropic["baseUrl"] == "https://example.ngrok-free.dev/litellm/anthropic"
+    assert anthropic["apiKey"] == "sk-EXAMPLEKEY"
+    assert "api" not in anthropic
+    assert anthropic["models"] == [
+        {
+            "id": "claude-sonnet-4-6",
+            "name": "Claude Sonnet 4.6",
+            "reasoning": False,
+            "input": ["text", "image"],
+            "contextWindow": 200000,
+            "maxTokens": 8192,
+        }
+    ]
+
+    google = providers["google"]
+    assert google["baseUrl"] == "https://example.ngrok-free.dev/litellm/gemini"
+    assert "api" not in google
+    assert {m["id"] for m in google["models"]} == {
+        "gemini-3.1-pro-preview",
+        "veo-3.1-fast-generate-preview",
+    }
+
+
+def test_per_agent_model_from_manifest_text_refs_and_heartbeat_disabled() -> None:
+    """Per-agent ``model`` is the manifest text ref for the agent's role; heartbeat is
+    disabled for every agent (no ``heartbeat`` block emitted)."""
+    cfg = _config_from_llm()
+    assert _agent_payload(cfg, "supervisor")["model"] == "litellm/u:5fdc144e/complex"
+    assert _agent_payload(cfg, "scout")["model"] == "litellm/u:5fdc144e/complex"
+    assert _agent_payload(cfg, "marketing")["model"] == "litellm/u:5fdc144e/complex"
+    assert _agent_payload(cfg, "supplier")["model"] == "litellm/u:5fdc144e/simple"
+
+    for agent in cfg["agents"]["list"]:
+        assert "heartbeat" not in agent
+
+
+def test_defaults_thinking_default_from_manifest() -> None:
+    assert _config_from_llm()["agents"]["defaults"]["thinkingDefault"] == "adaptive"
+
+    mapping = copy.deepcopy(load_manifest_v2_mapping())
+    mapping["agents"]["thinking_default"] = "off"
+    manifest = bundle_manifest_from_mapping(mapping)
+    cfg = json.loads(
+        BundleBuilder()
+        .build(manifest, gateway_token=_GW, hooks_token=_HOOKS, agent_api_key="k")
+        .openclaw_config
+    )
+    assert cfg["agents"]["defaults"]["thinkingDefault"] == "off"
+
+
+def test_providers_are_manifest_driven_not_hardcoded() -> None:
+    """Mutating a group's base_url + a model's metadata in the mapping must flow straight
+    into ``models.providers`` — proving the block is manifest-driven, not synthesized."""
+
+    def _mutate(llm: dict[str, Any]) -> None:
+        llm["groups"]["anthropic"]["base_url"] = "https://mutated.example/anthropic"
+        llm["groups"]["litellm"]["models"][0]["name"] = "Mutated Frontier"
+        llm["groups"]["litellm"]["models"][0]["contextWindow"] = 999999
+
+    providers = _config_from_llm(_mutate)["models"]["providers"]
+    assert providers["anthropic"]["baseUrl"] == "https://mutated.example/anthropic"
+    complex_model = next(
+        m for m in providers["litellm"]["models"] if m["id"] == "u:5fdc144e/complex"
+    )
+    assert complex_model["name"] == "Mutated Frontier"
+    assert complex_model["contextWindow"] == 999999
+
+
 def test_bundle_builder_entry_point_tools_and_subagents(
     make_manifest: Callable[..., GenericManifest],
     monkeypatch: pytest.MonkeyPatch,
@@ -64,6 +210,10 @@ def test_bundle_builder_entry_point_tools_and_subagents(
     assert supervisor["default"] is True
     assert "group:sessions" in supervisor["tools"]["allow"]
     assert supervisor["subagents"]["allowAgents"] == ["scout", "supplier", "marketing"]
+    # subagents block is emitted ONLY for the entry point, never under defaults.
+    assert "subagents" not in cfg["agents"]["defaults"]
+    for sub in ("scout", "supplier", "marketing"):
+        assert "subagents" not in _agent_payload(cfg, sub)
 
 
 def test_bundle_builder_supplier_thinking_off_from_manifest(
@@ -223,87 +373,49 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
 
 
 @pytest.mark.parametrize(
-    ("is_entry_point", "has_subagents", "browser", "image", "video", "expected_allow", "expected_deny"),
+    ("is_entry_point", "has_subagents", "browser", "image", "video", "cron", "expected_allow", "expected_deny"),
     [
         pytest.param(
-            True,
-            True,
-            True,
-            True,
-            True,
+            True, True, True, True, True, True,
             [
-                "group:sessions",
-                "group:web",
-                "web_search",
-                "message",
-                "browser",
-                "cron",
-                "exec",
-                "image_generate",
-                "video_generate",
-                "pdf",
+                "group:sessions", "group:web", "web_search", "message", "browser",
+                "exec", "pdf", "cron", "image_generate", "video_generate",
             ],
             [],
             id="entry-point-with-subagents",
         ),
         pytest.param(
-            True,
-            False,
-            True,
-            True,
-            True,
+            True, False, True, True, True, True,
             [
-                "group:web",
-                "web_search",
-                "message",
-                "browser",
-                "cron",
-                "exec",
-                "image_generate",
-                "video_generate",
-                "pdf",
-                "group:fs",
-                "process",
+                "group:web", "web_search", "message", "browser", "exec", "pdf",
+                "cron", "group:fs", "process", "image_generate", "video_generate",
             ],
             [],
             id="entry-point-no-subagents",
         ),
         pytest.param(
-            False,
-            False,
-            True,
-            False,
-            False,
-            ["group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf"],
-            ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
-            id="subagent-no-media",
+            True, True, True, False, False, False,
+            ["group:sessions", "group:web", "web_search", "message", "browser", "exec", "pdf"],
+            [],
+            id="entry-point-cron-disabled-no-media",
         ),
         pytest.param(
-            False,
-            False,
-            True,
-            True,
-            True,
+            False, False, True, False, False, True,
+            ["group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf"],
+            ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
+            id="subagent-no-media-never-gets-cron",
+        ),
+        pytest.param(
+            False, False, True, True, True, True,
             [
-                "group:fs",
-                "exec",
-                "process",
-                "web_fetch",
-                "web_search",
-                "browser",
-                "pdf",
-                "image_generate",
-                "video_generate",
+                "group:fs", "exec", "process", "web_fetch", "web_search", "browser",
+                "pdf", "image_generate", "video_generate",
             ],
             ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
             id="subagent-with-media",
         ),
         pytest.param(
-            False,
-            False,
-            False,
-            False,
-            False,
+            False, False, False, False, False, True,
             ["group:fs", "exec", "process", "web_fetch", "web_search", "pdf"],
             ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
             id="subagent-browser-disabled",
@@ -316,6 +428,7 @@ def test_derive_agent_tools(
     browser: bool,
     image: bool,
     video: bool,
+    cron: bool,
     expected_allow: list[str],
     expected_deny: list[str],
 ) -> None:
@@ -325,6 +438,67 @@ def test_derive_agent_tools(
         browser_enabled=browser,
         image_generation=image,
         video_generation=video,
+        cron_enabled=cron,
     )
     assert allow == expected_allow
     assert deny == expected_deny
+
+
+def _cfg_from_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    manifest = bundle_manifest_from_mapping(mapping)
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS, agent_api_key="k")
+    return json.loads(result.openclaw_config)
+
+
+def test_cron_enabled_from_manifest_and_supervisor_only_tool() -> None:
+    cfg = _cfg_from_mapping(copy.deepcopy(load_manifest_v2_mapping()))  # default -> enabled
+    assert cfg["cron"]["enabled"] is True
+    assert "cron" in _agent_payload(cfg, "supervisor")["tools"]["allow"]
+    for sub in ("scout", "supplier", "marketing"):
+        assert "cron" not in _agent_payload(cfg, sub)["tools"]["allow"]
+        assert "cron" in _agent_payload(cfg, sub)["tools"]["deny"]
+
+    off = copy.deepcopy(load_manifest_v2_mapping())
+    off["cron"] = {"enabled": False}
+    cfg_off = _cfg_from_mapping(off)
+    assert cfg_off["cron"]["enabled"] is False
+    assert "cron" not in _agent_payload(cfg_off, "supervisor")["tools"]["allow"]
+
+
+def test_web_fetch_enabled_from_manifest() -> None:
+    assert _cfg_from_mapping(copy.deepcopy(load_manifest_v2_mapping()))["tools"]["web"]["fetch"]["enabled"] is True
+    off = copy.deepcopy(load_manifest_v2_mapping())
+    off["web_fetch"] = {"enabled": False}
+    assert _cfg_from_mapping(off)["tools"]["web"]["fetch"]["enabled"] is False
+
+
+def test_telegram_channel_enabled_from_manifest() -> None:
+    cfg = _cfg_from_mapping(copy.deepcopy(load_manifest_v2_mapping()))  # primary=telegram, enabled
+    assert cfg["channels"]["telegram"]["enabled"] is True
+    # Token present but disabled (primary moved to sellerclaw-ui): channel emitted disabled, no binding.
+    m = copy.deepcopy(load_manifest_v2_mapping())
+    m["channels"]["primary"] = "sellerclaw-ui"
+    m["channels"]["telegram"]["enabled"] = False
+    cfg_off = _cfg_from_mapping(m)
+    assert cfg_off["channels"]["telegram"]["enabled"] is False
+    assert all(b["match"].get("channel") != "telegram" for b in cfg_off["bindings"])
+
+
+def test_supervisor_image_video_gated_by_manifest() -> None:
+    m = copy.deepcopy(load_manifest_v2_mapping())
+    m["agents"]["main_agent"]["image_generation"] = False
+    m["agents"]["main_agent"]["video_generation"] = False
+    sup_off = _agent_payload(_cfg_from_mapping(m), "supervisor")["tools"]["allow"]
+    assert "image_generate" not in sup_off
+    assert "video_generate" not in sup_off
+    sup_on = _agent_payload(_cfg_from_mapping(copy.deepcopy(load_manifest_v2_mapping())), "supervisor")["tools"]["allow"]
+    assert "image_generate" in sup_on
+    assert "video_generate" in sup_on
+
+
+def test_sellerclaw_ui_channel_has_no_dead_parts_streaming_flag() -> None:
+    """parts-streaming is now unconditional in the sellerclaw-ui plugin; the config
+    must not carry the obsolete ``partsStreaming`` toggle."""
+    cfg = _cfg_from_mapping(copy.deepcopy(load_manifest_v2_mapping()))
+    assert "partsStreaming" not in cfg["channels"]["sellerclaw-ui"]
+    assert "partsStreaming" not in cfg["plugins"]["entries"]["sellerclaw-ui"]["config"]

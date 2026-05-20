@@ -74,6 +74,14 @@ function setFetchResponses(
       arrayBuffer: async () => r.body ?? new ArrayBuffer(0),
     });
   }
+  // Trailing default for the turn/part/end posts that finalize the (possibly empty)
+  // assistant turn after dispatch — these tests assert on attachment ingest, not delivery.
+  fetchMock.mockResolvedValue({
+    ok: true,
+    status: 200,
+    headers: { get: () => "application/json" },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   return { fetchMock };
 }
@@ -198,77 +206,144 @@ describe("registerInboundRoute", () => {
     expect(dispatchMock).not.toHaveBeenCalled();
   });
 
-  it("dispatches inbound and posts stream-delta and stream-end", async () => {
-    readBodyMock.mockResolvedValue({
-      ok: true,
-      value: {
-        chat_id: "c1",
-        agent_id: "supervisor",
-        user_id: "u1",
-        text: " hi ",
-      },
-    });
+  it("funnels deliver text through the turn/part endpoints", async () => {
+    // The turn helpers live inside send.ts and call the real postOpenclawWebhook →
+    // global fetch (the partial send.js mock only patches inbound.ts's import), so we
+    // assert on a fetch mock here rather than postWebhookMock.
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: " hi " },
+      });
 
-    const registerHttpRoute = vi.fn();
-    const api = {
-      config: {
-        channels: {
-          "sellerclaw-ui": {
-            apiBaseUrl: "https://api.example",
-            userId: "user-1",
-            agentApiKey: "sca",
-            internalWebhookSecret: "secret",
+      const registerHttpRoute = vi.fn();
+      const api = {
+        config: {
+          channels: {
+            "sellerclaw-ui": {
+              apiBaseUrl: "https://api.example",
+              userId: "user-1",
+              agentApiKey: "sca",
+              internalWebhookSecret: "secret",
+            },
           },
-        },
-      } as Record<string, unknown>,
-      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      registerHttpRoute,
-    };
-    registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
-    const handler = registerHttpRoute.mock.calls[0]![0].handler as (
-      req: IncomingMessage,
-      res: ServerResponse,
-    ) => Promise<boolean>;
+        } as Record<string, unknown>,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        registerHttpRoute,
+      };
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = registerHttpRoute.mock.calls[0]![0].handler as (
+        req: IncomingMessage,
+        res: ServerResponse,
+      ) => Promise<boolean>;
 
-    const req = {
-      headers: { authorization: "Bearer secret" },
-    } as IncomingMessage;
-    const res = {
-      statusCode: 0,
-      end: vi.fn(),
-    } as unknown as ServerResponse;
+      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
 
-    await handler(req, res);
-    expect(res.statusCode).toBe(202);
+      await handler(req, res);
+      const arg = dispatchMock.mock.calls[0]![0] as {
+        deliver: (p: { text: string }) => Promise<void>;
+      };
+      await arg.deliver({ text: "chunk" });
 
-    expect(dispatchMock).toHaveBeenCalledTimes(1);
-    const arg = dispatchMock.mock.calls[0]![0] as {
-      deliver: (p: { text: string }) => Promise<void>;
-    };
-    await arg.deliver({ text: "chunk" });
+      const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u) => u.endsWith("/internal/openclaw/turn"))).toBe(true);
+      expect(urls.some((u) => /\/internal\/openclaw\/turn\/[0-9a-f-]+\/part$/.test(u))).toBe(true);
+      // New protocol replaces the legacy text-only road.
+      expect(urls.some((u) => u.includes("/stream-delta"))).toBe(false);
 
-    const streamDeltaCalls = postWebhookMock.mock.calls.filter((c) =>
-      String(c[0]).includes("/internal/openclaw/stream-delta"),
-    );
-    expect(streamDeltaCalls.length).toBeGreaterThanOrEqual(1);
-    const [, init] = streamDeltaCalls[0]!;
-    expect(init).toMatchObject({
-      method: "POST",
-      headers: expect.objectContaining({
-        Authorization: "Bearer sca",
-        "Content-Type": "application/json",
-      }),
+      const partCall = fetchMock.mock.calls.find((c) =>
+        /\/internal\/openclaw\/turn\/[0-9a-f-]+\/part$/.test(String(c[0])),
+      )!;
+      const partBody = JSON.parse(
+        String((partCall[1] as RequestInit).body),
+      ) as Record<string, string>;
+      expect(partBody).toMatchObject({
+        kind: "text",
+        text: "chunk",
+        session_key: "agent:supervisor:sellerclaw-ui:direct:c1",
+        chat_id: "c1",
+      });
+
+      await vi.waitFor(() => {
+        const endCalls = fetchMock.mock.calls.filter((c) =>
+          /\/internal\/openclaw\/turn\/[0-9a-f-]+\/end$/.test(String(c[0])),
+        );
+        expect(endCalls.length).toBeGreaterThanOrEqual(1);
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("funnels deliver media through the turn/part endpoints as an image part", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/internal/openclaw/media/upload-local")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ download_url: "https://cloud.example/f/cat.png", content_type: "image/png" }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 200 }));
     });
-    const body = JSON.parse(String((init as RequestInit).body)) as Record<string, string>;
-    expect(body.text).toBe("chunk");
-    expect(body.session_key).toBe("agent:supervisor:sellerclaw-ui:direct:c1");
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "go" },
+      });
+      const registerHttpRoute = vi.fn();
+      const api = {
+        config: {
+          channels: {
+            "sellerclaw-ui": {
+              apiBaseUrl: "https://api.example",
+              userId: "user-1",
+              agentApiKey: "sca",
+              internalWebhookSecret: "secret",
+            },
+          },
+        } as Record<string, unknown>,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        registerHttpRoute,
+      };
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = registerHttpRoute.mock.calls[0]![0].handler as (
+        req: IncomingMessage,
+        res: ServerResponse,
+      ) => Promise<boolean>;
+      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+      await handler(req, res);
+      const deliver = (
+        dispatchMock.mock.calls[0]![0] as {
+          deliver: (p: Record<string, unknown>) => Promise<void>;
+        }
+      ).deliver;
+      await deliver({
+        text: "Here is the cat",
+        mediaUrls: ["/home/node/.openclaw/media/tool-image-generation/cat.png"],
+      });
 
-    await vi.waitFor(() => {
-      const endCalls = postWebhookMock.mock.calls.filter((c) =>
-        String(c[0]).includes("/internal/openclaw/stream-end"),
-      );
-      expect(endCalls.length).toBeGreaterThanOrEqual(1);
-    });
+      // Local artifact proxy-uploaded, then delivered as an ordered image part (no /messages).
+      const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u) => u.includes("/internal/openclaw/media/upload-local"))).toBe(true);
+      expect(urls.some((u) => u.includes("/internal/openclaw/messages"))).toBe(false);
+      const imagePart = fetchMock.mock.calls
+        .filter((c) => /\/internal\/openclaw\/turn\/[0-9a-f-]+\/part$/.test(String(c[0])))
+        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as Record<string, unknown>)
+        .find((b) => b.kind === "image");
+      expect(imagePart?.url).toBe("https://cloud.example/f/cat.png");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   // The OpenClaw block-streaming chunker cuts the assistant reply at internal
@@ -361,7 +436,19 @@ describe("registerInboundRoute", () => {
   });
 
   describe("deliver integration", () => {
+    // Text parts are posted to ``/turn/{id}/part`` via send.ts's real postOpenclawWebhook
+    // → global fetch (the partial send.js mock only patches inbound.ts's import), so we
+    // assert the join behaviour against a fetch mock.
+    const originalFetch = globalThis.fetch;
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
     async function dispatchOnce(): Promise<(p: { text: string }) => Promise<void>> {
+      fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
       readBodyMock.mockResolvedValue({
         ok: true,
         value: { chat_id: "c1", agent_id: "a", user_id: "u", text: "go" },
@@ -379,10 +466,11 @@ describe("registerInboundRoute", () => {
     }
 
     function deltaTexts(): string[] {
-      return postWebhookMock.mock.calls
-        .filter((c) => String(c[0]).includes("/internal/openclaw/stream-delta"))
-        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
-        .map((b) => b.text);
+      return fetchMock.mock.calls
+        .filter((c) => /\/internal\/openclaw\/turn\/[0-9a-f-]+\/part$/.test(String(c[0])))
+        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { kind: string; text?: string })
+        .filter((b) => b.kind === "text" && typeof b.text === "string")
+        .map((b) => b.text as string)
     }
 
     it("sends the first delta verbatim", async () => {
@@ -493,205 +581,6 @@ describe("registerInboundRoute", () => {
     });
   });
 
-  describe("deliver media", () => {
-    const LOCAL_IMAGE = "/home/node/.openclaw/media/tool-image-generation/image-1.png";
-    const UPLOADED_URL = "https://api.example/agent/files/gen/image-1.png";
-    const originalFetch = globalThis.fetch;
-
-    function jsonResponse(body: unknown, status = 200): Response {
-      return new Response(JSON.stringify(body), {
-        status,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    const uploadResponse = (): Response =>
-      jsonResponse({
-        file_id: "f1",
-        filename: "image-1.png",
-        content_type: "image/png",
-        size_bytes: 10,
-        download_url: UPLOADED_URL,
-        expires_at: "2099-01-01T00:00:00Z",
-      });
-
-    // send.ts's `uploadLocalMedia` / `postWebhookMessage` call the module-local
-    // `postOpenclawWebhook` (not the mocked export), which hits `fetch`. Route
-    // the upload-proxy and message posts through a fetch mock; text stream
-    // deltas still go via the mocked `postOpenclawWebhook` export.
-    let fetchMock: ReturnType<typeof vi.fn>;
-
-    beforeEach(() => {
-      fetchMock = vi.fn((url: string) => {
-        const u = String(url);
-        if (u.includes("/internal/openclaw/media/upload-local")) {
-          return Promise.resolve(uploadResponse());
-        }
-        if (u.includes("/internal/openclaw/messages")) {
-          return Promise.resolve(jsonResponse({ message: { id: "m1" } }));
-        }
-        return Promise.resolve(new Response(null, { status: 200 }));
-      });
-      globalThis.fetch = fetchMock as unknown as typeof fetch;
-    });
-
-    afterEach(() => {
-      globalThis.fetch = originalFetch;
-    });
-
-    async function dispatchOnce(): Promise<(p: Record<string, unknown>) => Promise<void>> {
-      readBodyMock.mockResolvedValue({
-        ok: true,
-        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u", text: "go" },
-      });
-      const { api, registerHttpRoute } = buildApi();
-      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
-      const handler = getHandler(registerHttpRoute);
-      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
-      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
-      await handler(req, res);
-      await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalled());
-      return (
-        dispatchMock.mock.calls.at(-1)![0] as {
-          deliver: (p: Record<string, unknown>) => Promise<void>;
-        }
-      ).deliver;
-    }
-
-    /** Cloud-bound HTTP calls (upload proxy, message posts) routed through `fetch`. */
-    function fetchCallsTo(pathFragment: string): unknown[][] {
-      return fetchMock.mock.calls.filter((c) => String(c[0]).includes(pathFragment));
-    }
-    /** Text stream deltas routed through the mocked `postOpenclawWebhook` export. */
-    function deltaCalls(): unknown[][] {
-      return postWebhookMock.mock.calls.filter((c) =>
-        String(c[0]).includes("/internal/openclaw/stream-delta"),
-      );
-    }
-    function bodyOf(call: unknown[]): Record<string, unknown> {
-      return JSON.parse(String((call[1] as RequestInit).body)) as Record<string, unknown>;
-    }
-
-    it("uploads a local MEDIA path and posts it as an image message with raw_content", async () => {
-      const deliver = await dispatchOnce();
-      await deliver({ text: "Вот голубой корниш-рекс:", mediaUrls: [LOCAL_IMAGE] });
-
-      // Local artifact proxy-uploaded to cloud File Storage.
-      const uploadCalls = fetchCallsTo("/internal/openclaw/media/upload-local");
-      expect(uploadCalls).toHaveLength(1);
-      expect(bodyOf(uploadCalls[0]!).local_path).toBe(LOCAL_IMAGE);
-
-      // Delivered as a full message, not a text-only stream delta.
-      expect(deltaCalls()).toHaveLength(0);
-      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
-      expect(msgCalls).toHaveLength(1);
-      const body = bodyOf(msgCalls[0]!);
-      expect(body.chat_id).toBe("c1");
-      expect(body.session_key).toBe("agent:supervisor:sellerclaw-ui:direct:c1");
-      expect(body.raw_content).toEqual([
-        { type: "text", text: "Вот голубой корниш-рекс:" },
-        { type: "image_url", image_url: { url: UPLOADED_URL } },
-      ]);
-    });
-
-    it("re-uses the text as caption when it was already streamed as a delta", async () => {
-      // Block dispatcher: text block first, then the consolidated media payload
-      // carrying the same caption text. The text-only delta gets orphaned by
-      // the backend (ingest_openclaw_ui_message closes the user turn before
-      // stream-end finalizes), so the only surviving copy of the prose is the
-      // caption on the media message — we must re-include it.
-      const deliver = await dispatchOnce();
-      await deliver({ text: "Вот голубой корниш-рекс:" });
-      await deliver({ text: "Вот голубой корниш-рекс:", mediaUrl: LOCAL_IMAGE });
-
-      expect(deltaCalls().map((c) => bodyOf(c).text)).toEqual(["Вот голубой корниш-рекс:"]);
-
-      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
-      expect(msgCalls).toHaveLength(1);
-      expect(bodyOf(msgCalls[0]!).raw_content).toEqual([
-        { type: "text", text: "Вот голубой корниш-рекс:" },
-        { type: "image_url", image_url: { url: UPLOADED_URL } },
-      ]);
-    });
-
-    it("captions the image when media arrives before the matching text block", async () => {
-      const deliver = await dispatchOnce();
-      await deliver({ text: "Вот голубой корниш-рекс:", mediaUrls: [LOCAL_IMAGE] });
-      // Same text re-delivered as a standalone block afterwards — must be dropped.
-      await deliver({ text: "Вот голубой корниш-рекс:" });
-
-      expect(deltaCalls()).toHaveLength(0);
-      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
-      expect(msgCalls).toHaveLength(1);
-      expect(bodyOf(msgCalls[0]!).raw_content).toEqual([
-        { type: "text", text: "Вот голубой корниш-рекс:" },
-        { type: "image_url", image_url: { url: UPLOADED_URL } },
-      ]);
-    });
-
-    it("delivers the same media path only once across block + final payloads", async () => {
-      const deliver = await dispatchOnce();
-      await deliver({ text: "caption", mediaUrls: [LOCAL_IMAGE] });
-      await deliver({ text: "caption", mediaUrls: [LOCAL_IMAGE], mediaUrl: LOCAL_IMAGE });
-
-      expect(fetchCallsTo("/internal/openclaw/media/upload-local")).toHaveLength(1);
-      expect(fetchCallsTo("/internal/openclaw/messages")).toHaveLength(1);
-    });
-
-    it("passes http(s) media URLs through without an upload round-trip", async () => {
-      const deliver = await dispatchOnce();
-      await deliver({ mediaUrls: ["https://cdn.example/pic.webp"] });
-
-      expect(fetchCallsTo("/internal/openclaw/media/upload-local")).toHaveLength(0);
-      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
-      expect(msgCalls).toHaveLength(1);
-      expect(bodyOf(msgCalls[0]!).raw_content).toEqual([
-        { type: "image_url", image_url: { url: "https://cdn.example/pic.webp" } },
-      ]);
-    });
-
-    it("keeps streaming plain-text deltas unaffected by the media path", async () => {
-      const deliver = await dispatchOnce();
-      await deliver({ text: "Hello" });
-      await deliver({ text: "world" });
-      expect(fetchCallsTo("/internal/openclaw/messages")).toHaveLength(0);
-      expect(deltaCalls().map((c) => bodyOf(c).text)).toEqual(["Hello", " world"]);
-    });
-
-    it("still delivers the image when one of several media items fails to upload", async () => {
-      // First upload fails with a non-transient 400 (no retry); the second
-      // succeeds — the good image must still ship.
-      let uploadAttempt = 0;
-      fetchMock.mockImplementation((url: string) => {
-        const u = String(url);
-        if (u.includes("/internal/openclaw/media/upload-local")) {
-          uploadAttempt += 1;
-          return Promise.resolve(
-            uploadAttempt === 1 ? new Response("bad path", { status: 400 }) : uploadResponse(),
-          );
-        }
-        if (u.includes("/internal/openclaw/messages")) {
-          return Promise.resolve(jsonResponse({ message: { id: "m1" } }));
-        }
-        return Promise.resolve(new Response(null, { status: 200 }));
-      });
-
-      const deliver = await dispatchOnce();
-      await deliver({
-        mediaUrls: [
-          "/home/node/.openclaw/media/tool-image-generation/bad.png",
-          "/home/node/.openclaw/media/tool-image-generation/good.png",
-        ],
-      });
-
-      const msgCalls = fetchCallsTo("/internal/openclaw/messages");
-      expect(msgCalls).toHaveLength(1);
-      expect(bodyOf(msgCalls[0]!).raw_content).toEqual([
-        { type: "image_url", image_url: { url: UPLOADED_URL } },
-      ]);
-    });
-  });
-
   it("persists image attachments via saveMediaBuffer and injects [Image: source: ...] marker", async () => {
     readBodyMock.mockResolvedValue({
       ok: true,
@@ -730,7 +619,9 @@ describe("registerInboundRoute", () => {
     });
 
     // URL host rewritten from localhost:8000 to apiBaseUrl host (api.example).
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.filter((c) => !String(c[0]).includes("/internal/openclaw/turn")).length,
+    ).toBe(1);
     const [fetchedUrl, fetchInit] = fetchMock.mock.calls[0] as [
       string,
       { headers: Record<string, string> },
@@ -838,7 +729,9 @@ describe("registerInboundRoute", () => {
     });
 
     // Host rewritten from localhost:8000 to apiBaseUrl host.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.filter((c) => !String(c[0]).includes("/internal/openclaw/turn")).length,
+    ).toBe(1);
     const [fetchedUrl, fetchInit] = fetchMock.mock.calls[0] as [
       string,
       { headers: Record<string, string> },

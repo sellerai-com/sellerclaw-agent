@@ -7,8 +7,8 @@ from pathlib import Path
 
 from sellerclaw_agent.assembly import AssembledAgentConfig
 from sellerclaw_agent.bundle.archive import build_gateway_version, build_workspaces_from_assembled
-from sellerclaw_agent.bundle.config_generator import generate_openclaw_config
-from sellerclaw_agent.bundle.manifest import AgentSpec, GenericManifest, ModelRef
+from sellerclaw_agent.bundle.config_generator import ModelDefaults, generate_openclaw_config
+from sellerclaw_agent.bundle.manifest import AgentSpec, GenericManifest, ModelGroup, ModelRef
 from sellerclaw_agent.bundle.result import BundleResult
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
 from sellerclaw_agent.cloud.settings import (
@@ -62,29 +62,22 @@ def derive_agent_tools(
     browser_enabled: bool,
     image_generation: bool,
     video_generation: bool,
+    cron_enabled: bool,
 ) -> tuple[list[str], list[str]]:
     """Derive the OpenClaw ``tools.allow`` / ``tools.deny`` lists for one agent.
 
-    Returns ``(allow, deny)``. Mirrors the prior assembler behavior:
+    Returns ``(allow, deny)``. All capability tools are manifest-driven:
 
     - Entry point (supervisor): broad allow; ``group:sessions`` when it has subagents,
-      otherwise ``group:fs`` + ``process``. No denies.
-    - Subagent: filesystem/exec/process/web + browser/pdf; image/video gated by flags;
-      denies the orchestration/messaging surface.
-    - ``browser`` is stripped from allow when ``browser_enabled`` is False.
+      otherwise ``group:fs`` + ``process``. ``cron`` only here, and only when enabled.
+    - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
+    - ``browser`` is present per agent only when ``browser_enabled``; ``image_generate`` /
+      ``video_generate`` only when the matching flag is set — for every agent.
     """
     if is_entry_point:
-        allow = [
-            "group:web",
-            "web_search",
-            "message",
-            "browser",
-            "cron",
-            "exec",
-            "image_generate",
-            "video_generate",
-            "pdf",
-        ]
+        allow = ["group:web", "web_search", "message", "browser", "exec", "pdf"]
+        if cron_enabled:
+            allow.append("cron")
         if has_subagents:
             allow = ["group:sessions", *allow]
         else:
@@ -100,10 +93,6 @@ def derive_agent_tools(
             "browser",
             "pdf",
         ]
-        if image_generation:
-            allow.append("image_generate")
-        if video_generation:
-            allow.append("video_generate")
         deny = [
             "group:sessions",
             "group:messaging",
@@ -112,6 +101,10 @@ def derive_agent_tools(
             "cron",
             "gateway",
         ]
+    if image_generation:
+        allow.append("image_generate")
+    if video_generation:
+        allow.append("video_generate")
     if not browser_enabled:
         allow = [tool for tool in allow if tool != "browser"]
     return allow, deny
@@ -129,6 +122,106 @@ def _resolve_model_tier(manifest: GenericManifest, model_role: str) -> ModelTier
     if ref is not None and ref.group == "litellm" and ref.model == "complex":
         return ModelTier.COMPLEX
     return ModelTier.SIMPLE
+
+
+def _openclaw_model_ref(manifest: GenericManifest, ref: ModelRef) -> str:
+    """Render a manifest model ref as an OpenClaw provider ref: ``group/<prefix><model>``.
+
+    The group's ``model_name_prefix`` is applied (non-empty only for the LiteLLM
+    virtual group), matching how the provider models are registered in the config.
+    """
+    group = manifest.llm.groups.get(ref.group)
+    prefix = group.model_name_prefix if group is not None else ""
+    return f"{ref.group}/{prefix}{ref.model}"
+
+
+def _build_provider_models(group: ModelGroup) -> list[dict[str, object]]:
+    """Render a group's OpenClaw ``models[]`` list from its manifest metadata.
+
+    The group's ``model_name_prefix`` is applied to each model id (non-empty only for
+    the LiteLLM virtual group); all other metadata is copied verbatim.
+    """
+    return [
+        {
+            "id": f"{group.model_name_prefix}{m.id}",
+            "name": m.name,
+            "reasoning": m.reasoning,
+            "input": list(m.input),
+            "contextWindow": m.context_window,
+            "maxTokens": m.max_tokens,
+        }
+        for m in group.models
+    ]
+
+
+def build_providers(manifest: GenericManifest) -> dict[str, object]:
+    """Build the OpenClaw ``models.providers`` mapping from ``manifest.llm.groups``.
+
+    Each provider is built strictly from its own group: ``baseUrl`` / ``apiKey`` come
+    from the group, ``api`` is emitted only when the group declares one, and the
+    ``models[]`` list carries the group's (prefixed) model ids + metadata.
+    """
+    providers: dict[str, object] = {}
+    for name, group in manifest.llm.groups.items():
+        entry: dict[str, object] = {
+            "baseUrl": group.base_url,
+            "apiKey": group.api_key,
+        }
+        if group.api is not None:
+            entry["api"] = group.api
+        entry["models"] = _build_provider_models(group)
+        providers[name] = entry
+    return providers
+
+
+def _model_block(
+    manifest: GenericManifest, primary: ModelRef, fallbacks: tuple[ModelRef, ...]
+) -> dict[str, object]:
+    block: dict[str, object] = {"primary": _openclaw_model_ref(manifest, primary)}
+    if fallbacks:
+        block["fallbacks"] = [_openclaw_model_ref(manifest, ref) for ref in fallbacks]
+    return block
+
+
+def build_model_defaults(manifest: GenericManifest) -> ModelDefaults:
+    """Map the manifest ``llm`` block onto OpenClaw ``agents.defaults`` model blocks.
+
+    - ``model`` <- ``text_model.primary`` (always present).
+    - ``imageGenerationModel`` / ``videoGenerationModel`` / ``pdfModel`` <- the matching
+      ``llm.*_model`` block, or ``None`` (key omitted) when the manifest lacks it.
+    - ``compaction`` / ``memoryFlush`` <- ``compaction_model`` / ``memory_flush_model``,
+      falling back to ``text_model.primary`` when the manifest omits them.
+    """
+    llm = manifest.llm
+    text_primary_ref = _openclaw_model_ref(manifest, llm.text_model["primary"])
+    return ModelDefaults(
+        model={"primary": text_primary_ref},
+        compaction_model=(
+            _openclaw_model_ref(manifest, llm.compaction_model)
+            if llm.compaction_model is not None
+            else text_primary_ref
+        ),
+        memory_flush_model=(
+            _openclaw_model_ref(manifest, llm.memory_flush_model)
+            if llm.memory_flush_model is not None
+            else text_primary_ref
+        ),
+        image_generation_model=(
+            _model_block(manifest, llm.image_model_primary, llm.image_model_fallbacks)
+            if llm.image_model_primary is not None
+            else None
+        ),
+        video_generation_model=(
+            _model_block(manifest, llm.video_model_primary, llm.video_model_fallbacks)
+            if llm.video_model_primary is not None
+            else None
+        ),
+        pdf_model=(
+            _model_block(manifest, llm.pdf_model_primary, llm.pdf_model_fallbacks)
+            if llm.pdf_model_primary is not None
+            else None
+        ),
+    )
 
 
 @dataclass
@@ -166,12 +259,6 @@ class BundleBuilder:
         )
         allowed_origins = _resolve_allowed_origins()
 
-        litellm_group = manifest.litellm_group()
-        litellm_base_url = litellm_group.base_url if litellm_group is not None else ""
-        litellm_api_key = litellm_group.api_key if litellm_group is not None else ""
-        prefix = manifest.model_name_prefix
-        model_name_prefix = prefix if prefix else None
-
         web_search_enabled = manifest.web_search.enabled
         web_search_auth_token = resolved_api_key if web_search_enabled else ""
 
@@ -185,9 +272,7 @@ class BundleBuilder:
             user_id=manifest.user_id,
             sellerclaw_api_url=sellerclaw_api_url,
             sellerclaw_agent_api_base_url=agent_api_base_url,
-            litellm_base_url=litellm_base_url,
-            litellm_api_key=litellm_api_key,
-            model_name_prefix=model_name_prefix,
+            providers=build_providers(manifest),
             created_at=ts,
             telegram_enabled=manifest.channels.telegram.enabled,
             telegram_bot_token=manifest.channels.telegram.bot_token,
@@ -198,6 +283,10 @@ class BundleBuilder:
             web_search_enabled=web_search_enabled,
             web_search_auth_token=web_search_auth_token,
             primary_channel=manifest.channels.primary,
+            model_defaults=build_model_defaults(manifest),
+            thinking_default=manifest.agents.thinking_default,
+            cron_enabled=manifest.cron_enabled,
+            web_fetch_enabled=manifest.web_fetch_enabled,
         )
         version = build_gateway_version(
             openclaw_config=openclaw_config,
@@ -236,14 +325,19 @@ class BundleBuilder:
             browser_enabled=agent.browser_enabled,
             image_generation=agent.image_generation,
             video_generation=agent.video_generation,
+            cron_enabled=manifest.cron_enabled,
         )
         content = agent.content
         # Heartbeat is honored only for the main (entry-point) agent, matching prior behavior.
         heartbeat_md = content.heartbeat if agent.is_entry_point else None
+        # The per-agent OpenClaw model ref is the manifest text-model ref for the agent's
+        # resolved role ("primary"/"secondary"), with the group prefix applied.
+        model_ref = _openclaw_model_ref(manifest, manifest.llm.text_model[agent.model])
         return AssembledAgentConfig(
             agent_id=agent.id,
             name=agent.name,
             model_tier=_resolve_model_tier(manifest, agent.model),
+            model_ref=model_ref,
             is_entry_point=agent.is_entry_point,
             subagent_ids=list(agent.subagent_ids),
             tools_allow=tools_allow,

@@ -58,12 +58,48 @@ def test_save_manifest_request_web_search_ignores_legacy_wire_fields(
         "base_url": "https://legacy.example",
     }
     parsed = SaveManifestRequest.model_validate(raw)
+    assert parsed.web_search is not None
     assert parsed.web_search.enabled is True
     again = bundle_manifest_from_mapping(parsed.to_mapping())
     assert again.web_search.enabled is True
     ws = parsed.to_mapping()["web_search"]
     assert isinstance(ws, dict)
     assert ws == {"enabled": True}
+
+
+@pytest.mark.parametrize(
+    ("drop_field", "make_invalid"),
+    [
+        pytest.param("agent_api_base_path", None, id="missing-agent-api-base-path"),
+        pytest.param("channels", None, id="missing-channels"),
+        pytest.param("llm", None, id="missing-llm"),
+        pytest.param(None, "web_search_no_enabled", id="web-search-without-enabled"),
+    ],
+)
+def test_save_manifest_request_rejects_missing_required_fields(
+    make_save_manifest_request: Callable[..., SaveManifestRequest],
+    drop_field: str | None,
+    make_invalid: str | None,
+) -> None:
+    data = make_save_manifest_request().model_dump(mode="json")
+    if drop_field is not None:
+        del data[drop_field]
+    if make_invalid == "web_search_no_enabled":
+        data["web_search"] = {"provider": "brave"}
+    with pytest.raises(ValidationError):
+        SaveManifestRequest.model_validate(data)
+
+
+def test_save_manifest_request_omits_web_search_when_absent(
+    make_save_manifest_request: Callable[..., SaveManifestRequest],
+) -> None:
+    data = make_save_manifest_request().model_dump(mode="json")
+    data.pop("web_search", None)
+    parsed = SaveManifestRequest.model_validate(data)
+    assert parsed.web_search is None
+    assert "web_search" not in parsed.to_mapping()
+    # Parser then applies the disabled-by-default.
+    assert bundle_manifest_from_mapping(parsed.to_mapping()).web_search.enabled is False
 
 
 def test_save_manifest_request_roundtrips_agents_and_channels(

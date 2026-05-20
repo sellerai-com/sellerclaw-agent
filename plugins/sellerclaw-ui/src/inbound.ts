@@ -5,8 +5,10 @@ import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 
 import { resolveSellerclawUiAccount } from "./channel.js";
 import {
-  postOpenclawWebhook,
-  postWebhookMediaMessage,
+  postTurnEnd,
+  postTurnPart,
+  postTurnStart,
+  resolveMediaKind,
   resolveOutboundMediaUrl,
   type ScwUiAccount,
 } from "./send.js";
@@ -207,9 +209,6 @@ async function materializeAttachmentsForAgent(
   return [...imageMarkers, ...fileMarkers];
 }
 
-const STREAM_DELTA_PATH = "/internal/openclaw/stream-delta";
-const STREAM_END_PATH = "/internal/openclaw/stream-end";
-
 /**
  * Block-starting markdown patterns whose presence at the start of a new
  * delta means the previous delta MUST be terminated by a paragraph break
@@ -298,56 +297,6 @@ export function readDeliverPayload(raw: unknown): { text: string; mediaUrls: str
   return { text, mediaUrls };
 }
 
-/** POST one streaming block to SellerClaw; logs failures only (does not throw). */
-async function postStreamDeltaBestEffort(
-  api: OpenClawPluginApi,
-  account: ScwUiAccount,
-  sessionKey: string,
-  text: string,
-) {
-  const url = `${account.apiBaseUrl.replace(/\/$/, "")}${STREAM_DELTA_PATH}`;
-  try {
-    await postOpenclawWebhook(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${account.agentApiKey}`,
-      },
-      body: JSON.stringify({
-        user_id: account.userId,
-        session_key: sessionKey,
-        text,
-      }),
-    });
-  } catch (err) {
-    logWarn(api, `sellerclaw-ui: stream-delta request failed url=${url}: ${String(err)}`);
-  }
-}
-
-/** Notify backend that agent run finished. Best-effort: never throws. */
-async function postStreamEndBestEffort(
-  api: OpenClawPluginApi,
-  account: ScwUiAccount,
-  sessionKey: string,
-) {
-  const url = `${account.apiBaseUrl.replace(/\/$/, "")}${STREAM_END_PATH}`;
-  try {
-    await postOpenclawWebhook(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${account.agentApiKey}`,
-      },
-      body: JSON.stringify({
-        user_id: account.userId,
-        session_key: sessionKey,
-      }),
-    });
-  } catch (err) {
-    logWarn(api, `sellerclaw-ui: stream-end request failed url=${url}: ${String(err)}`);
-  }
-}
-
 export function registerInboundRoute(api: OpenClawPluginApi): void {
   api.registerHttpRoute({
     path: "/channels/sellerclaw-ui/inbound",
@@ -418,6 +367,21 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
       res.statusCode = 202;
       res.end(JSON.stringify({ ok: true }));
 
+      // One streaming assistant message per turn, started lazily on the first delivered
+      // part (or eagerly at finish for an empty dispatch) and finalized after dispatch.
+      const partsMessageId = crypto.randomUUID();
+      let partsTurnStarted = false;
+      const ensurePartsTurn = async (): Promise<void> => {
+        if (partsTurnStarted) return;
+        partsTurnStarted = true;
+        try {
+          await postTurnStart(account, sessionKey, partsMessageId, payload.chat_id);
+        } catch (err) {
+          partsTurnStarted = false;
+          logError(api, `sellerclaw-ui: turn-start failed session_key=${sessionKey}: ${String(err)}`);
+        }
+      };
+
       const dispatchPromise = (async () => {
         const attachmentMarkers = await materializeAttachmentsForAgent(
           api,
@@ -464,73 +428,56 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           deliver: async (replyPayload: unknown) => {
             const { text, mediaUrls } = readDeliverPayload(replyPayload);
 
-            // Media reply (e.g. an `image_generate` result surfaced via a
-            // `MEDIA:` directive). Upload local container artifacts to cloud
-            // File Storage and deliver each as its own chat message with
-            // `raw_content`, mirroring the `sendImage` channel handler. The
-            // stream-delta endpoint is text-only, so media cannot ride it.
-            if (mediaUrls.length > 0) {
-              const trimmed = text.trim();
-              // Use the reply text as the caption of the FIRST media item this
-              // turn. We don't dedup against ``emittedTexts`` here: the backend
-              // ingest path (services.ingest_openclaw_ui_message) closes the
-              // pending user turn synchronously, which makes the subsequent
-              // ``stream-end`` a no-op and orphans any text we streamed as a
-              // delta. Carrying the text as caption is the only place it
-              // survives — otherwise the UI shows the cloud URL (postWebhook
-              // text fallback) instead of the actual assistant prose.
-              let caption = trimmed || "";
-              for (const rawUrl of mediaUrls) {
-                if (sentMedia.has(rawUrl)) continue;
-                sentMedia.add(rawUrl);
-                logInfo(
-                  api,
-                  `sellerclaw-ui: media delivery start session_key=${sessionKey} source=${rawUrl}`,
+            // One ordered turn per dispatch: media and text become ordered parts.
+            // Media keeps its position relative to the streamed text (no separate
+            // road), and the streamed text is never orphaned by an out-of-band send.
+            for (const rawUrl of mediaUrls) {
+              if (sentMedia.has(rawUrl)) continue;
+              sentMedia.add(rawUrl);
+              try {
+                const { url, contentType } = await resolveOutboundMediaUrl(account, rawUrl);
+                await ensurePartsTurn();
+                await postTurnPart(
+                  account,
+                  sessionKey,
+                  partsMessageId,
+                  {
+                    part_id: crypto.randomUUID(),
+                    kind: resolveMediaKind(url, contentType),
+                    url,
+                    ...(contentType ? { content_type: contentType } : {}),
+                  },
+                  payload.chat_id,
                 );
-                try {
-                  const { url, contentType } = await resolveOutboundMediaUrl(account, rawUrl);
-                  logInfo(
-                    api,
-                    `sellerclaw-ui: media uploaded session_key=${sessionKey} cloud_url=${url} content_type=${contentType || "?"}`,
-                  );
-                  await postWebhookMediaMessage(account, sessionKey, {
-                    mediaUrl: url,
-                    contentType,
-                    caption,
-                    chatId: payload.chat_id,
-                    messageId: crypto.randomUUID(),
-                  });
-                  logInfo(
-                    api,
-                    `sellerclaw-ui: media delivered session_key=${sessionKey} captioned=${Boolean(
-                      caption.trim(),
-                    )} cloud_url=${url}`,
-                  );
-                  if (caption.trim()) emittedTexts.add(caption.trim());
-                  caption = "";
-                } catch (err) {
-                  logError(
-                    api,
-                    `sellerclaw-ui: media delivery failed source=${rawUrl} session_key=${sessionKey}: ${String(err)}`,
-                  );
-                }
+              } catch (err) {
+                logError(
+                  api,
+                  `sellerclaw-ui: media part failed source=${rawUrl} session_key=${sessionKey}: ${String(err)}`,
+                );
               }
-              return;
             }
-
-            // Text-only delta. Skip exact duplicates: the block dispatcher
-            // re-delivers the same text on the consolidated final payload.
-            const trimmed = text.trim();
-            if (!trimmed || emittedTexts.has(trimmed)) return;
-            emittedTexts.add(trimmed);
-            const joiner = pickDeltaJoin(prevTail, text);
-            const outText = joiner + text;
-            prevTail = outText.slice(-TAIL_KEEP_CHARS);
-            logInfo(
-              api,
-              `sellerclaw-ui: deliver block len=${outText.length} session_key=${sessionKey}`,
-            );
-            await postStreamDeltaBestEffort(api, account, sessionKey, outText);
+            const trimmedText = text.trim();
+            if (trimmedText && !emittedTexts.has(trimmedText)) {
+              emittedTexts.add(trimmedText);
+              const joiner = pickDeltaJoin(prevTail, text);
+              const outText = joiner + text;
+              prevTail = outText.slice(-TAIL_KEEP_CHARS);
+              try {
+                await ensurePartsTurn();
+                await postTurnPart(
+                  account,
+                  sessionKey,
+                  partsMessageId,
+                  { part_id: crypto.randomUUID(), kind: "text", text: outText },
+                  payload.chat_id,
+                );
+              } catch (err) {
+                logError(
+                  api,
+                  `sellerclaw-ui: text part failed session_key=${sessionKey}: ${String(err)}`,
+                );
+              }
+            }
           },
           onRecordError: (err: unknown) => {
             logError(api, `sellerclaw-ui: inbound session record error: ${String(err)}`);
@@ -541,11 +488,23 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         });
       })();
 
+      const finishTurn = async (): Promise<void> => {
+        // Always finalize via ``turn/end``. If the dispatch produced no parts, open an
+        // (empty) turn first so the paired user turn is completed rather than left
+        // PROCESSING — the empty assistant message is suppressed by the UI.
+        await ensurePartsTurn();
+        try {
+          await postTurnEnd(account, sessionKey, partsMessageId, payload.chat_id);
+        } catch (err) {
+          logError(api, `sellerclaw-ui: turn-end failed session_key=${sessionKey}: ${String(err)}`);
+        }
+      };
+
       void dispatchPromise
-        .then(() => postStreamEndBestEffort(api, account, sessionKey))
+        .then(() => finishTurn())
         .catch((err: unknown) => {
           logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
-          void postStreamEndBestEffort(api, account, sessionKey);
+          void finishTurn();
         });
 
       return true;

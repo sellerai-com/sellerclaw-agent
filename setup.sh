@@ -86,22 +86,26 @@ export AGENT_ENV
 
 SUBCMD="${CLI_ARGS[0]:-setup}"
 
-NEED_INSTALLER=0   # run RAM check + auto-install missing docker/uv
-NEED_ENV_FILE=0    # read .env.<profile> before launching the CLI
-NEED_DOCKER=0      # verify docker + docker compose v2 are present
-NEED_UV=1          # CLI is always launched via `uv run`
+NEED_INSTALLER=0    # run RAM check + auto-install missing docker/uv
+NEED_ENV_FILE=0     # read .env.<profile> before launching the CLI
+NEED_DOCKER=0       # verify docker + docker compose v2 are present
+NEED_UV=1           # CLI is always launched via `uv run`
+NEED_CLI_UPGRADE=0  # re-resolve sellerclaw-cli to the latest allowed release
 
 case "$SUBCMD" in
   setup)
     NEED_INSTALLER=1
     NEED_ENV_FILE=1
     NEED_DOCKER=1
+    NEED_CLI_UPGRADE=1
     ;;
   start|stop)
     NEED_ENV_FILE=1
     NEED_DOCKER=1
+    NEED_CLI_UPGRADE=1
     ;;
   status|login|logout)
+    NEED_CLI_UPGRADE=1
     ;;
   help|"")
     ;;
@@ -395,6 +399,26 @@ if [[ -z "${SELLERCLAW_AGENT_VERSION:-}" ]] && have_cmd git && [[ -d "$SCRIPT_DI
   agent_version="${agent_version#v}"
   if [[ -n "$agent_version" ]]; then
     export SELLERCLAW_AGENT_VERSION="$agent_version"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Keep sellerclaw-cli current.
+#
+# `uv run` only syncs the venv to uv.lock; a newer release on PyPI does NOT make
+# the lock stale, so uv would otherwise keep the pinned version forever. We ask
+# uv to re-resolve sellerclaw-cli to the latest version allowed by pyproject
+# before launching. Best-effort: set SELLERCLAW_NO_CLI_UPGRADE=1 to pin the
+# locked version (reproducible/offline installs), and non-fatal when offline so
+# cached commands keep working.
+# ---------------------------------------------------------------------------
+
+if (( NEED_CLI_UPGRADE )) && [[ -z "${SELLERCLAW_NO_CLI_UPGRADE:-}" ]]; then
+  log_step "Updating SellerClaw CLI"
+  if uv lock --upgrade-package sellerclaw-cli --quiet 2>/dev/null; then
+    log_ok "sellerclaw-cli resolved to the latest allowed release"
+  else
+    log_warn "Could not refresh sellerclaw-cli (offline?); using the locked version."
   fi
 fi
 

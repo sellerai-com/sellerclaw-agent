@@ -28,13 +28,55 @@ from sellerclaw_agent.server.secrets_store import get_secrets
 from sellerclaw_agent.server.storage import ManifestStorage
 
 
+# Local container paths the proxy is allowed to read from. Must cover every
+# place an OpenClaw skill or tool may write an artifact destined for the chat:
+#   - ``media/`` is the ``browser`` tool's default screenshot dir
+#   - ``workspace-<agent>/`` is each agent's working dir, where skills such as
+#     ``diagram-maker`` save HTML/SVG/PDF outputs (``diagrams/``, ``reports/`` etc.)
+#   - ``/tmp/`` is the conventional scratch dir for ad-hoc ``exec`` outputs
+#
+# We deliberately do NOT allow ``/home/node/.openclaw/`` as a whole — that would
+# also expose agent session trajectories and logs to the upload endpoint.
 ALLOWED_PATH_PREFIXES: tuple[str, ...] = (
     "/home/node/.openclaw/media/",
+    "/home/node/.openclaw/workspace-",
     "/tmp/",
 )
 
+# Must stay a superset of (ideally equal to) the cloud's ALLOWED_FILE_EXTENSIONS
+# (sellerclaw: src/domain/utils/file_extensions.py). If the proxy is stricter than the
+# cloud it silently drops artifacts the cloud would accept — e.g. agent-generated `.html`
+# diagrams or `.pdf` reports — leaving the user with the caption but no file.
 ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
-    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".txt", ".csv", ".md", ".json"}
+    {
+        # images
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        # text / data
+        ".txt",
+        ".csv",
+        ".md",
+        ".json",
+        ".html",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".tsv",
+        ".log",
+        # documents
+        ".pdf",
+        ".docx",
+        ".doc",
+        ".xlsx",
+        ".xls",
+        ".pptx",
+        ".ppt",
+        ".rtf",
+        ".odt",
+    }
 )
 
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
@@ -114,6 +156,21 @@ def _content_type_for(ext: str) -> str:
         ".csv": "text/csv; charset=utf-8",
         ".md": "text/markdown; charset=utf-8",
         ".json": "application/json",
+        ".html": "text/html; charset=utf-8",
+        ".xml": "application/xml",
+        ".yaml": "application/yaml",
+        ".yml": "application/yaml",
+        ".tsv": "text/tab-separated-values; charset=utf-8",
+        ".log": "text/plain; charset=utf-8",
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xls": "application/vnd.ms-excel",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".ppt": "application/vnd.ms-powerpoint",
+        ".rtf": "application/rtf",
+        ".odt": "application/vnd.oasis.opendocument.text",
     }
     return mapping.get(ext, "application/octet-stream")
 

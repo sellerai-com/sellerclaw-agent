@@ -6,9 +6,10 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 import {
   enqueueSend,
-  postWebhookMediaMessage,
-  postWebhookMessage,
-  resolveOutboundExtId,
+  postTurnEnd,
+  postTurnPart,
+  postTurnStart,
+  resolveMediaKind,
   resolveOutboundMediaUrl,
   type ScwUiAccount,
 } from "./send.js";
@@ -57,7 +58,13 @@ export function resolveSellerclawUiAccount(
   if (!internalWebhookSecret) {
     throw new Error("sellerclaw-ui: internalWebhookSecret is required");
   }
-  return { apiBaseUrl, userId, agentApiKey, internalWebhookSecret, localAgentBaseUrl };
+  return {
+    apiBaseUrl,
+    userId,
+    agentApiKey,
+    internalWebhookSecret,
+    localAgentBaseUrl,
+  };
 }
 
 /**
@@ -110,6 +117,11 @@ type OutboundParams = Record<string, unknown> & {
   account?: ScwUiAccount;
   config?: OpenClawConfig;
 };
+
+/** One outbound part with the ``part_id`` filled in by {@link deliverOutboundAsParts}. */
+type OutboundPartInput =
+  | { kind: "text"; text: string }
+  | { kind: "image" | "file"; url: string; filename?: string; content_type?: string };
 
 function resolveOutboundAccount(p: OutboundParams): ScwUiAccount {
   const account =
@@ -165,6 +177,32 @@ function buildSellerclawUiRuntimeSnapshot(account: ScwUiAccount): {
   };
 }
 
+/**
+ * Deliver a one-shot outbound message (``message`` tool / proactive / handoff) as a
+ * self-contained parts turn: start → part(s) → end. Each outbound send is its own
+ * assistant message, so async completions never collide with a streamed turn.
+ */
+async function deliverOutboundAsParts(
+  account: ScwUiAccount,
+  sessionKey: string,
+  chatId: string | null,
+  parts: OutboundPartInput[],
+): Promise<{ messageId: string }> {
+  const messageId = crypto.randomUUID();
+  await postTurnStart(account, sessionKey, messageId, chatId);
+  for (const part of parts) {
+    await postTurnPart(
+      account,
+      sessionKey,
+      messageId,
+      { part_id: crypto.randomUUID(), ...part },
+      chatId,
+    );
+  }
+  await postTurnEnd(account, sessionKey, messageId, chatId);
+  return { messageId };
+}
+
 async function outboundSendText(params: unknown): Promise<{ messageId: string }> {
   const p = params as OutboundParams;
   if (p.silent) {
@@ -181,11 +219,7 @@ async function outboundSendText(params: unknown): Promise<{ messageId: string }>
   }
   const chatId = extractChatIdFromAddress(sessionKey);
   return enqueueSend(sessionKey, () =>
-    postWebhookMessage(account, sessionKey, {
-      text,
-      message_id: resolveOutboundExtId(p),
-      ...(chatId ? { chat_id: chatId } : {}),
-    }),
+    deliverOutboundAsParts(account, sessionKey, chatId, [{ kind: "text", text }]),
   );
 }
 
@@ -195,10 +229,10 @@ async function outboundSendText(params: unknown): Promise<{ messageId: string }>
  * `/home/node/...` or `/tmp/...`), proxy-upload it through the agent so we get a real
  * download URL before delivery.
  */
-async function resolveDeliverableImageUrl(
+async function resolveDeliverableImage(
   account: ScwUiAccount,
   p: OutboundParams,
-): Promise<string> {
+): Promise<{ url: string; contentType: string }> {
   const explicitPath =
     (typeof p.imagePath === "string" && p.imagePath) ||
     (typeof p.localImagePath === "string" && p.localImagePath) ||
@@ -209,8 +243,7 @@ async function resolveDeliverableImageUrl(
   if (!source) {
     throw new Error("sellerclaw-ui: imageUrl or imagePath is required for sendImage");
   }
-  const resolved = await resolveOutboundMediaUrl(account, source);
-  return resolved.url;
+  return resolveOutboundMediaUrl(account, source);
 }
 
 async function outboundSendImage(params: unknown): Promise<{ messageId: string }> {
@@ -220,22 +253,19 @@ async function outboundSendImage(params: unknown): Promise<{ messageId: string }
   if (!sessionKey) {
     throw new Error("sellerclaw-ui: missing session key on outbound sendImage params");
   }
-  const imageUrl = await resolveDeliverableImageUrl(account, p);
+  const { url: imageUrl, contentType } = await resolveDeliverableImage(account, p);
   const caption = typeof p.text === "string" ? p.text : "";
-  const rawContent: Record<string, unknown>[] = [];
-  if (caption) {
-    rawContent.push({ type: "text", text: caption });
-  }
-  rawContent.push({ type: "image_url", image_url: { url: imageUrl } });
   const chatId = extractChatIdFromAddress(sessionKey);
-  return enqueueSend(sessionKey, () =>
-    postWebhookMessage(account, sessionKey, {
-      text: caption || imageUrl,
-      raw_content: rawContent,
-      message_id: resolveOutboundExtId(p),
-      ...(chatId ? { chat_id: chatId } : {}),
-    }),
-  );
+  const parts: OutboundPartInput[] = [];
+  if (caption.trim()) {
+    parts.push({ kind: "text", text: caption });
+  }
+  parts.push({
+    kind: "image",
+    url: imageUrl,
+    ...(contentType ? { content_type: contentType } : {}),
+  });
+  return enqueueSend(sessionKey, () => deliverOutboundAsParts(account, sessionKey, chatId, parts));
 }
 
 /**
@@ -271,15 +301,16 @@ async function outboundSendMedia(params: unknown): Promise<{ messageId: string }
   const caption = typeof p.text === "string" ? p.text : "";
   const { url, contentType } = await resolveOutboundMediaUrl(account, rawMediaUrl);
   const chatId = extractChatIdFromAddress(sessionKey);
-  return enqueueSend(sessionKey, () =>
-    postWebhookMediaMessage(account, sessionKey, {
-      mediaUrl: url,
-      contentType,
-      caption,
-      chatId,
-      messageId: resolveOutboundExtId(p),
-    }),
-  );
+  const parts: OutboundPartInput[] = [];
+  if (caption.trim()) {
+    parts.push({ kind: "text", text: caption });
+  }
+  parts.push({
+    kind: resolveMediaKind(url, contentType),
+    url,
+    ...(contentType ? { content_type: contentType } : {}),
+  });
+  return enqueueSend(sessionKey, () => deliverOutboundAsParts(account, sessionKey, chatId, parts));
 }
 
 const sellerclawUiChatPlugin = createChatChannelPlugin<ScwUiAccount>({

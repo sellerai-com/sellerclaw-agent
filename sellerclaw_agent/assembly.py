@@ -22,6 +22,7 @@ class AssembledAgentConfig:
     tools_deny: list[str]
     agents_md: str
     memory_md: str
+    model_ref: str = ""
     soul_md: str | None = None
     user_md: str | None = None
     tools_md: str | None = None
