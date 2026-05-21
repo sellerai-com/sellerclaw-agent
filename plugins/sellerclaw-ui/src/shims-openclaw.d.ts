@@ -19,6 +19,13 @@ declare module "openclaw/plugin-sdk/channel-inbound" {
   ): Promise<void>;
 }
 
+declare module "openclaw/plugin-sdk/agent-harness-runtime" {
+  /** Abort the in-flight embedded reply run for a resolved session id. */
+  export function abortAgentHarnessRun(sessionId: string, opts?: unknown): void;
+  /** Resolve the active embedded run's session id for a session key, or null if none. */
+  export function resolveActiveEmbeddedRunSessionId(sessionKey: string): string | null;
+}
+
 declare module "openclaw/plugin-sdk/media-store" {
   export function saveMediaBuffer(
     buffer: Buffer,

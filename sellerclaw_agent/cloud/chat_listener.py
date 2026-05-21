@@ -174,6 +174,46 @@ async def _consume_chat_sse(
                 if event_name == "error":
                     _log.warning("chat_sse_error_event", data_preview=data[:300])
                     continue
+                if event_name == "cancel":
+                    # Stop request: abort the in-flight OpenClaw run for this chat. Best-effort
+                    # and not deduped (it targets the assistant turn, not a user message).
+                    try:
+                        cancel_payload = json.loads(data)
+                    except json.JSONDecodeError:
+                        _log.warning("chat_sse_invalid_json")
+                        continue
+                    if not isinstance(cancel_payload, dict):
+                        continue
+                    cancel_chat_id = str(cancel_payload.get("chat_id") or "") or None
+                    cancel_agent_id = str(cancel_payload.get("agent_id") or "") or None
+                    if not cancel_chat_id or not cancel_agent_id:
+                        _log.warning(
+                            "chat_cancel_missing_fields",
+                            chat_id=cancel_chat_id,
+                            agent_id=cancel_agent_id,
+                        )
+                        continue
+                    try:
+                        await forwarder.post_abort_json(
+                            {"chat_id": cancel_chat_id, "agent_id": cancel_agent_id}
+                        )
+                    except httpx.ConnectError as exc:
+                        _log.info(
+                            "chat_cancel_dropped",
+                            reason="gateway_unreachable",
+                            chat_id=cancel_chat_id,
+                            error=str(exc),
+                        )
+                    except httpx.TimeoutException as exc:
+                        _log.info(
+                            "chat_cancel_dropped",
+                            reason="gateway_timeout",
+                            chat_id=cancel_chat_id,
+                            error=str(exc),
+                        )
+                    except Exception:
+                        _log.exception("chat_cancel_forward_failed", chat_id=cancel_chat_id)
+                    continue
                 if event_name != "user_message":
                     continue
                 try:

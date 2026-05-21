@@ -99,10 +99,15 @@ case "$SUBCMD" in
     NEED_DOCKER=1
     NEED_CLI_UPGRADE=1
     ;;
-  start|stop)
+  start)
     NEED_ENV_FILE=1
     NEED_DOCKER=1
     NEED_CLI_UPGRADE=1
+    ;;
+  stop)
+    # Stopping is a local teardown — no need to re-resolve the CLI from PyPI.
+    NEED_ENV_FILE=1
+    NEED_DOCKER=1
     ;;
   status|login|logout)
     NEED_CLI_UPGRADE=1

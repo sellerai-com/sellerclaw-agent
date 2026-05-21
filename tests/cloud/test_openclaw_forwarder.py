@@ -54,6 +54,40 @@ async def test_local_forwarder_posts_inbound() -> None:
     assert json.loads(captured["body"])["text"] == "hi"
 
 
+@pytest.mark.asyncio
+async def test_local_forwarder_posts_abort() -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization", "")
+        captured["body"] = request.content.decode("utf-8")
+        return httpx.Response(202)
+
+    transport = httpx.MockTransport(handler)
+    fwd = LocalOpenClawForwarder(
+        base_url="http://gw.test",
+        hooks_token="hooks-secret",
+        transport=transport,
+    )
+    await fwd.post_abort_json({"chat_id": "c1", "agent_id": "supervisor"})
+    assert captured["url"].endswith("/channels/sellerclaw-ui/abort")
+    assert captured["auth"] == "Bearer hooks-secret"
+    assert json.loads(captured["body"]) == {"chat_id": "c1", "agent_id": "supervisor"}
+
+
+@pytest.mark.asyncio
+async def test_local_forwarder_abort_raises_on_non_2xx() -> None:
+    transport = httpx.MockTransport(lambda _request: httpx.Response(500))
+    fwd = LocalOpenClawForwarder(
+        base_url="http://gw.test",
+        hooks_token="hooks-secret",
+        transport=transport,
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await fwd.post_abort_json({"chat_id": "c1", "agent_id": "supervisor"})
+
+
 def test_openclaw_gateway_base_url_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCLAW_GATEWAY_HTTP_BASE", raising=False)
     monkeypatch.setenv("OPENCLAW_PORT_GATEWAY", "8899")

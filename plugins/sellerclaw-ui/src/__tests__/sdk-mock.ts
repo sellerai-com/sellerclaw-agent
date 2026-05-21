@@ -32,6 +32,11 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
   dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("openclaw/plugin-sdk/agent-harness-runtime", () => ({
+  abortAgentHarnessRun: vi.fn(),
+  resolveActiveEmbeddedRunSessionId: vi.fn().mockReturnValue(null),
+}));
+
 vi.mock("openclaw/plugin-sdk/webhook-ingress", () => ({
   readJsonWebhookBodyOrReject: vi.fn(),
 }));

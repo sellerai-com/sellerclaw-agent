@@ -102,8 +102,10 @@ class _InboundRecorder:
     def __init__(self, behavior: str = "ok") -> None:
         self.behavior = behavior
         self.calls: list[dict[str, Any]] = []
+        self.paths: list[str] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.paths.append(request.url.path)
         self.calls.append(json.loads(request.content.decode("utf-8")))
         if self.behavior == "connect_error":
             raise httpx.ConnectError("connection refused", request=request)
@@ -384,3 +386,55 @@ async def test_probe_ttl_caches_status_across_messages(
 
     assert inbound.calls == []
     assert supervisor.calls == 1, "probe must be cached within TTL across consecutive messages"
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_forwarded_to_abort_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``cancel`` SSE event POSTs chat_id+agent_id to the abort channel; dedup untouched."""
+    supervisor = _FakeSupervisor(status="running")
+    inbound = _InboundRecorder()
+    dedup = cl._MessageIdDedup()
+    await _run_consume(
+        sse_body=_sse_bytes(
+            [("cancel", {"chat_id": "c1", "agent_id": "supervisor", "message_id": "m1"})]
+        ),
+        supervisor=supervisor,
+        inbound=inbound,
+        agent_instance_id=uuid4(),
+        dedup=dedup,
+        monkeypatch=monkeypatch,
+    )
+    assert inbound.paths == ["/channels/sellerclaw-ui/abort"]
+    assert inbound.calls == [{"chat_id": "c1", "agent_id": "supervisor"}]
+    # cancel targets the assistant turn, not a user message — it must not touch dedup.
+    assert dedup.already_forwarded("m1") is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_missing_agent_id_not_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor = _FakeSupervisor(status="running")
+    inbound = _InboundRecorder()
+    await _run_consume(
+        sse_body=_sse_bytes([("cancel", {"chat_id": "c1"})]),
+        supervisor=supervisor,
+        inbound=inbound,
+        agent_instance_id=uuid4(),
+        monkeypatch=monkeypatch,
+    )
+    assert inbound.paths == []
+    assert inbound.calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_survives_gateway_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cancel against an unreachable gateway is a logged drop, not a loop-killer."""
+    supervisor = _FakeSupervisor(status="running")
+    inbound = _InboundRecorder(behavior="connect_error")
+    await _run_consume(
+        sse_body=_sse_bytes([("cancel", {"chat_id": "c1", "agent_id": "supervisor"})]),
+        supervisor=supervisor,
+        inbound=inbound,
+        agent_instance_id=uuid4(),
+        monkeypatch=monkeypatch,
+    )
+    assert inbound.paths == ["/channels/sellerclaw-ui/abort"]

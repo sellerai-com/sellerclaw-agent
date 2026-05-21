@@ -2,6 +2,10 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
 import { readJsonWebhookBodyOrReject } from "openclaw/plugin-sdk/webhook-ingress";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
+import {
+  abortAgentHarnessRun,
+  resolveActiveEmbeddedRunSessionId,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 
 import { resolveSellerclawUiAccount } from "./channel.js";
 import {
@@ -510,6 +514,83 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           void finishTurn("failed");
         });
 
+      return true;
+    },
+  });
+}
+
+interface AbortPayload {
+  chat_id: string;
+  agent_id: string;
+}
+
+/**
+ * Stop route: the cloud forwards a user "stop" here when it wants the in-flight
+ * OpenClaw reply aborted. We resolve the active embedded run for the chat's session
+ * key and abort it in-process. Idempotent — a no active run is a benign no-op.
+ */
+export function registerAbortRoute(api: OpenClawPluginApi): void {
+  api.registerHttpRoute({
+    path: "/channels/sellerclaw-ui/abort",
+    auth: "plugin",
+    handler: async (req, res) => {
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith("Bearer ")) {
+        res.statusCode = 401;
+        res.end(JSON.stringify({ error: "Missing auth" }));
+        return true;
+      }
+
+      let account: ScwUiAccount;
+      try {
+        account = resolveSellerclawUiAccount(api.config);
+      } catch {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ error: "Channel not configured" }));
+        return true;
+      }
+
+      const token = authHeader.slice(7);
+      if (token !== account.internalWebhookSecret) {
+        res.statusCode = 401;
+        res.end(JSON.stringify({ error: "Invalid token" }));
+        return true;
+      }
+
+      const readResult = await readJsonWebhookBodyOrReject({ req, res });
+      if (
+        !readResult ||
+        typeof readResult !== "object" ||
+        !("ok" in readResult) ||
+        !(readResult as { ok: boolean }).ok
+      ) {
+        return true;
+      }
+      const body = (readResult as { ok: true; value: unknown }).value;
+      if (!body || typeof body !== "object") {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: "Invalid JSON body" }));
+        return true;
+      }
+
+      const payload = body as unknown as AbortPayload;
+      if (!payload.chat_id || !payload.agent_id) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: "chat_id and agent_id required" }));
+        return true;
+      }
+
+      const sessionKey = `agent:${payload.agent_id}:sellerclaw-ui:direct:${payload.chat_id}`;
+      const sessionId = resolveActiveEmbeddedRunSessionId(sessionKey);
+      if (sessionId) {
+        abortAgentHarnessRun(sessionId);
+        logInfo(api, `sellerclaw-ui: abort run session_key=${sessionKey} session_id=${sessionId}`);
+      } else {
+        logInfo(api, `sellerclaw-ui: abort no-op (no active run) session_key=${sessionKey}`);
+      }
+
+      res.statusCode = 202;
+      res.end(JSON.stringify({ ok: true, aborted: Boolean(sessionId) }));
       return true;
     },
   });

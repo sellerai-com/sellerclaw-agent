@@ -251,8 +251,8 @@ def generate_openclaw_config(
         "thinkingDefault": thinking_default,
         "blockStreamingDefault": "on",
         "blockStreamingChunk": {
-            "minChars": 100,
-            "maxChars": 1500,
+            "minChars": 800,
+            "maxChars": 3000,
             "breakPreference": "newline",
         },
         "compaction": {
