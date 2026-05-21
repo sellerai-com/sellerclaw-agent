@@ -488,23 +488,26 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         });
       })();
 
-      const finishTurn = async (): Promise<void> => {
+      const finishTurn = async (status: "completed" | "failed" = "completed"): Promise<void> => {
         // Always finalize via ``turn/end``. If the dispatch produced no parts, open an
         // (empty) turn first so the paired user turn is completed rather than left
-        // PROCESSING — the empty assistant message is suppressed by the UI.
+        // PROCESSING. A successful-but-empty turn is benign (intentional NO_REPLY or an
+        // out-of-band ``message`` send) and is suppressed by the UI. A ``failed`` end,
+        // however, marks the message so a crashed/aborted dispatch surfaces as a visible
+        // error the user can retry instead of a silently "completed" blank reply.
         await ensurePartsTurn();
         try {
-          await postTurnEnd(account, sessionKey, partsMessageId, payload.chat_id);
+          await postTurnEnd(account, sessionKey, partsMessageId, payload.chat_id, status);
         } catch (err) {
           logError(api, `sellerclaw-ui: turn-end failed session_key=${sessionKey}: ${String(err)}`);
         }
       };
 
       void dispatchPromise
-        .then(() => finishTurn())
+        .then(() => finishTurn("completed"))
         .catch((err: unknown) => {
           logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
-          void finishTurn();
+          void finishTurn("failed");
         });
 
       return true;

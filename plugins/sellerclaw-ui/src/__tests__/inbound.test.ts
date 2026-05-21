@@ -279,6 +279,80 @@ describe("registerInboundRoute", () => {
     }
   });
 
+  it("ends the turn as failed when the dispatch rejects (crash/abort/timeout)", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "hi" },
+      });
+      dispatchMock.mockRejectedValueOnce(new Error("model run aborted"));
+
+      const { api, registerHttpRoute } = buildApi();
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = getHandler(registerHttpRoute);
+
+      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+      await handler(req, res);
+
+      await vi.waitFor(() => {
+        const endCall = fetchMock.mock.calls.find((c) =>
+          /\/internal\/openclaw\/turn\/[0-9a-f-]+\/end$/.test(String(c[0])),
+        );
+        expect(endCall).toBeDefined();
+        const body = JSON.parse(
+          String((endCall![1] as RequestInit).body),
+        ) as Record<string, string>;
+        expect(body.status).toBe("failed");
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("ends an empty but successful dispatch as completed (benign NO_REPLY stays silent)", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "hi" },
+      });
+      // Dispatch resolves without ever invoking ``deliver`` — no parts streamed.
+      dispatchMock.mockResolvedValueOnce(undefined);
+
+      const { api, registerHttpRoute } = buildApi();
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = getHandler(registerHttpRoute);
+
+      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+      await handler(req, res);
+
+      await vi.waitFor(() => {
+        const endCall = fetchMock.mock.calls.find((c) =>
+          /\/internal\/openclaw\/turn\/[0-9a-f-]+\/end$/.test(String(c[0])),
+        );
+        expect(endCall).toBeDefined();
+        const body = JSON.parse(
+          String((endCall![1] as RequestInit).body),
+        ) as Record<string, string>;
+        expect(body.status).toBe("completed");
+      });
+      // No part was streamed: only turn-start and turn-end fetches, no /part.
+      const partCalls = fetchMock.mock.calls.filter((c) =>
+        /\/internal\/openclaw\/turn\/[0-9a-f-]+\/part$/.test(String(c[0])),
+      );
+      expect(partCalls).toHaveLength(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("funnels deliver media through the turn/part endpoints as an image part", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
