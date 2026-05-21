@@ -97,6 +97,29 @@ monitor_session_logs() {
         --interval "${interval_seconds}"
 }
 
+rotate_log_if_oversize() {
+    # copytruncate-style rotation: `tee -a` holds an O_APPEND fd, so truncating the
+    # file in place is safe (its next write lands at the new EOF, no corruption).
+    # Runs off the gateway's critical path, so a failure here never touches OpenClaw.
+    local log_file="$1"
+    local max_bytes="${OPENCLAW_LOG_MAX_BYTES:-26214400}"  # 25 MiB
+    local size
+    size="$(stat -c %s "${log_file}" 2>/dev/null || echo 0)"
+    if [ "${size}" -ge "${max_bytes}" ]; then
+        cp -f "${log_file}" "${log_file}.1" 2>/dev/null || true
+        : > "${log_file}"
+    fi
+}
+
+monitor_log_rotation() {
+    local log_file="$1"
+    local interval="${OPENCLAW_LOG_ROTATE_INTERVAL_SECONDS:-30}"
+    while true; do
+        rotate_log_if_oversize "${log_file}"
+        sleep "${interval}"
+    done
+}
+
 log_gateway_diagnostic_artifacts() {
     local diagnostic_dir="${OPENCLAW_NODE_DIAGNOSTIC_DIR:-/tmp/openclaw-diagnostics}"
 
@@ -160,9 +183,26 @@ start_gateway() {
     local nginx_pid=$!
 
     configure_node_runtime
-    node openclaw.mjs gateway --bind loopback --port 7789 &
-    local openclaw_pid=$!
     local bg_pids=()
+    local openclaw_pid
+    if [ "${OPENCLAW_FILE_LOGS:-1}" = "1" ]; then
+        # Mirror OpenClaw's own stdout+stderr to a rotated file the edge agent can tail
+        # for crash/startup errors that never reach a session JSONL — while keeping
+        # container stdout intact for `docker logs`/cloud aggregation. Process
+        # substitution keeps $! = node, so readiness/memory probes still track the
+        # gateway PID; rotation runs as a separate process off the critical path.
+        local log_dir="${OPENCLAW_LOG_DIR:-${STATE_DIR}/logs}"
+        local log_file="${log_dir}/openclaw.log"
+        mkdir -p "${log_dir}"
+        node openclaw.mjs gateway --bind loopback --port 7789 > >(tee -a "${log_file}") 2>&1 &
+        openclaw_pid=$!
+        log "OpenClaw stdout mirrored to ${log_file} (rotate at ${OPENCLAW_LOG_MAX_BYTES:-26214400} bytes)"
+        monitor_log_rotation "${log_file}" &
+        bg_pids+=("$!")
+    else
+        node openclaw.mjs gateway --bind loopback --port 7789 &
+        openclaw_pid=$!
+    fi
     monitor_gateway_readiness "${openclaw_pid}" &
     bg_pids+=("$!")
 
