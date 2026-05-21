@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
+from sellerclaw_agent.http_clients import async_client
 from sellerclaw_agent.server.secrets_store import get_secrets
 from sellerclaw_agent.server.storage import ManifestStorage
 
@@ -205,7 +206,7 @@ async def _proxy_to_cloud(
     # Agent-scoped routes are mounted under ``/agent`` on the cloud API
     # (matches ``/agent/chat/stream`` etc. used elsewhere in the agent).
     url = f"{get_sellerclaw_api_url().rstrip('/')}/agent/files/upload"
-    async with httpx.AsyncClient(timeout=_UPLOAD_TIMEOUT) as client:
+    async with async_client(timeout=_UPLOAD_TIMEOUT) as client:
         response = await client.post(
             url,
             headers={"Authorization": f"Bearer {bearer}"},

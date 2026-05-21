@@ -8,6 +8,7 @@ import httpx
 
 from sellerclaw_agent.cloud.exceptions import CloudAuthError, CloudConnectionError
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
+from sellerclaw_agent.http_clients import async_client
 
 _DEFAULT_TIMEOUT = httpx.Timeout(10.0)
 
@@ -98,7 +99,7 @@ class SellerClawAuthClient:
     async def login(self, *, email: str, password: str) -> AgentAuthResult:
         url = f"{self._base_url}/agent/auth/token"
         try:
-            async with httpx.AsyncClient(
+            async with async_client(
                 timeout=self._timeout,
                 transport=self._transport,
             ) as client:
@@ -135,7 +136,7 @@ class SellerClawAuthClient:
     async def request_device_code(self) -> DeviceCodeResult:
         url = f"{self._base_url}/agent/auth/device/code"
         try:
-            async with httpx.AsyncClient(
+            async with async_client(
                 timeout=self._timeout,
                 transport=self._transport,
             ) as client:
@@ -188,7 +189,7 @@ class SellerClawAuthClient:
     async def poll_device_token(self, *, device_code: str) -> DeviceTokenPollResult:
         url = f"{self._base_url}/agent/auth/device/token"
         try:
-            async with httpx.AsyncClient(
+            async with async_client(
                 timeout=self._timeout,
                 transport=self._transport,
             ) as client:

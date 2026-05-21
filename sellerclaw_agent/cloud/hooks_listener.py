@@ -32,6 +32,7 @@ from sellerclaw_agent.cloud.openclaw_forwarder import (
 )
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
 from sellerclaw_agent.cloud.sse_codec import iter_sse_events
+from sellerclaw_agent.http_clients import async_client
 from sellerclaw_agent.server.secrets_store import get_secrets
 
 _log = structlog.get_logger(__name__)
@@ -79,7 +80,7 @@ async def _consume_hooks_sse(
     url = f"{base}/agent/hooks/stream"
     params = {"agent_instance_id": str(agent_instance_id)}
     headers = {"Authorization": f"Bearer {agent_token}"}
-    async with httpx.AsyncClient(timeout=_SSE_TIMEOUT) as client:
+    async with async_client(timeout=_SSE_TIMEOUT) as client:
         async with client.stream("GET", url, headers=headers, params=params) as response:
             if response.status_code == 401:
                 raise CloudAuthError("hooks_sse_unauthorized", status_code=401)
@@ -179,7 +180,7 @@ async def run_edge_hooks_sse_loop(
             await sleep_until(stop, 5.0)
             continue
         try:
-            async with httpx.AsyncClient(timeout=INBOUND_FORWARD_TIMEOUT) as oc_http:
+            async with async_client(timeout=INBOUND_FORWARD_TIMEOUT) as oc_http:
                 forwarder = LocalOpenClawForwarder(
                     base_url=openclaw_gateway_base_url(),
                     hooks_token=get_secrets(data_dir).hooks_token,

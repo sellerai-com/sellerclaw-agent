@@ -22,6 +22,7 @@ from rich.table import Table
 from rich.theme import Theme
 
 from sellerclaw_agent.cli_watch import load_manifest_from_disk, run_status_watch
+from sellerclaw_agent.http_clients import sync_client
 
 try:
     import questionary
@@ -479,7 +480,7 @@ def wait_for_agent(base_url: str, console: Console, *, timeout_s: float = 120) -
         console=console,
         transient=True,
     ):
-        with httpx.Client(timeout=5.0) as client:
+        with sync_client(timeout=5.0) as client:
             while time.monotonic() < deadline:
                 try:
                     r = client.get(f"{base_url}/health")
@@ -493,7 +494,7 @@ def wait_for_agent(base_url: str, console: Console, *, timeout_s: float = 120) -
 
 def get_auth_status(base_url: str) -> dict[str, Any]:
     headers = _local_control_plane_auth_headers(base_url)
-    with httpx.Client(timeout=15.0) as client:
+    with sync_client(timeout=15.0) as client:
         r = client.get(f"{base_url}/auth/status", headers=headers)
         r.raise_for_status()
         body = r.json()
@@ -504,7 +505,7 @@ def get_auth_status(base_url: str) -> dict[str, Any]:
 
 
 def _get_health_snapshot(base_url: str) -> dict[str, Any]:
-    with httpx.Client(timeout=5.0) as client:
+    with sync_client(timeout=5.0) as client:
         r = client.get(f"{base_url}/health")
         r.raise_for_status()
         body = r.json()
@@ -610,7 +611,7 @@ def _print_status(console: Console, base_url: str) -> int:
 def _logout(console: Console, base_url: str) -> int:
     try:
         headers = _local_control_plane_auth_headers(base_url)
-        with httpx.Client(timeout=15.0) as client:
+        with sync_client(timeout=15.0) as client:
             r = client.post(f"{base_url}/auth/disconnect", headers=headers)
             r.raise_for_status()
     except httpx.ConnectError:
@@ -639,7 +640,7 @@ def _connect_password(console: Console, base_url: str, email: str, password: str
         transient=True,
     ):
         headers = _local_control_plane_auth_headers(base_url)
-        with httpx.Client(timeout=60.0) as client:
+        with sync_client(timeout=60.0) as client:
             r = client.post(
                 f"{base_url}/auth/connect",
                 json={"email": email, "password": password},
@@ -672,7 +673,7 @@ def _device_flow(console: Console, base_url: str) -> None:
     ):
         try:
             headers = _local_control_plane_auth_headers(base_url)
-            with httpx.Client(timeout=60.0) as client:
+            with sync_client(timeout=60.0) as client:
                 start = client.post(f"{base_url}/auth/device/start", headers=headers)
         except httpx.ConnectError:
             console.print(
@@ -734,7 +735,7 @@ def _device_flow(console: Console, base_url: str) -> None:
         transient=True,
     ):
         poll_headers = _local_control_plane_auth_headers(base_url)
-        with httpx.Client(timeout=30.0) as client:
+        with sync_client(timeout=30.0) as client:
             while time.monotonic() < deadline:
                 try:
                     pr = client.get(

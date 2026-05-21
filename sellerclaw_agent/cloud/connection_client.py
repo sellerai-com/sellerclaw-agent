@@ -18,6 +18,7 @@ from sellerclaw_agent.cloud.exceptions import (
     is_agent_suspended_api_payload,
 )
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
+from sellerclaw_agent.http_clients import async_client
 
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0)
 _STATE_BACKUP_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
@@ -84,7 +85,7 @@ class SellerClawConnectionClient:
 
         async def _call(token: str) -> httpx.Response:
             url = f"{self._base}{path}"
-            async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
+            async with async_client(timeout=self._timeout, transport=self._transport) as client:
                 return await client.request(
                     method,
                     url,
@@ -135,7 +136,7 @@ class SellerClawConnectionClient:
             headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
             if body is not None:
                 headers["Content-Type"] = content_type or "application/octet-stream"
-            async with httpx.AsyncClient(timeout=effective_timeout, transport=self._transport) as client:
+            async with async_client(timeout=effective_timeout, transport=self._transport) as client:
                 return await client.request(method, url, headers=headers, content=body)
 
         try:

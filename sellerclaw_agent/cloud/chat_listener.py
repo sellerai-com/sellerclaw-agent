@@ -38,6 +38,7 @@ from sellerclaw_agent.cloud.supervisor_manager import (
     SupervisorContainerManager,
     create_supervisor_manager,
 )
+from sellerclaw_agent.http_clients import async_client
 from sellerclaw_agent.server.secrets_store import get_secrets
 from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 from sellerclaw_agent.server.storage import ManifestStorage
@@ -145,7 +146,7 @@ async def _consume_chat_sse(
     url = f"{base}/agent/chat/stream"
     params = {"agent_instance_id": str(agent_instance_id)}
     headers = {"Authorization": f"Bearer {agent_token}"}
-    async with httpx.AsyncClient(timeout=_SSE_TIMEOUT) as client:
+    async with async_client(timeout=_SSE_TIMEOUT) as client:
         async with client.stream("GET", url, headers=headers, params=params) as response:
             if response.status_code == 401:
                 raise CloudAuthError("chat_sse_unauthorized", status_code=401)
@@ -276,7 +277,7 @@ async def run_edge_chat_sse_loop(
             continue
 
         try:
-            async with httpx.AsyncClient(timeout=INBOUND_FORWARD_TIMEOUT) as oc_http:
+            async with async_client(timeout=INBOUND_FORWARD_TIMEOUT) as oc_http:
                 forwarder = LocalOpenClawForwarder(
                     base_url=openclaw_gateway_base_url(),
                     hooks_token=get_secrets(data_dir).hooks_token,

@@ -8,6 +8,8 @@ from typing import Any
 
 import httpx
 
+from sellerclaw_agent.http_clients import async_client
+
 _log = logging.getLogger(__name__)
 
 INBOUND_FORWARD_TIMEOUT = httpx.Timeout(60.0, connect=2.0)
@@ -55,7 +57,7 @@ class LocalOpenClawForwarder:
         if self._http is not None:
             response = await self._http.post(url, headers=headers, json=body)
         else:
-            async with httpx.AsyncClient(
+            async with async_client(
                 timeout=INBOUND_FORWARD_TIMEOUT,
                 transport=self._transport,
             ) as client:
@@ -80,7 +82,7 @@ class LocalOpenClawForwarder:
         if self._http is not None:
             response = await self._http.post(url, headers=headers, json=body)
         else:
-            async with httpx.AsyncClient(
+            async with async_client(
                 timeout=INBOUND_FORWARD_TIMEOUT,
                 transport=self._transport,
             ) as client:

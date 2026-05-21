@@ -13,6 +13,7 @@ from sellerclaw_agent.cloud.state_backup import (
     restore_state_backup,
     state_dir_has_restoreable_data,
 )
+from sellerclaw_agent.http_clients import sync_client
 
 
 def _resolve_restore_bearer() -> str | None:
@@ -35,7 +36,7 @@ def run_restore_if_needed() -> None:
     base = get_sellerclaw_api_url().rstrip("/")
     url = f"{base}/agent/connection/state-backup"
     timeout = httpx.Timeout(120.0, connect=10.0)
-    with httpx.Client(timeout=timeout) as client:
+    with sync_client(timeout=timeout) as client:
         response = client.get(url, headers={"Authorization": f"Bearer {token}"})
     if response.status_code == 404:
         return
