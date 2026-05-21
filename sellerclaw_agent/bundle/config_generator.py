@@ -318,7 +318,14 @@ def generate_openclaw_config(
         # user sees the image but never the explanation, and the agent (correctly) believes
         # it replied. ``automatic`` makes the prose the source reply on every turn; explicit
         # tool sends still deliver their media as separate messages.
-        "messages": {"visibleReplies": "automatic"},
+        #
+        # ``queue.mode: followup`` — when the user sends another message while the agent is
+        # still answering the previous one, enqueue it as a separate run that starts after the
+        # current turn finishes, so every message gets its own ordered reply. OpenClaw's
+        # default for this channel is ``steer``, which folds the follow-up into the active run
+        # and returns no reply for the follow-up's own turn — the user then sees a dropped /
+        # blank message. ``followup`` answers messages in order without dropping any.
+        "messages": {"visibleReplies": "automatic", "queue": {"mode": "followup"}},
         "bindings": [
             *telegram_bindings,
             {
