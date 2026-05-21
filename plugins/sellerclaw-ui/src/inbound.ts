@@ -17,6 +17,7 @@ import {
   type ScwUiAccount,
 } from "./send.js";
 import { getRuntime } from "./runtime-store.js";
+import { stripRuntimeToolActivityLines } from "./tool-activity-filter.js";
 
 interface InboundPayload {
   chat_id: string;
@@ -460,11 +461,12 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
                 );
               }
             }
-            const trimmedText = text.trim();
+            const filteredText = stripRuntimeToolActivityLines(text);
+            const trimmedText = filteredText.trim();
             if (trimmedText && !emittedTexts.has(trimmedText)) {
               emittedTexts.add(trimmedText);
-              const joiner = pickDeltaJoin(prevTail, text);
-              const outText = joiner + text;
+              const joiner = pickDeltaJoin(prevTail, filteredText);
+              const outText = joiner + filteredText;
               prevTail = outText.slice(-TAIL_KEEP_CHARS);
               try {
                 await ensurePartsTurn();
