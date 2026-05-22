@@ -1,11 +1,22 @@
 .PHONY: install setup up up-stage up-dev down test test_unit test_unit_dirs test_cloud lint \
 	openclaw-skills openclaw-plugins openclaw-measure-gateway-memory openclaw-measure-gateway-memory-cold \
-	release
+	release stage-cli-wheel dev-cli-local dev-cli-pypi
 
 UV ?= uv
 LINT_PATHS = sellerclaw_agent tests
 
 DOCKER_COMPOSE ?= docker compose
+
+# --- Developer-only local sellerclaw-cli override (never used by ./setup.sh) ---
+# Each developer points SELLERCLAW_CLI_LOCAL_PATH at their own sellerclaw-cli
+# source checkout in a gitignored dev.env (copy dev.env.example). When set, the
+# Makefile builds a wheel into runtime/.local-wheels/ and tells the image build to
+# install sellerclaw-cli from it instead of PyPI. Unset => pypi (production parity).
+-include dev.env
+export SELLERCLAW_CLI_LOCAL_PATH
+SELLERCLAW_CLI_SOURCE := $(if $(strip $(SELLERCLAW_CLI_LOCAL_PATH)),local,pypi)
+export SELLERCLAW_CLI_SOURCE
+LOCAL_WHEEL_DIR := runtime/.local-wheels
 
 # Agent version reported to sellerclaw on connect/ping. Single source of
 # truth: git tags (e.g. v0.7.0). Stripped of the leading "v"; falls back to
@@ -23,17 +34,48 @@ COMPOSE_SECRETS := $(if $(SECRETS_ENV_FILE),--env-file secrets.env,)
 
 install:
 	$(UV) sync --extra server --extra cli
+ifeq ($(SELLERCLAW_CLI_SOURCE),local)
+	@echo "==> dev.env: linking host venv's sellerclaw-cli (editable) from $(SELLERCLAW_CLI_LOCAL_PATH)"
+	$(UV) pip install -e "$(SELLERCLAW_CLI_LOCAL_PATH)"
+endif
 
 setup:
 	$(UV) run sellerclaw-agent setup
 
-up:
+# Stage the local sellerclaw-cli wheel for the image build (no-op unless dev.env
+# sets SELLERCLAW_CLI_LOCAL_PATH). Also clears any stale wheel in pypi mode so a
+# leftover dev wheel can never leak into a production-parity build.
+stage-cli-wheel:
+ifeq ($(SELLERCLAW_CLI_SOURCE),local)
+	@test -d "$(SELLERCLAW_CLI_LOCAL_PATH)" || { echo "SELLERCLAW_CLI_LOCAL_PATH '$(SELLERCLAW_CLI_LOCAL_PATH)' is not a directory (check dev.env)"; exit 1; }
+	@echo "==> Building sellerclaw-cli wheel from $(SELLERCLAW_CLI_LOCAL_PATH)"
+	@mkdir -p $(LOCAL_WHEEL_DIR)
+	@rm -f $(LOCAL_WHEEL_DIR)/*.whl
+	$(UV) build --wheel "$(SELLERCLAW_CLI_LOCAL_PATH)" -o $(LOCAL_WHEEL_DIR)
+	@# uv drops a `.gitignore` (`*`) in the out-dir; remove it so the committed
+	@# .gitkeep stays tracked (ignoring is handled by the repo-root .gitignore).
+	@rm -f $(LOCAL_WHEEL_DIR)/.gitignore
+else
+	@rm -f $(LOCAL_WHEEL_DIR)/*.whl 2>/dev/null || true
+endif
+
+# Re-link / revert the host venv's sellerclaw-cli. `uv run`/`uv sync` re-resolve
+# from the lock and revert the editable link, so re-run dev-cli-local afterwards
+# (or invoke the host CLI with `uv run --no-sync sellerclaw …`).
+dev-cli-local:
+	@test -n "$(strip $(SELLERCLAW_CLI_LOCAL_PATH))" || { echo "Set SELLERCLAW_CLI_LOCAL_PATH in dev.env first"; exit 1; }
+	$(UV) pip install -e "$(SELLERCLAW_CLI_LOCAL_PATH)"
+
+dev-cli-pypi:
+	$(UV) sync --extra server --extra cli
+
+up: stage-cli-wheel
 	$(DOCKER_COMPOSE) --env-file .env.production $(COMPOSE_SECRETS) up server --build
 
-up-stage:
+up-stage: stage-cli-wheel
 	$(DOCKER_COMPOSE) --env-file .env.staging $(COMPOSE_SECRETS) up server --build
 
-up-dev:
+up-dev: stage-cli-wheel
 	$(DOCKER_COMPOSE) --env-file .env.local $(COMPOSE_SECRETS) up --build
 
 down:

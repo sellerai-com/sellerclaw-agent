@@ -5,7 +5,7 @@
 #   staging – adds the staging entrypoint (fly.io)
 #
 # To update: check https://github.com/openclaw/openclaw/pkgs/container/openclaw/versions
-FROM ghcr.io/openclaw/openclaw:2026.5.20-beta.1 AS base
+FROM ghcr.io/openclaw/openclaw:2026.5.20 AS base
 
 ENV OPENCLAW_PORT=7788
 ENV OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
@@ -171,6 +171,31 @@ RUN cd /tmp/proj \
         -o /tmp/requirements.txt \
     && UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/requirements.txt \
     && rm -rf /tmp/proj /tmp/requirements.txt
+
+# Developer-only sellerclaw-cli override.
+#
+# Default (SELLERCLAW_CLI_SOURCE=pypi): the edge `sellerclaw` command and the
+# `sellerclaw_cli` library come from PyPI, exactly as in production / CI — this
+# block is a no-op. This is the path users and the GHCR build always take.
+#
+# When a contributor sets SELLERCLAW_CLI_SOURCE=local (driven by the Makefile +
+# gitignored dev.env), a wheel built from their local sellerclaw-cli checkout is
+# staged into runtime/.local-wheels/ and reinstalled system-wide here — AFTER the
+# server-deps install above, so the local build wins over whatever uv.lock pinned.
+# The directory is committed empty (.gitkeep) so the COPY always succeeds, and CI
+# never sets the arg, so the wheel (if any) is ignored.
+ARG SELLERCLAW_CLI_SOURCE=pypi
+COPY sellerclaw-agent/runtime/.local-wheels/ /tmp/local-wheels/
+RUN if [ "$SELLERCLAW_CLI_SOURCE" = "local" ]; then \
+        wheel="$(ls /tmp/local-wheels/*.whl 2>/dev/null | head -n1)"; \
+        if [ -z "$wheel" ]; then \
+            echo "SELLERCLAW_CLI_SOURCE=local but no wheel in runtime/.local-wheels/ (run 'make' which stages it from dev.env)" >&2; \
+            exit 1; \
+        fi; \
+        echo "Overriding sellerclaw-cli with local wheel: $wheel"; \
+        UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache --reinstall-package sellerclaw-cli "$wheel"; \
+    fi \
+    && rm -rf /tmp/local-wheels
 
 COPY sellerclaw-agent/sellerclaw_agent/ /app/sellerclaw_agent/
 COPY --from=ui-build /ui/dist /app/admin-ui/dist

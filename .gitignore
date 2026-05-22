@@ -4,6 +4,11 @@ data/
 # Local secrets
 secrets.env
 
+# Developer-only local overrides (see dev.env.example)
+dev.env
+# Locally built sellerclaw-cli wheel (the dir itself is tracked via .gitkeep)
+runtime/.local-wheels/*.whl
+
 # Python
 .venv/
 __pycache__/

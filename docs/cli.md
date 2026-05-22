@@ -151,6 +151,24 @@ docker build \
 
 To publish to a registry (for example GHCR), tag the result with your `ghcr.io/<owner>/<image>:<tag>` and use `docker push` after `docker login` to that registry.
 
+### Using a local `sellerclaw-cli` build (contributors)
+
+By default the edge `sellerclaw` command (and the host CLI) are installed from PyPI, so `./setup.sh` connects to production and uses released tools — no extra setup. If you are iterating on `sellerclaw-cli` itself, you can build the agent against a local source checkout instead of publishing to PyPI first:
+
+```bash
+cp dev.env.example dev.env
+# edit dev.env: SELLERCLAW_CLI_LOCAL_PATH=/abs/path/to/sellerclaw/packages/sellerclaw-cli
+make up-dev          # builds the edge image with sellerclaw-cli from your checkout
+make install         # also links it (editable) into the host venv
+```
+
+How it works:
+
+- `make` reads `dev.env` (gitignored, per-developer) and, when `SELLERCLAW_CLI_LOCAL_PATH` is set, builds a wheel into `runtime/.local-wheels/` and passes `SELLERCLAW_CLI_SOURCE=local` to the build. The image installs that wheel over the locked release.
+- This is **independent of the environment profile**: combine it with `--env local|staging|production` (via `make up-dev`/`up-stage`/`up`) to choose the SellerClaw backend separately from the CLI version.
+- `./setup.sh` never reads `dev.env` and never sets the build arg, so the user/production path and CI stay on PyPI. The wheel directory is committed empty (`.gitkeep`); only `*.whl` is ignored.
+- Rebuild (`make up-dev`) to pick up edits in the edge image. For the host CLI, re-run `make dev-cli-local` after any `uv sync`/`uv run` (those revert the editable link), or invoke it as `uv run --no-sync sellerclaw …`. Use `make dev-cli-pypi` to revert the host venv to the locked release.
+
 ## Troubleshooting
 
 ### First-run failures

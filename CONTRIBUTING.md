@@ -91,6 +91,8 @@ make up-server
 
 Building or publishing a runtime image from a fork is described under [Building the runtime image](docs/cli.md#building-the-runtime-image) in [`docs/cli.md`](docs/cli.md).
 
+If you are also iterating on `sellerclaw-cli`, you can build the agent against a local source checkout (no PyPI release needed) by setting `SELLERCLAW_CLI_LOCAL_PATH` in a gitignored `dev.env` — see [Using a local sellerclaw-cli build](docs/cli.md#using-a-local-sellerclaw-cli-build-contributors).
+
 See [`docs/cli.md`](docs/cli.md) for environment profiles (`.env.local`, `.env.staging`, `.env.production`, `secrets.env`) and [`docs/developer/admin-ui.md`](docs/developer/admin-ui.md) for the admin UI setup.
 
 ## Code Expectations

@@ -6,6 +6,10 @@ services:
       target: staging
       args:
         SELLERCLAW_AGENT_VERSION: "${SELLERCLAW_AGENT_VERSION:-0.0.0+unknown}"
+        # pypi (default) = production behaviour. Set to "local" only via the
+        # Makefile dev flow (gitignored dev.env) to install sellerclaw-cli from a
+        # local source checkout instead of PyPI. ./setup.sh never sets this.
+        SELLERCLAW_CLI_SOURCE: "${SELLERCLAW_CLI_SOURCE:-pypi}"
     ports:
       - "127.0.0.1:8001:8001"
       - "${OPENCLAW_PORT_GATEWAY:-7788}:7788"
