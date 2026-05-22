@@ -10,6 +10,14 @@ services:
         # Makefile dev flow (gitignored dev.env) to install sellerclaw-cli from a
         # local source checkout instead of PyPI. ./setup.sh never sets this.
         SELLERCLAW_CLI_SOURCE: "${SELLERCLAW_CLI_SOURCE:-pypi}"
+        # OpenClaw base-image source (see runtime/Dockerfile). Both ARGs default
+        # to the upstream release on ghcr.io. Override OPENCLAW_REPO to point at
+        # our pinned-builds package (ghcr.io/sellerai-com/openclaw-pinned), and
+        # OPENCLAW_TAG to a `pinned-<sha10>` tag, to test unreleased upstream
+        # fixes built via runtime/build-openclaw-pinned.sh or the
+        # openclaw-pinned.yml GitHub Actions workflow.
+        OPENCLAW_REPO: "${OPENCLAW_REPO:-ghcr.io/openclaw/openclaw}"
+        OPENCLAW_TAG: "${OPENCLAW_TAG:-2026.5.20}"
     ports:
       - "127.0.0.1:8001:8001"
       - "${OPENCLAW_PORT_GATEWAY:-7788}:7788"
@@ -32,10 +40,19 @@ services:
       OPENCLAW_GATEWAY_HTTP_BASE: "${OPENCLAW_GATEWAY_HTTP_BASE:-http://127.0.0.1:7789}"
       OPENCLAW_PORT_GATEWAY: "${OPENCLAW_PORT_GATEWAY:-7788}"
       OPENCLAW_PORT_VNC: "${OPENCLAW_PORT_VNC:-6080}"
-      # Sentinel value gates OpenClaw's `isProviderApiKeyConfigured({ provider: "google" })`
-      # so the `video_generate` tool surfaces. Real upstream auth happens via the `apiKey`
-      # field in `models.providers.google` (LiteLLM virtual key), which OpenClaw's google
-      # video provider reads in preference to env vars.
+      # OpenClaw log verbosity (trace|debug|info|warn|error). Overrides the
+      # rendered config's logging.level at runtime. Default warn; for delivery/wake
+      # diagnostics: OPENCLAW_LOG_LEVEL=debug docker compose up -d server
+      OPENCLAW_LOG_LEVEL: "${OPENCLAW_LOG_LEVEL:-debug}"
+      # Pre-hydration fallback only. The sentinel keeps OpenClaw's
+      # `isProviderApiKeyConfigured({ provider: "google" })` gate satisfied so the
+      # `video_generate` tool surfaces even before a config is fetched. At startup
+      # `openclaw_start` (hydrate_gemini_passthrough_key) overrides this with the per-agent
+      # LiteLLM virtual key from `models.providers.google.apiKey`: the lazy google video
+      # provider authenticates via this env var (NOT the config block — only the gate reads
+      # that), and the SellerClaw `/litellm/gemini` passthrough validates the virtual key
+      # before substituting the real upstream key. The sentinel survives only when the config
+      # has no google provider (i.e. video isn't configured for the agent).
       GEMINI_API_KEY: "${GEMINI_API_KEY:-litellm-passthrough}"
     extra_hosts:
       - "host.docker.internal:host-gateway"

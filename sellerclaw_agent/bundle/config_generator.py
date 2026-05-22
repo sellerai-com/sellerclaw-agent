@@ -308,24 +308,10 @@ def generate_openclaw_config(
             "defaults": agents_defaults,
             "list": agents_list,
         },
-        # Always deliver the assistant's final prose to the user, even on turns where the
-        # agent also used the ``message`` tool (e.g. to attach a generated image).
-        #
-        # Without this, the harness default for our model resolves source-reply delivery to
-        # ``message_tool_only``: OpenClaw then treats the visible reply as "owned" by the
-        # ``message`` tool and silently drops the run's ``finalAssistantVisibleText`` — the
-        # actual answer the agent typed. Only the tool's own short captions survive, so the
-        # user sees the image but never the explanation, and the agent (correctly) believes
-        # it replied. ``automatic`` makes the prose the source reply on every turn; explicit
-        # tool sends still deliver their media as separate messages.
-        #
-        # ``queue.mode: followup`` — when the user sends another message while the agent is
-        # still answering the previous one, enqueue it as a separate run that starts after the
-        # current turn finishes, so every message gets its own ordered reply. OpenClaw's
-        # default for this channel is ``steer``, which folds the follow-up into the active run
-        # and returns no reply for the follow-up's own turn — the user then sees a dropped /
-        # blank message. ``followup`` answers messages in order without dropping any.
-        "messages": {"visibleReplies": "automatic", "queue": {"mode": "followup"}},
+        "messages": {
+            "visibleReplies": "automatic",
+            "queue": {"mode": "steer"},
+        },
         "bindings": [
             *telegram_bindings,
             {

@@ -223,6 +223,34 @@ def test_log_errors_present_alongside_session_activity(tmp_path: Path) -> None:
     assert probe.log_errors == ["ERROR something broke in the gateway"]
 
 
+def test_log_errors_capture_silent_delivery_failures(tmp_path: Path) -> None:
+    """Completion-wake failures carry no ERROR/FATAL token but must still surface.
+
+    These leave the agent looking healthy (session ends, no session-level error)
+    while the result never reaches the user — the class of bug the probe exists for.
+    """
+    state_dir = tmp_path / ".openclaw"
+    state_dir.mkdir(parents=True)
+    log_file = tmp_path / "openclaw.log"
+    log_file.write_text(
+        "08:10:30 [tools/media-generate-background-shared] "
+        "Media generation completion wake failed; requester session was not woken\n"
+        "[warn] Subagent announce give up (retry-limit): "
+        "active requester session could not be woken\n"
+        "info: serving on loopback:7789\n",
+        encoding="utf-8",
+    )
+
+    probe = _reader(state_dir, log_file=log_file).probe()
+
+    assert probe.log_errors == [
+        "08:10:30 [tools/media-generate-background-shared] "
+        "Media generation completion wake failed; requester session was not woken",
+        "[warn] Subagent announce give up (retry-limit): "
+        "active requester session could not be woken",
+    ]
+
+
 def test_create_reader_honours_state_dir_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENCLAW_STATE_DIR", "/custom/state")
     monkeypatch.setenv("AGENT_ACTIVITY_WORKING_WINDOW_SEC", "5")

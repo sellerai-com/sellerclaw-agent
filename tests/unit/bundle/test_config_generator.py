@@ -479,32 +479,6 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
     )
 
 
-def test_generate_openclaw_config_visible_replies_is_automatic(
-    make_assembled_agent: Callable[..., AssembledAgentConfig],
-) -> None:
-    """Source replies must be ``automatic`` so the agent's prose is never suppressed.
-
-    Regression guard: with the harness default (``message_tool_only``) OpenClaw drops the
-    run's final assistant text on any turn that also used the ``message`` tool — the user
-    saw the attached image but never the explanation. ``automatic`` keeps the prose visible.
-    """
-    raw = _generate(_supervisor_only(make_assembled_agent))
-    assert json.loads(raw)["messages"]["visibleReplies"] == "automatic"
-
-
-def test_generate_openclaw_config_queue_mode_is_followup(
-    make_assembled_agent: Callable[..., AssembledAgentConfig],
-) -> None:
-    """A follow-up sent while the agent is replying must be enqueued, not steered.
-
-    Regression guard: OpenClaw's channel default ``steer`` folds the follow-up into the
-    active run and returns no reply for its own turn, so the user gets a dropped/blank
-    message. ``followup`` runs each message in order and never drops one.
-    """
-    raw = _generate(_supervisor_only(make_assembled_agent))
-    assert json.loads(raw)["messages"]["queue"]["mode"] == "followup"
-
-
 def test_generate_openclaw_config_web_search_enabled_requires_auth_token(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:

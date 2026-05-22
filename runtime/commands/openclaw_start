@@ -154,6 +154,34 @@ except Exception:
     fi
 }
 
+# OpenClaw's Google video-generation provider is registered lazily
+# (createLazyGoogleVideoGenerationProvider) and resolves its credential from the
+# GEMINI_API_KEY / GOOGLE_API_KEY env vars at call time — it does NOT read
+# models.providers.google.apiKey (only the tool-surfacing `isProviderApiKeyConfigured`
+# gate reads the config block). With the default sentinel GEMINI_API_KEY=litellm-passthrough,
+# video_generate authenticates against the SellerClaw `/litellm/gemini` passthrough with a
+# non-key and is rejected: `Invalid or missing LiteLLM virtual key.`. Export the per-agent
+# virtual key (baked into the config's google provider, same key the chat/image paths use
+# via Authorization: Bearer) so the video provider presents a credential the passthrough can
+# validate against agent_configs.litellm_virtual_key_hash; the passthrough then substitutes
+# the real upstream GEMINI_API_KEY on the LiteLLM side. No-op when the config has no google
+# provider (GEMINI_API_KEY keeps the compose sentinel, preserving the gate behaviour).
+hydrate_gemini_passthrough_key() {
+    [ -r "${CONFIG_PATH}" ] || return 0
+    local key
+    key="$(python3 -c "import json,pathlib
+try:
+    d = json.loads(pathlib.Path('${CONFIG_PATH}').read_text())
+    print(d.get('models', {}).get('providers', {}).get('google', {}).get('apiKey', '') or '')
+except Exception:
+    pass" 2>/dev/null || true)"
+    if [ -n "${key}" ]; then
+        export GEMINI_API_KEY="${key}"
+        export GOOGLE_API_KEY="${key}"
+        log "GEMINI_API_KEY/GOOGLE_API_KEY hydrated from config google provider (video_generate passthrough auth)"
+    fi
+}
+
 start_gateway() {
     local proxy_config="/etc/nginx/openclaw-proxy.conf"
     local nginx_bin=""
@@ -487,6 +515,7 @@ main() {
     discover_agent_ids
     ensure_state_dirs
     copy_runtime_config
+    hydrate_gemini_passthrough_key
     cleanup_stale_chrome_locks
     log_runtime_diagnostics
     log_config_summary

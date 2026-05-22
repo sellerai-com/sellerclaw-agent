@@ -5,7 +5,26 @@
 #   staging – adds the staging entrypoint (fly.io)
 #
 # To update: check https://github.com/openclaw/openclaw/pkgs/container/openclaw/versions
-FROM ghcr.io/openclaw/openclaw:2026.5.20 AS base
+# Override either ARG from docker-compose to test against a different version.
+#
+# OPENCLAW_REPO:
+#   Default = upstream ghcr.io/openclaw/openclaw (= what `openclaw doctor` ships).
+#   Override to ghcr.io/sellerai-com/openclaw-pinned when consuming our own
+#   pinned builds (see runtime/build-openclaw-pinned.sh and the
+#   `.github/workflows/openclaw-pinned.yml` CI workflow).
+#
+# OPENCLAW_TAG:
+#   Default = pinned upstream release.
+#   Override to `pinned-<sha10>` for our reproducible from-source builds.
+#
+# WHY pinned builds: ghcr.io's `:main` tag on the upstream repo lags by weeks
+# (snapshot from 2026-03-26 at time of writing) and fails our config schema
+# validation. To consume an unreleased upstream commit (e.g. PR #84006
+# generated-media direct fallback, merged 2026-05-22), use the from-source
+# workflow above.
+ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
+ARG OPENCLAW_TAG=2026.5.20
+FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
 ENV OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json
@@ -86,27 +105,25 @@ RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /o
 COPY sellerclaw-agent/plugins/sellerclaw-ui /opt/openclaw-plugins/sellerclaw-ui
 COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/sellerclaw-web-search
 
-# Workaround: openclaw 2026.4.12 is missing dist/subagent-registry.runtime.js
-# (upstream bug https://github.com/openclaw/openclaw/issues/66096).
-# The code dynamically imports this module for subagent cleanup; without it every
-# cleanup pass logs ERR_MODULE_NOT_FOUND.  The no-op shim makes the import succeed
-# and the caller exits early via `if (!engine.onSubagentEnded) return`.
-# TODO: remove once we upgrade to a release that includes the fix.
-RUN printf '%s\n' \
-      'export function ensureRuntimePluginsLoaded() {}' \
-      'export function ensureContextEnginesInitialized() {}' \
-      'export async function resolveContextEngine() { return {}; }' \
-      > /app/dist/subagent-registry.runtime.js
 
 # Remove unused bundled extensions from the base image to speed up cold start.
 # OpenClaw scans all directories in the bundled extensions dir at startup, even when
 # allow/load filters are set. Pruning 90+ unused extensions (~119 MB) avoids that overhead.
-# Keep only extensions referenced by the generated openclaw.json:
-#   browser, telegram, litellm, memory-core (web search is sellerclaw-web-search under /opt/openclaw-plugins)
+# Keep only extensions referenced by the generated openclaw.json. This list must stay in
+# sync with every provider used in an agent model ref (models.providers / agents.*.model)
+# and every bundled plugin the config enables (plugins.allow + plugins.entries):
+#   browser, telegram, litellm, memory-core   -> chat + tools + memory
+#   anthropic, google                         -> back the `anthropic`/`google` providers
+#                                                (model refs anthropic/claude-*, google/veo-*)
+#   document-extract                          -> bundled plugin enabled for the PDF tool
+# (web search is sellerclaw-web-search, an external plugin under /opt/openclaw-plugins.)
+# Each provider/plugin extension registers itself at extension-load time; pruning it makes
+# OpenClaw fail to resolve that provider's API or plugin even though the config references
+# it — e.g. the google prune surfaced as `No video-generation provider registered for google`.
 RUN cd /app/dist/extensions && \
     for dir in */; do \
         case "${dir%/}" in \
-            browser|telegram|litellm|memory-core) ;; \
+            browser|telegram|litellm|memory-core|anthropic|google|document-extract) ;; \
             *) rm -rf "$dir" ;; \
         esac; \
     done

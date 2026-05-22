@@ -43,6 +43,14 @@ _LOG_ERROR_TOKENS = (
     "Traceback (most recent call last)",
     "UnhandledPromiseRejection",
     "panic:",
+    # Silent-delivery failures: a completed result (image/media, subagent announce)
+    # never reaches the requester because waking its session failed. OpenClaw logs
+    # these with lowercase "failed" and no ERROR/FATAL, so the run looks healthy
+    # (session ends cleanly, no session-JSONL error) while the user gets nothing.
+    # These phrases are specific enough to stay low-noise.
+    "wake failed",
+    "was not woken",
+    "could not be woken",
 )
 
 
