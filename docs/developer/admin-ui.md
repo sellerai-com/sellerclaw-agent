@@ -62,7 +62,7 @@ Auth endpoints (proxied to the upstream SellerClaw API by the agent):
 Manifest endpoints (only reachable after the user is signed in through the UI, though the backend does not currently gate them):
 
 - `GET /manifest` → `{ manifest, version }` on 200, `404` with `{ detail: { code: "manifest_not_found" } }` when no manifest has been saved yet.
-- `POST /manifest` → accepts a `SaveManifestRequest` payload and returns `{ status, manifest_path, version }`. Validation errors surface as `422` (Pydantic) or `400` (bundle-level validation, e.g. unknown integration kind).
+- `POST /manifest` → accepts a `SaveManifestRequest` payload and returns `{ status, manifest_path, version }`. Validation errors surface as `422` (Pydantic) or `400` (bundle-level validation, e.g. a model ref that points at an `llm.groups` entry that was not declared).
 
 The server adds a `CORSMiddleware` whose allowed origin is taken from the `ADMIN_URL` environment variable (single URL). In docker-compose it is preset to `http://localhost:5174`.
 

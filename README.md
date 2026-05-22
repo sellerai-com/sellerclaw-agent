@@ -142,7 +142,6 @@ For installation details, environment profiles, and CLI usage, see [CLI referenc
 ```text
 sellerclaw_agent/       # Python package (CLI, server, cloud client, bundle renderer)
 admin-ui/               # Vue 3 admin SPA (manifest viewer, sign-in)
-agent_resources/        # OpenClaw config templates used by the bundle renderer
 runtime/                # Dockerfile for the combined OpenClaw + agent image
 tests/                  # unit and contract tests
 docs/                   # public technical documentation
