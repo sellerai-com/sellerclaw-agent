@@ -113,6 +113,7 @@ def generate_openclaw_config(
     primary_channel: str = "sellerclaw-ui",
     model_defaults: ModelDefaults,
     thinking_default: str = "adaptive",
+    reasoning_default: str = "off",
     cron_enabled: bool = True,
     web_fetch_enabled: bool = True,
 ) -> str:
@@ -120,9 +121,10 @@ def generate_openclaw_config(
 
     ``providers`` is the fully built ``models.providers`` mapping (manifest-driven,
     assembled by the bundle builder). ``model_defaults`` carries the manifest-derived
-    ``agents.defaults`` model blocks. ``thinking_default`` is likewise resolved from
-    the manifest by the caller. Per-agent heartbeat is disabled (no ``heartbeat`` block
-    is emitted for any agent).
+    ``agents.defaults`` model blocks. ``thinking_default`` / ``reasoning_default`` are
+    likewise resolved from the manifest by the caller and emitted under
+    ``agents.defaults`` (``thinkingDefault`` / ``reasoningDefault``). Per-agent heartbeat
+    is disabled (no ``heartbeat`` block is emitted for any agent).
     """
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)
@@ -249,6 +251,7 @@ def generate_openclaw_config(
         "bootstrapMaxChars": OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
         "model": model_defaults.model,
         "thinkingDefault": thinking_default,
+        "reasoningDefault": reasoning_default,
         "blockStreamingDefault": "on",
         "blockStreamingChunk": {
             "minChars": 800,

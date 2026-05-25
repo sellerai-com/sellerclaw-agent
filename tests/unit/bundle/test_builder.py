@@ -123,11 +123,22 @@ def test_providers_built_from_manifest_groups() -> None:
     assert by_id["u:5fdc144e/complex"] == {
         "id": "u:5fdc144e/complex",
         "name": "Frontier (auto)",
-        "reasoning": True,
         "input": ["text", "image"],
-        "contextWindow": 128000,
-        "maxTokens": 8192,
+        "reasoning": True,
+        "contextWindow": 256000,
+        "maxTokens": 32768,
     }
+    # Non-complex litellm models omit reasoning/contextWindow/maxTokens (OpenClaw defaults).
+    for non_complex in (
+        "u:5fdc144e/simple",
+        "u:5fdc144e/mini",
+        "u:5fdc144e/image",
+        "u:5fdc144e/video",
+    ):
+        entry = by_id[non_complex]
+        assert "reasoning" not in entry
+        assert "contextWindow" not in entry
+        assert "maxTokens" not in entry
 
     anthropic = providers["anthropic"]
     assert anthropic["baseUrl"] == "https://example.ngrok-free.dev/litellm/anthropic"
@@ -137,10 +148,7 @@ def test_providers_built_from_manifest_groups() -> None:
         {
             "id": "claude-sonnet-4-6",
             "name": "Claude Sonnet 4.6",
-            "reasoning": False,
             "input": ["text", "image"],
-            "contextWindow": 200000,
-            "maxTokens": 8192,
         }
     ]
 
@@ -178,6 +186,17 @@ def test_defaults_thinking_default_from_manifest() -> None:
         .openclaw_config
     )
     assert cfg["agents"]["defaults"]["thinkingDefault"] == "off"
+
+
+def test_defaults_reasoning_default_from_manifest() -> None:
+    # Fixture carries reasoning_default="on".
+    assert _config_from_llm()["agents"]["defaults"]["reasoningDefault"] == "on"
+
+    # Absent in the manifest -> OpenClaw's own default ("off").
+    mapping = copy.deepcopy(load_manifest_v2_mapping())
+    mapping["agents"].pop("reasoning_default", None)
+    cfg = _cfg_from_mapping(mapping)
+    assert cfg["agents"]["defaults"]["reasoningDefault"] == "off"
 
 
 def test_providers_are_manifest_driven_not_hardcoded() -> None:

@@ -15,14 +15,19 @@ class ModelRef:
 
 @dataclass(frozen=True)
 class ModelInfo:
-    """OpenClaw model metadata entry inside a provider group."""
+    """OpenClaw model metadata entry inside a provider group.
+
+    ``reasoning`` / ``context_window`` / ``max_tokens`` are optional: when the manifest
+    omits them (every non-frontier model does), they stay ``None`` and are dropped from
+    the emitted OpenClaw config so the runtime applies its own defaults.
+    """
 
     id: str
     name: str
-    reasoning: bool
     input: tuple[str, ...]
-    context_window: int
-    max_tokens: int
+    reasoning: bool | None = None
+    context_window: int | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,7 @@ class AgentsManifest:
     """Agents block: defaults + the main agent + ordered subagents."""
 
     thinking_default: str
+    reasoning_default: str
     model_default: str
     browser_enabled_default: bool
     image_generation_default: bool
@@ -231,6 +237,13 @@ def _coerce_int(value: object, default: int = 0) -> int:
     raise TypeError(f"Expected int-like value, got {type(value)}")
 
 
+def _optional_int(value: object) -> int | None:
+    """Coerce an int-like value, returning ``None`` when the key is absent/null."""
+    if value is None:
+        return None
+    return _coerce_int(value)
+
+
 def _parse_model_info(value: object, label: str) -> ModelInfo:
     data = _require_mapping(value, label)
     if "id" not in data or data.get("id") is None:
@@ -238,13 +251,14 @@ def _parse_model_info(value: object, label: str) -> ModelInfo:
     model_id = str(data["id"]).strip()
     if not model_id:
         raise ValueError(f"{label}.id must not be empty")
+    reasoning_raw = data.get("reasoning")
     return ModelInfo(
         id=model_id,
         name=str(data.get("name", model_id)),
-        reasoning=bool(data.get("reasoning", False)),
         input=_tuple_str(data.get("input")),
-        context_window=_coerce_int(data.get("contextWindow", 0)),
-        max_tokens=_coerce_int(data.get("maxTokens", 0)),
+        reasoning=None if reasoning_raw is None else bool(reasoning_raw),
+        context_window=_optional_int(data.get("contextWindow")),
+        max_tokens=_optional_int(data.get("maxTokens")),
     )
 
 
@@ -479,6 +493,8 @@ def _parse_agent_spec(
 def _parse_agents(value: object) -> AgentsManifest:
     data = _require_mapping(value, "agents")
     thinking_default = str(data.get("thinking_default") or "adaptive").strip() or "adaptive"
+    # Reasoning-visibility default for every agent. Absent -> OpenClaw's own default ("off").
+    reasoning_default = str(data.get("reasoning_default") or "off").strip() or "off"
     model_default = str(data.get("model_default") or "primary").strip() or "primary"
     if model_default not in ("primary", "secondary"):
         raise ValueError(
@@ -525,6 +541,7 @@ def _parse_agents(value: object) -> AgentsManifest:
 
     return AgentsManifest(
         thinking_default=thinking_default,
+        reasoning_default=reasoning_default,
         model_default=model_default,
         browser_enabled_default=browser_enabled_default,
         image_generation_default=image_generation_default,
@@ -655,14 +672,19 @@ def _model_ref_to_mapping(ref: ModelRef) -> dict[str, str]:
 
 
 def _model_info_to_mapping(info: ModelInfo) -> dict[str, object]:
-    return {
+    out: dict[str, object] = {
         "id": info.id,
         "name": info.name,
-        "reasoning": info.reasoning,
         "input": list(info.input),
-        "contextWindow": info.context_window,
-        "maxTokens": info.max_tokens,
     }
+    # Optional sizing/reasoning keys are emitted only when set (frontier model only).
+    if info.reasoning is not None:
+        out["reasoning"] = info.reasoning
+    if info.context_window is not None:
+        out["contextWindow"] = info.context_window
+    if info.max_tokens is not None:
+        out["maxTokens"] = info.max_tokens
+    return out
 
 
 def _model_group_to_mapping(group: ModelGroup) -> dict[str, object]:
@@ -741,6 +763,7 @@ def _agent_spec_to_mapping(spec: AgentSpec) -> dict[str, object]:
 def _agents_to_mapping(agents: AgentsManifest) -> dict[str, object]:
     return {
         "thinking_default": agents.thinking_default,
+        "reasoning_default": agents.reasoning_default,
         "model_default": agents.model_default,
         "browser_enabled_default": agents.browser_enabled_default,
         "image_generation_default": agents.image_generation_default,

@@ -54,6 +54,45 @@ def test_parse_resolves_default_flags_for_subagents() -> None:
     assert by_id["scout"].browser_enabled is True
 
 
+def test_parse_reasoning_default_from_fixture_and_absent() -> None:
+    """``agents.reasoning_default`` parses from the fixture ('on') and falls back to 'off'."""
+    assert bundle_manifest_from_mapping(_v2()).agents.reasoning_default == "on"
+
+    data = _v2()
+    data["agents"].pop("reasoning_default", None)
+    assert bundle_manifest_from_mapping(data).agents.reasoning_default == "off"
+
+
+def test_parse_model_info_optional_sizing_fields() -> None:
+    """Only the frontier model carries reasoning/context/output sizing; the rest are None."""
+    manifest = bundle_manifest_from_mapping(_v2())
+    models = {m.id: m for m in manifest.llm.groups["litellm"].models}
+    complex_model = models["complex"]
+    assert complex_model.reasoning is True
+    assert complex_model.context_window == 256000
+    assert complex_model.max_tokens == 32768
+    for non_complex in ("simple", "mini", "image", "video"):
+        entry = models[non_complex]
+        assert entry.reasoning is None
+        assert entry.context_window is None
+        assert entry.max_tokens is None
+
+
+def test_model_info_optional_fields_round_trip_omit_when_unset() -> None:
+    """Saving + reparsing keeps the sizing keys only on the model that declared them."""
+    manifest = bundle_manifest_from_mapping(_v2())
+    mapping = manifest.to_save_manifest_mapping()
+    litellm_models = {m["id"]: m for m in mapping["llm"]["groups"]["litellm"]["models"]}  # type: ignore[index]
+    assert litellm_models["complex"]["contextWindow"] == 256000
+    assert litellm_models["complex"]["maxTokens"] == 32768
+    assert litellm_models["complex"]["reasoning"] is True
+    for non_complex in ("simple", "mini", "image", "video"):
+        entry = litellm_models[non_complex]
+        assert "reasoning" not in entry
+        assert "contextWindow" not in entry
+        assert "maxTokens" not in entry
+
+
 def test_parse_agent_content_and_skills() -> None:
     manifest = bundle_manifest_from_mapping(_v2())
     content = manifest.agents.main_agent.content

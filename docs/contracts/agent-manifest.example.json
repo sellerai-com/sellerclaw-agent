@@ -26,11 +26,11 @@
         "api_key": "sk-EXAMPLEKEY",
         "model_name_prefix": "u:5fdc144e/",
         "models": [
-          { "id": "complex", "name": "Frontier (auto)", "reasoning": true, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192 },
-          { "id": "simple", "name": "Mid (auto)", "reasoning": false, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192 },
-          { "id": "mini", "name": "Mini (auto)", "reasoning": false, "input": ["text"], "contextWindow": 128000, "maxTokens": 8192 },
-          { "id": "image", "name": "Image (auto)", "reasoning": false, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192 },
-          { "id": "video", "name": "Video (auto)", "reasoning": false, "input": ["text", "image"], "contextWindow": 128000, "maxTokens": 8192 }
+          { "id": "complex", "name": "Frontier (auto)", "reasoning": true, "input": ["text", "image"], "contextWindow": 256000, "maxTokens": 32768 },
+          { "id": "simple", "name": "Mid (auto)", "input": ["text", "image"] },
+          { "id": "mini", "name": "Mini (auto)", "input": ["text", "image"] },
+          { "id": "image", "name": "Image (auto)", "input": ["text", "image"] },
+          { "id": "video", "name": "Video (auto)", "input": ["text", "image"] }
         ]
       },
       "anthropic": {
@@ -38,7 +38,7 @@
         "api_key": "sk-EXAMPLEKEY",
         "model_name_prefix": "",
         "models": [
-          { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "reasoning": false, "input": ["text", "image"], "contextWindow": 200000, "maxTokens": 8192 }
+          { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "input": ["text", "image"] }
         ]
       },
       "google": {
@@ -46,14 +46,15 @@
         "api_key": "sk-EXAMPLEKEY",
         "model_name_prefix": "",
         "models": [
-          { "id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro (Preview)", "reasoning": false, "input": ["text", "image"], "contextWindow": 1000000, "maxTokens": 8192 },
-          { "id": "veo-3.1-fast-generate-preview", "name": "Google Veo 3.1 Fast", "reasoning": false, "input": ["text", "image"], "contextWindow": 32000, "maxTokens": 8192 }
+          { "id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro (Preview)", "input": ["text", "image"] },
+          { "id": "veo-3.1-fast-generate-preview", "name": "Google Veo 3.1 Fast", "input": ["text", "image"] }
         ]
       }
     }
   },
   "agents": {
     "thinking_default": "adaptive",
+    "reasoning_default": "on",
     "model_default": "primary",
     "browser_enabled_default": true,
     "image_generation_default": false,
@@ -62,6 +63,7 @@
       "id": "supervisor",
       "name": "Supervisor",
       "model": "primary",
+      "thinking": "xhigh",
       "image_generation": true,
       "video_generation": true,
       "content": {
@@ -96,8 +98,8 @@
       {
         "id": "supplier",
         "name": "Dropshipping Supplier",
-        "model": "secondary",
-        "thinking": "off",
+        "model": "primary",
+        "thinking": null,
         "browser_enabled": false,
         "image_generation": false,
         "video_generation": false,

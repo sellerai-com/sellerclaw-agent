@@ -48,6 +48,7 @@
       "required": ["main_agent"],
       "properties": {
         "thinking_default": { "type": "string" },
+        "reasoning_default": { "type": "string", "enum": ["on", "off", "stream"] },
         "model_default": { "type": "string" },
         "browser_enabled_default": { "type": "boolean" },
         "image_generation_default": { "type": "boolean" },
@@ -94,6 +95,7 @@
     "modelInfo": {
       "type": "object",
       "additionalProperties": true,
+      "description": "reasoning/contextWindow/maxTokens are optional; non-frontier models omit them so OpenClaw applies its defaults.",
       "required": ["id"],
       "properties": {
         "id": { "type": "string" },

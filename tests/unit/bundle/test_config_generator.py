@@ -417,6 +417,23 @@ def test_generate_openclaw_config_thinking_default_reflects_passed_value(
     assert json.loads(raw)["agents"]["defaults"]["thinkingDefault"] == thinking_default
 
 
+@pytest.mark.parametrize(
+    "reasoning_default",
+    [
+        pytest.param("on", id="on"),
+        pytest.param("off", id="off"),
+        pytest.param("stream", id="stream"),
+    ],
+)
+def test_generate_openclaw_config_reasoning_default_reflects_passed_value(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+    reasoning_default: str,
+) -> None:
+    """``agents.defaults.reasoningDefault`` is exactly the passed value (manifest-driven)."""
+    raw = _generate(_supervisor_only(make_assembled_agent), reasoning_default=reasoning_default)
+    assert json.loads(raw)["agents"]["defaults"]["reasoningDefault"] == reasoning_default
+
+
 def test_generate_openclaw_config_per_agent_thinking_from_assembled_agent(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:

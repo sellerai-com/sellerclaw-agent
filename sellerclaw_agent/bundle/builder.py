@@ -141,17 +141,23 @@ def _build_provider_models(group: ModelGroup) -> list[dict[str, object]]:
     The group's ``model_name_prefix`` is applied to each model id (non-empty only for
     the LiteLLM virtual group); all other metadata is copied verbatim.
     """
-    return [
-        {
+    models: list[dict[str, object]] = []
+    for m in group.models:
+        entry: dict[str, object] = {
             "id": f"{group.model_name_prefix}{m.id}",
             "name": m.name,
-            "reasoning": m.reasoning,
             "input": list(m.input),
-            "contextWindow": m.context_window,
-            "maxTokens": m.max_tokens,
         }
-        for m in group.models
-    ]
+        # Optional sizing/reasoning keys flow through only when the manifest set them
+        # (frontier model only); otherwise OpenClaw applies its own defaults.
+        if m.reasoning is not None:
+            entry["reasoning"] = m.reasoning
+        if m.context_window is not None:
+            entry["contextWindow"] = m.context_window
+        if m.max_tokens is not None:
+            entry["maxTokens"] = m.max_tokens
+        models.append(entry)
+    return models
 
 
 def build_providers(manifest: GenericManifest) -> dict[str, object]:
@@ -285,6 +291,7 @@ class BundleBuilder:
             primary_channel=manifest.channels.primary,
             model_defaults=build_model_defaults(manifest),
             thinking_default=manifest.agents.thinking_default,
+            reasoning_default=manifest.agents.reasoning_default,
             cron_enabled=manifest.cron_enabled,
             web_fetch_enabled=manifest.web_fetch_enabled,
         )
