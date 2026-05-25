@@ -366,7 +366,19 @@ def generate_openclaw_config(
             "remoteCdpHandshakeTimeoutMs": 30000,
             "profiles": {},
         },
-        "cron": {"enabled": cron_enabled},
+        "cron": {
+            "enabled": cron_enabled,
+            # Redirect cron failure notifications to the cloud error sink instead of
+            # announcing "Cron job … failed" as a chat message to the seller. The
+            # runtime POSTs the failure payload to ``failureDestination.to`` with
+            # ``Authorization: Bearer <webhookToken>``; the cloud authenticates that
+            # token via ``get_agent_user_id`` (same agent API key the channel uses).
+            "webhookToken": (agent_api_key or "").strip(),
+            "failureDestination": {
+                "mode": "webhook",
+                "to": f"{sellerclaw_api_url.strip().rstrip('/')}/internal/openclaw/errors",
+            },
+        },
         "tools": {
             "web": {
                 "fetch": {"enabled": web_fetch_enabled},

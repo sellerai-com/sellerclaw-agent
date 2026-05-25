@@ -178,6 +178,24 @@ def test_generate_openclaw_config_has_gateway_and_models(
     )
 
 
+def test_generate_openclaw_config_cron_failures_redirect_to_cloud_error_sink(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Cron failures POST to the cloud error sink (webhook) instead of announcing in chat."""
+    raw = _generate(
+        _supervisor_only(make_assembled_agent),
+        sellerclaw_api_url="http://api/",
+    )
+    cron = json.loads(raw)["cron"]
+    assert cron["enabled"] is True
+    # Authenticated with the agent API key (cloud resolves the user via get_agent_user_id).
+    assert cron["webhookToken"] == _AGENT_API_KEY
+    assert cron["failureDestination"] == {
+        "mode": "webhook",
+        "to": "http://api/internal/openclaw/errors",
+    }
+
+
 def test_generate_openclaw_config_model_defaults_drive_and_omit_media(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:

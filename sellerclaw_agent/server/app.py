@@ -96,6 +96,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     supervisor_executor: ThreadPoolExecutor | None = None
     if _edge_ping_enabled():
         from sellerclaw_agent.cloud.chat_listener import run_edge_chat_sse_loop
+        from sellerclaw_agent.cloud.cron_reporter import run_cron_reporter_loop
         from sellerclaw_agent.cloud.hooks_listener import run_edge_hooks_sse_loop
         from sellerclaw_agent.server.edge_commands import (
             CommandResultStore,
@@ -152,6 +153,14 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
             start_watched_background(
                 lambda: run_edge_hooks_sse_loop(stop, registry=registry),
                 name="hooks_sse",
+                stop=stop,
+                registry=registry,
+            ),
+        )
+        background_holders.append(
+            start_watched_background(
+                lambda: run_cron_reporter_loop(stop, registry=registry),
+                name="cron_reporter",
                 stop=stop,
                 registry=registry,
             ),

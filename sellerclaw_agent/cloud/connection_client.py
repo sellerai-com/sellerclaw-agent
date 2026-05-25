@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -159,6 +160,32 @@ class SellerClawConnectionClient:
             body=archive,
             content_type="application/gzip",
             timeout=_STATE_BACKUP_TIMEOUT,
+        )
+        if response.status_code == 401:
+            try:
+                payload = response.json() if response.content else {}
+            except ValueError:
+                payload = {}
+            raise CloudAuthError(self._detail_message(payload), status_code=401)
+        if response.status_code >= 500:
+            raise CloudConnectionError(f"SellerClaw server error: HTTP {response.status_code}")
+        if response.status_code == 204:
+            return True
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            raise CloudConnectionError(self._detail_message(payload))
+        return False
+
+    async def report_cron_jobs(self, snapshot: dict[str, Any]) -> bool:
+        """POST the current OpenClaw cron-jobs snapshot; return True if accepted (204)."""
+        response = await self._request_raw(
+            "POST",
+            "/agent/cron/snapshot",
+            body=json.dumps(snapshot).encode("utf-8"),
+            content_type="application/json",
         )
         if response.status_code == 401:
             try:
