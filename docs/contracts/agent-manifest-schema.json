@@ -71,6 +71,14 @@
             "allowed_user_ids": { "type": "array", "items": { "type": "string" } },
             "allowed_group_ids": { "type": "array", "items": { "type": "string" } }
           }
+        },
+        "whatsapp": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "allowed_user_ids": { "type": "array", "items": { "type": "string" } }
+          }
         }
       }
     }

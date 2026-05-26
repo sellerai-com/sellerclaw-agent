@@ -115,6 +115,34 @@ def test_parse_telegram_channels() -> None:
     assert tg.allowed_group_ids == ("1234567891",)
 
 
+def test_parse_whatsapp_defaults_to_disabled_when_absent() -> None:
+    """Fixture has no whatsapp block → channel parses as disabled with an empty allowlist."""
+    manifest = bundle_manifest_from_mapping(_v2())
+    assert manifest.channels.whatsapp.enabled is False
+    assert manifest.channels.whatsapp.allowed_user_ids == ()
+
+
+def test_parse_whatsapp_channel_present() -> None:
+    data = _v2()
+    data["channels"]["whatsapp"] = {
+        "enabled": True,
+        "allowed_user_ids": ["14155550123", "14155550124"],
+    }
+    manifest = bundle_manifest_from_mapping(data)
+    wa = manifest.channels.whatsapp
+    assert wa.enabled is True
+    assert wa.allowed_user_ids == ("14155550123", "14155550124")
+
+
+def test_parse_whatsapp_primary() -> None:
+    data = _v2()
+    data["channels"]["primary"] = "whatsapp"
+    data["channels"]["whatsapp"] = {"enabled": True, "allowed_user_ids": ["14155550123"]}
+    manifest = bundle_manifest_from_mapping(data)
+    assert manifest.channels.primary == "whatsapp"
+    assert manifest.channels.whatsapp.enabled is True
+
+
 @pytest.mark.parametrize(
     ("mutate", "exc", "match"),
     [
@@ -201,6 +229,10 @@ def test_parse_malformed_input_raises(
         pytest.param(lambda d: d["channels"]["telegram"].__setitem__("bot_token", ""), "bot_token is required", id="telegram-enabled-no-token"),
         pytest.param(lambda d: d["channels"]["telegram"].pop("allowed_user_ids"), "allowed_user_ids is required", id="telegram-enabled-no-users"),
         pytest.param(lambda d: d["channels"]["telegram"].__setitem__("allowed_user_ids", "1"), "allowed_user_ids must be a list", id="telegram-users-not-list"),
+        pytest.param(lambda d: d["channels"].__setitem__("primary", "whatsapp"), "channels.whatsapp is required when", id="primary-whatsapp-no-whatsapp"),
+        pytest.param(lambda d: (d["channels"].__setitem__("primary", "whatsapp"), d["channels"].__setitem__("whatsapp", {"enabled": False})), "whatsapp.enabled must be true", id="primary-whatsapp-but-disabled"),
+        pytest.param(lambda d: d["channels"].__setitem__("whatsapp", {"enabled": True}), "channels.whatsapp.allowed_user_ids is required", id="whatsapp-enabled-no-users"),
+        pytest.param(lambda d: d["channels"].__setitem__("whatsapp", {"enabled": True, "allowed_user_ids": "1"}), "channels.whatsapp.allowed_user_ids must be a list", id="whatsapp-users-not-list"),
         pytest.param(lambda d: d["llm"].pop("groups"), "llm.groups is required", id="missing-groups"),
         pytest.param(lambda d: d["llm"]["text_model"].pop("secondary"), "llm.text_model.secondary is required", id="missing-text-secondary"),
         pytest.param(lambda d: d["llm"]["text_model"]["primary"].__setitem__("group", "ghost"), "references unknown group", id="ref-unknown-group"),

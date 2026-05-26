@@ -461,6 +461,47 @@ def test_derive_agent_tools(
     assert deny == expected_deny
 
 
+def test_derive_agent_tools_grants_whatsapp_login_to_entry_point_when_enabled() -> None:
+    """The entry point gets the in-chat ``whatsapp_login`` QR tool only when WhatsApp is on."""
+    allow, _ = derive_agent_tools(
+        is_entry_point=True,
+        has_subagents=True,
+        browser_enabled=True,
+        image_generation=False,
+        video_generation=False,
+        cron_enabled=False,
+        whatsapp_enabled=True,
+    )
+    assert "whatsapp_login" in allow
+
+
+def test_derive_agent_tools_omits_whatsapp_login_when_disabled() -> None:
+    allow, _ = derive_agent_tools(
+        is_entry_point=True,
+        has_subagents=True,
+        browser_enabled=True,
+        image_generation=False,
+        video_generation=False,
+        cron_enabled=False,
+        whatsapp_enabled=False,
+    )
+    assert "whatsapp_login" not in allow
+
+
+def test_derive_agent_tools_never_grants_whatsapp_login_to_subagent() -> None:
+    """Subagents never pair WhatsApp, even if the flag is set."""
+    allow, _ = derive_agent_tools(
+        is_entry_point=False,
+        has_subagents=False,
+        browser_enabled=True,
+        image_generation=False,
+        video_generation=False,
+        cron_enabled=True,
+        whatsapp_enabled=True,
+    )
+    assert "whatsapp_login" not in allow
+
+
 def _cfg_from_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     manifest = bundle_manifest_from_mapping(mapping)
     result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS, agent_api_key="k")

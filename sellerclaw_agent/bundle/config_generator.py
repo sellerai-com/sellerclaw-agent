@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -83,11 +84,14 @@ def _build_control_ui_config(
 def _merge_openclaw_channels(
     *,
     telegram_channel: dict[str, object] | None,
+    whatsapp_channel: dict[str, object] | None,
     sellerclaw_ui: dict[str, object],
 ) -> dict[str, object]:
     channels: dict[str, object] = {"sellerclaw-ui": sellerclaw_ui}
     if telegram_channel is not None:
         channels["telegram"] = telegram_channel
+    if whatsapp_channel is not None:
+        channels["whatsapp"] = whatsapp_channel
     return channels
 
 
@@ -106,6 +110,8 @@ def generate_openclaw_config(
     telegram_bot_token: str,
     telegram_allowed_user_ids: tuple[str, ...],
     telegram_allowed_group_ids: tuple[str, ...],
+    whatsapp_enabled: bool = False,
+    whatsapp_allowed_user_ids: tuple[str, ...] = (),
     allowed_origins: tuple[str, ...] = (),
     browser_enabled: bool = True,
     web_search_enabled: bool = False,
@@ -156,6 +162,29 @@ def generate_openclaw_config(
             {
                 "agentId": entry_point,
                 "match": {"channel": "telegram"},
+            },
+        ]
+
+    # WhatsApp (personal account, Baileys). DM-only: groupPolicy is hard-disabled, so the
+    # agent never reads or replies in WhatsApp groups. No credential is emitted — the session
+    # is paired (QR) and persisted in OpenClaw's default whatsapp authDir on the agent. Phone
+    # numbers are normalized to digits (OpenClaw matches allowFrom on digits-only E.164).
+    whatsapp_allow_from = [
+        digits for uid in whatsapp_allowed_user_ids if (digits := re.sub(r"\D", "", str(uid)))
+    ]
+    whatsapp_channel: dict[str, object] | None = None
+    whatsapp_bindings: list[dict[str, object]] = []
+    if whatsapp_enabled:
+        whatsapp_channel = {
+            "enabled": True,
+            "dmPolicy": "allowlist" if whatsapp_allow_from else "open",
+            "allowFrom": whatsapp_allow_from,
+            "groupPolicy": "disabled",
+        }
+        whatsapp_bindings = [
+            {
+                "agentId": entry_point,
+                "match": {"channel": "whatsapp"},
             },
         ]
 
@@ -326,6 +355,7 @@ def generate_openclaw_config(
         },
         "bindings": [
             *telegram_bindings,
+            *whatsapp_bindings,
             {
                 "agentId": entry_point,
                 "match": {"channel": "sellerclaw-ui"},
@@ -338,6 +368,7 @@ def generate_openclaw_config(
         },
         "channels": _merge_openclaw_channels(
             telegram_channel=telegram_channel,
+            whatsapp_channel=whatsapp_channel,
             sellerclaw_ui=sellerclaw_ui_plugin_config,
         ),
         "plugins": {

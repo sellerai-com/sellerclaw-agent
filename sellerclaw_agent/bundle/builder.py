@@ -63,6 +63,7 @@ def derive_agent_tools(
     image_generation: bool,
     video_generation: bool,
     cron_enabled: bool,
+    whatsapp_enabled: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Derive the OpenClaw ``tools.allow`` / ``tools.deny`` lists for one agent.
 
@@ -70,6 +71,7 @@ def derive_agent_tools(
 
     - Entry point (supervisor): broad allow; ``group:sessions`` when it has subagents,
       otherwise ``group:fs`` + ``process``. ``cron`` only here, and only when enabled.
+      ``whatsapp_login`` (in-chat QR pairing tool) only here, and only when WhatsApp is on.
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
     - ``browser`` is present per agent only when ``browser_enabled``; ``image_generate`` /
       ``video_generate`` only when the matching flag is set — for every agent.
@@ -78,6 +80,11 @@ def derive_agent_tools(
         allow = ["group:web", "web_search", "message", "browser", "exec", "pdf"]
         if cron_enabled:
             allow.append("cron")
+        # WhatsApp links a personal account by QR; the agent runs ``whatsapp_login`` in the
+        # chat to render the QR image for the seller to scan. Only granted when the channel
+        # is enabled so the tool surface stays minimal otherwise.
+        if whatsapp_enabled:
+            allow.append("whatsapp_login")
         if has_subagents:
             allow = ["group:sessions", *allow]
         else:
@@ -322,6 +329,8 @@ class BundleBuilder:
             telegram_bot_token=manifest.channels.telegram.bot_token,
             telegram_allowed_user_ids=manifest.channels.telegram.allowed_user_ids,
             telegram_allowed_group_ids=manifest.channels.telegram.allowed_group_ids,
+            whatsapp_enabled=manifest.channels.whatsapp.enabled,
+            whatsapp_allowed_user_ids=manifest.channels.whatsapp.allowed_user_ids,
             allowed_origins=allowed_origins,
             browser_enabled=manifest.agents.browser_enabled_default,
             web_search_enabled=web_search_enabled,
@@ -371,6 +380,7 @@ class BundleBuilder:
             image_generation=agent.image_generation,
             video_generation=agent.video_generation,
             cron_enabled=manifest.cron_enabled,
+            whatsapp_enabled=manifest.channels.whatsapp.enabled,
         )
         content = agent.content
         # Heartbeat is honored only for the main (entry-point) agent, matching prior behavior.

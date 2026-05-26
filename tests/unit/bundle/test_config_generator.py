@@ -261,6 +261,50 @@ def test_generate_openclaw_config_telegram_channel_and_bindings(
     assert any(b.get("match") == {"channel": "telegram"} for b in bindings)
 
 
+def test_generate_openclaw_config_whatsapp_channel_and_bindings(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    raw = _generate(
+        _supervisor_only(make_assembled_agent),
+        whatsapp_enabled=True,
+        whatsapp_allowed_user_ids=("+1 (415) 555-0123", "+14155550124"),
+    )
+    payload = json.loads(raw)
+    whatsapp = payload["channels"]["whatsapp"]
+    assert whatsapp["enabled"] is True
+    assert whatsapp["dmPolicy"] == "allowlist"
+    # Numbers are normalized to digits-only (OpenClaw matches allowFrom on digits).
+    assert whatsapp["allowFrom"] == ["14155550123", "14155550124"]
+    # DM-only: groups are hard-disabled and no group fields are emitted.
+    assert whatsapp["groupPolicy"] == "disabled"
+    assert "groups" not in whatsapp
+    bindings = payload["bindings"]
+    assert any(b.get("match") == {"channel": "whatsapp"} for b in bindings)
+
+
+def test_generate_openclaw_config_whatsapp_open_policy_without_allowlist(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    raw = _generate(
+        _supervisor_only(make_assembled_agent),
+        whatsapp_enabled=True,
+        whatsapp_allowed_user_ids=(),
+    )
+    payload = json.loads(raw)
+    whatsapp = payload["channels"]["whatsapp"]
+    assert whatsapp["dmPolicy"] == "open"
+    assert whatsapp["allowFrom"] == []
+
+
+def test_generate_openclaw_config_whatsapp_absent_when_disabled(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    raw = _generate(_supervisor_only(make_assembled_agent), whatsapp_enabled=False)
+    payload = json.loads(raw)
+    assert "whatsapp" not in payload["channels"]
+    assert not any(b.get("match") == {"channel": "whatsapp"} for b in payload["bindings"])
+
+
 def test_generate_openclaw_config_web_search_enabled_wires_sellerclaw_plugin(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:

@@ -103,6 +103,18 @@ class TelegramManifest:
 
 
 @dataclass(frozen=True)
+class WhatsappManifest:
+    """WhatsApp personal-account channel (DM-only). Groups are intentionally unsupported.
+
+    No credential is carried: the Baileys session is paired (QR) and persisted on the agent.
+    Only the DM allowlist (E.164 numbers) and the on/off flag travel in the manifest.
+    """
+
+    enabled: bool = False
+    allowed_user_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class WebSearchManifest:
     """Web search is configured only on the monolith; the manifest carries a single toggle."""
 
@@ -113,6 +125,7 @@ class WebSearchManifest:
 class ChannelsManifest:
     primary: str = "sellerclaw-ui"
     telegram: TelegramManifest = field(default_factory=TelegramManifest)
+    whatsapp: WhatsappManifest = field(default_factory=WhatsappManifest)
 
 
 @dataclass(frozen=True)
@@ -551,7 +564,7 @@ def _parse_agents(value: object) -> AgentsManifest:
     )
 
 
-_ALLOWED_PRIMARY_CHANNELS = ("sellerclaw-ui", "telegram")
+_ALLOWED_PRIMARY_CHANNELS = ("sellerclaw-ui", "telegram", "whatsapp")
 
 
 def _parse_channels(value: object) -> ChannelsManifest:
@@ -595,7 +608,33 @@ def _parse_channels(value: object) -> ChannelsManifest:
         if not isinstance(allowed_user_ids_raw, list):
             raise ValueError("channels.telegram.allowed_user_ids must be a list")
 
-    return ChannelsManifest(primary=primary, telegram=telegram)
+    whatsapp_present = "whatsapp" in data and data.get("whatsapp") is not None
+    wa_raw = data.get("whatsapp") or {}
+    if not isinstance(wa_raw, dict):
+        raise ValueError("channels.whatsapp must be a mapping")
+    whatsapp = WhatsappManifest(
+        enabled=bool(wa_raw.get("enabled", False)),
+        allowed_user_ids=_tuple_str(wa_raw.get("allowed_user_ids")),
+    )
+
+    if primary == "whatsapp":
+        if not whatsapp_present:
+            raise ValueError("channels.whatsapp is required when channels.primary is 'whatsapp'")
+        if not whatsapp.enabled:
+            raise ValueError(
+                "channels.whatsapp.enabled must be true when channels.primary is 'whatsapp'"
+            )
+
+    if whatsapp.enabled:
+        allowed_user_ids_raw = wa_raw.get("allowed_user_ids")
+        if allowed_user_ids_raw is None:
+            raise ValueError(
+                "channels.whatsapp.allowed_user_ids is required when whatsapp is enabled"
+            )
+        if not isinstance(allowed_user_ids_raw, list):
+            raise ValueError("channels.whatsapp.allowed_user_ids must be a list")
+
+    return ChannelsManifest(primary=primary, telegram=telegram, whatsapp=whatsapp)
 
 
 def _normalize_agent_api_base_path(value: object) -> str:
