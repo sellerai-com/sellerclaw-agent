@@ -407,6 +407,27 @@ if [[ -z "${SELLERCLAW_AGENT_VERSION:-}" ]] && have_cmd git && [[ -d "$SCRIPT_DI
   fi
 fi
 
+# When installed from a ZIP tarball (no .git folder) the build backend cannot
+# read a version from VCS. pyproject.toml falls back to "0.0.0+unknown", but
+# we warn the user so they know self-update and `./setup.sh start` after a
+# `git pull` won't work — they'll need a proper `git clone` to upgrade.
+if [[ ! -d "$SCRIPT_DIR/.git" ]] && (( NEED_INSTALLER || NEED_CLI_UPGRADE )); then
+  log_warn "No .git directory detected — looks like a ZIP install."
+  log_warn "  The agent will run with version '0.0.0+unknown' and you won't be"
+  log_warn "  able to upgrade via 'git pull'. For updates, clone the repository:"
+  log_warn "    git clone https://github.com/sellerai-com/sellerclaw-agent.git"
+fi
+
+# Paths containing non-ASCII characters or spaces frequently break Python
+# packaging tools (uv build cache, hatchling, setuptools). Warn early so the
+# user can move the project to a clean path before the first build attempt.
+if [[ "$SCRIPT_DIR" =~ [^[:ascii:]] ]] || [[ "$SCRIPT_DIR" == *" "* ]]; then
+  log_warn "Project path contains spaces or non-ASCII characters:"
+  log_warn "    $SCRIPT_DIR"
+  log_warn "  This can break Docker/uv/hatchling. If the install fails, move the"
+  log_warn "  project to a path like '\$HOME/sellerclaw-agent' and retry."
+fi
+
 # ---------------------------------------------------------------------------
 # Keep sellerclaw-cli current.
 #

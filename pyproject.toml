@@ -52,6 +52,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 source = "vcs"
+# Allow building when the source tree is not a git checkout (e.g. installed
+# from a GitHub "Download ZIP" tarball, which omits .git). Without this,
+# hatch-vcs aborts the build with "setuptools-scm was unable to detect version".
+fallback-version = "0.0.0+unknown"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "sellerclaw_agent/_version.py"
