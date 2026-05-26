@@ -97,8 +97,13 @@ RUN UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/edge-r
     && rm -f /tmp/edge-requirements.txt
 
 # Writable runtime directories for the node user.
-RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins \
-    && chown -R node:node /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins
+# /home/node/.config must be node-owned: the agent server (uvicorn, runs as node)
+# mirrors the sca_ agent token into ~/.config/sellerclaw/config.toml at startup via
+# write_cli_config(). If .config is root-owned, that write fails with EACCES, the
+# sellerclaw CLI has no token, and every agent CLI call gets `401 Missing bearer token`
+# — which the agent then misreports to users (e.g. "No stores are connected").
+RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins /home/node/.config \
+    && chown -R node:node /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins /home/node/.config
 
 # SellerClaw web UI chat delivery channel (OpenClaw plugin).
 # Files must stay root-owned: OpenClaw blocks config-origin plugins with non-root ownership.
