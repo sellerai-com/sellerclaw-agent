@@ -68,8 +68,10 @@ def test_bundle_builder_includes_subagent_workspaces(
 def test_defaults_models_derived_from_manifest_llm() -> None:
     defaults = _config_from_llm()["agents"]["defaults"]
     assert defaults["model"] == {"primary": "litellm/u:5fdc144e/complex"}
-    assert defaults["imageGenerationModel"] == {"primary": "litellm/u:5fdc144e/image"}
-    assert defaults["videoGenerationModel"] == {"primary": "google/veo-3.1-fast-generate-preview"}
+    # image/video model blocks are no longer emitted (media goes via sellerclaw-cli; builtin
+    # image_generate/video_generate are denied). The LiteLLM groups stay registered cloud-side.
+    assert "imageGenerationModel" not in defaults
+    assert "videoGenerationModel" not in defaults
     assert defaults["pdfModel"] == {
         "primary": "anthropic/claude-sonnet-4-6",
         "fallbacks": ["google/gemini-3.1-pro-preview"],
@@ -113,12 +115,12 @@ def test_providers_built_from_manifest_groups() -> None:
     assert litellm["apiKey"] == "sk-EXAMPLEKEY"
     assert litellm["api"] == "openai-completions"
     by_id = {m["id"]: m for m in litellm["models"]}
+    # image/video virtual groups are NOT rendered into the config (media goes via
+    # sellerclaw-cli); they remain registered in LiteLLM cloud-side.
     assert set(by_id) == {
         "u:5fdc144e/complex",
         "u:5fdc144e/simple",
         "u:5fdc144e/mini",
-        "u:5fdc144e/image",
-        "u:5fdc144e/video",
     }
     assert by_id["u:5fdc144e/complex"] == {
         "id": "u:5fdc144e/complex",
@@ -132,8 +134,6 @@ def test_providers_built_from_manifest_groups() -> None:
     for non_complex in (
         "u:5fdc144e/simple",
         "u:5fdc144e/mini",
-        "u:5fdc144e/image",
-        "u:5fdc144e/video",
     ):
         entry = by_id[non_complex]
         assert "reasoning" not in entry
@@ -155,10 +155,8 @@ def test_providers_built_from_manifest_groups() -> None:
     google = providers["google"]
     assert google["baseUrl"] == "https://example.ngrok-free.dev/litellm/gemini"
     assert "api" not in google
-    assert {m["id"] for m in google["models"]} == {
-        "gemini-3.1-pro-preview",
-        "veo-3.1-fast-generate-preview",
-    }
+    # veo (the video model) is filtered out; only the PDF model (gemini) remains.
+    assert {m["id"] for m in google["models"]} == {"gemini-3.1-pro-preview"}
 
 
 def test_per_agent_model_from_manifest_text_refs_and_heartbeat_disabled() -> None:

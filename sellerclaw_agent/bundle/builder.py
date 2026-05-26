@@ -135,14 +135,51 @@ def _openclaw_model_ref(manifest: GenericManifest, ref: ModelRef) -> str:
     return f"{ref.group}/{prefix}{ref.model}"
 
 
-def _build_provider_models(group: ModelGroup) -> list[dict[str, object]]:
+# LiteLLM virtual media group role ids. Together with the manifest's image/video model refs
+# (see ``_media_model_refs``), these are NOT rendered into OpenClaw ``models.providers``: media
+# generation goes through sellerclaw-cli (cloud endpoints), the builtin image_generate /
+# video_generate tools are denied, and the underlying media models (e.g. Veo) are unused by
+# OpenClaw. The ``{user}image`` / ``{user}video`` groups stay registered in LiteLLM (cloud-side)
+# for the media endpoints (under the user's virtual key).
+_MEDIA_VIRTUAL_GROUP_IDS = frozenset({"image", "video"})
+
+
+def _media_model_refs(llm: object) -> set[tuple[str, str]]:
+    """``(provider, model_id)`` pairs the manifest designates as image/video models.
+
+    Catches both the LiteLLM virtual ``image``/``video`` groups and the underlying media
+    models (e.g. ``google/veo-...``), so neither is rendered into the config.
+    """
+    refs: set[tuple[str, str]] = set()
+    candidates: list[ModelRef | None] = [
+        getattr(llm, "image_model_primary", None),
+        getattr(llm, "video_model_primary", None),
+        *getattr(llm, "image_model_fallbacks", ()),
+        *getattr(llm, "video_model_fallbacks", ()),
+    ]
+    for ref in candidates:
+        if ref is not None:
+            refs.add((ref.group, ref.model))
+    return refs
+
+
+def _build_provider_models(
+    provider_name: str,
+    group: ModelGroup,
+    media_refs: set[tuple[str, str]],
+) -> list[dict[str, object]]:
     """Render a group's OpenClaw ``models[]`` list from its manifest metadata.
 
-    The group's ``model_name_prefix`` is applied to each model id (non-empty only for
-    the LiteLLM virtual group); all other metadata is copied verbatim.
+    The group's ``model_name_prefix`` is applied to each model id (non-empty only for the
+    LiteLLM virtual group); all other metadata is copied verbatim. Image/video models are
+    skipped (``media_refs`` + the LiteLLM virtual media groups).
     """
     models: list[dict[str, object]] = []
     for m in group.models:
+        if (provider_name, m.id) in media_refs:
+            continue
+        if group.model_name_prefix and m.id in _MEDIA_VIRTUAL_GROUP_IDS:
+            continue
         entry: dict[str, object] = {
             "id": f"{group.model_name_prefix}{m.id}",
             "name": m.name,
@@ -163,10 +200,11 @@ def _build_provider_models(group: ModelGroup) -> list[dict[str, object]]:
 def build_providers(manifest: GenericManifest) -> dict[str, object]:
     """Build the OpenClaw ``models.providers`` mapping from ``manifest.llm.groups``.
 
-    Each provider is built strictly from its own group: ``baseUrl`` / ``apiKey`` come
-    from the group, ``api`` is emitted only when the group declares one, and the
-    ``models[]`` list carries the group's (prefixed) model ids + metadata.
+    Each provider is built strictly from its own group: ``baseUrl`` / ``apiKey`` come from
+    the group, ``api`` is emitted only when the group declares one, and the ``models[]`` list
+    carries the group's (prefixed) model ids + metadata — minus image/video models.
     """
+    media_refs = _media_model_refs(manifest.llm)
     providers: dict[str, object] = {}
     for name, group in manifest.llm.groups.items():
         entry: dict[str, object] = {
@@ -175,7 +213,7 @@ def build_providers(manifest: GenericManifest) -> dict[str, object]:
         }
         if group.api is not None:
             entry["api"] = group.api
-        entry["models"] = _build_provider_models(group)
+        entry["models"] = _build_provider_models(name, group, media_refs)
         providers[name] = entry
     return providers
 

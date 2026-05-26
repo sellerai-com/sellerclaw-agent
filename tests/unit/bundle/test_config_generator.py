@@ -552,19 +552,30 @@ def _generate_default_config(
     return json.loads(raw)
 
 
-def test_generate_openclaw_config_media_defaults_emitted_from_model_defaults(
+def test_generate_openclaw_config_omits_media_model_blocks_keeps_pdf(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """image/video/pdf default blocks are the passed ``model_defaults`` values verbatim.
+    """image/video model blocks are NOT emitted (media goes via sellerclaw-cli); pdfModel stays.
 
-    (Derivation of the underlying refs is the bundle builder's job and covered there.)"""
+    (The LiteLLM {user}image / {user}video groups remain registered cloud-side.)"""
     defaults = _generate_default_config(make_assembled_agent)["agents"]["defaults"]
-    assert defaults["imageGenerationModel"] == {"primary": "litellm/u:abc/image"}
-    assert defaults["videoGenerationModel"] == {"primary": "google/veo-3.1-fast-generate-preview"}
+    assert "imageGenerationModel" not in defaults
+    assert "videoGenerationModel" not in defaults
     assert defaults["pdfModel"] == {
         "primary": "anthropic/claude-sonnet-4-6",
         "fallbacks": ["google/gemini-3.1-pro-preview"],
     }
+
+
+def test_generate_openclaw_config_denies_builtin_media_tools(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Builtin image/video/music generate tools are denied (replaced by sellerclaw-cli media)."""
+    agents = json.loads(_generate(_supervisor_only(make_assembled_agent)))["agents"]["list"]
+    deny = agents[0]["tools"]["deny"]
+    assert "image_generate" in deny
+    assert "video_generate" in deny
+    assert "music_generate" in deny
 
 
 def test_generate_openclaw_config_enables_document_extract_plugin_for_pdf_fallback(

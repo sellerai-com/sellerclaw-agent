@@ -213,7 +213,17 @@ def generate_openclaw_config(
             "name": agent.name,
             "workspace": f"/home/node/.openclaw/workspace-{agent.agent_id}",
             "model": agent.model_ref,
-            "tools": {"allow": list(agent.tools_allow), "deny": list(agent.tools_deny)},
+            "tools": {
+                "allow": list(agent.tools_allow),
+                # Deny OpenClaw builtin media tools: media generation goes through
+                # sellerclaw-cli (cloud media endpoints), because the builtin tools' async
+                # completion delivery is lost on the request-scoped sellerclaw-ui channel.
+                "deny": list(
+                    dict.fromkeys(
+                        [*agent.tools_deny, "image_generate", "video_generate", "music_generate"]
+                    )
+                ),
+            },
         }
         if agent.is_entry_point:
             payload["default"] = True
@@ -268,11 +278,10 @@ def generate_openclaw_config(
             },
         },
     }
-    # Media model blocks are emitted only when the manifest supplied the source field.
-    if model_defaults.image_generation_model is not None:
-        agents_defaults["imageGenerationModel"] = model_defaults.image_generation_model
-    if model_defaults.video_generation_model is not None:
-        agents_defaults["videoGenerationModel"] = model_defaults.video_generation_model
+    # image/video model blocks are intentionally NOT emitted: media generation goes through
+    # sellerclaw-cli (cloud media endpoints) and the builtin image_generate/video_generate tools
+    # (which read these blocks) are denied. The LiteLLM {user}image / {user}video groups stay
+    # registered cloud-side and are used by the media endpoints under the user's virtual key.
     if model_defaults.pdf_model is not None:
         agents_defaults["pdfModel"] = model_defaults.pdf_model
 
