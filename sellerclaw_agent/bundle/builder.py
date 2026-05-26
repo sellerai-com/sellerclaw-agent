@@ -60,8 +60,6 @@ def derive_agent_tools(
     is_entry_point: bool,
     has_subagents: bool,
     browser_enabled: bool,
-    image_generation: bool,
-    video_generation: bool,
     cron_enabled: bool,
     whatsapp_enabled: bool = False,
 ) -> tuple[list[str], list[str]]:
@@ -73,8 +71,10 @@ def derive_agent_tools(
       otherwise ``group:fs`` + ``process``. ``cron`` only here, and only when enabled.
       ``whatsapp_login`` (in-chat QR pairing tool) only here, and only when WhatsApp is on.
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
-    - ``browser`` is present per agent only when ``browser_enabled``; ``image_generate`` /
-      ``video_generate`` only when the matching flag is set — for every agent.
+    - ``browser`` is present per agent only when ``browser_enabled``. The builtin
+      ``image_generate`` / ``video_generate`` tools are **never** allowed here: media generation
+      goes through sellerclaw-cli (cloud endpoints) and the builtins are denied in config
+      generation, so adding them to ``allow`` only produces an "unknown tool" warning.
     """
     if is_entry_point:
         allow = ["group:web", "web_search", "message", "browser", "exec", "pdf"]
@@ -108,10 +108,6 @@ def derive_agent_tools(
             "cron",
             "gateway",
         ]
-    if image_generation:
-        allow.append("image_generate")
-    if video_generation:
-        allow.append("video_generate")
     if not browser_enabled:
         allow = [tool for tool in allow if tool != "browser"]
     return allow, deny
@@ -377,8 +373,6 @@ class BundleBuilder:
             is_entry_point=agent.is_entry_point,
             has_subagents=bool(agent.subagent_ids),
             browser_enabled=agent.browser_enabled,
-            image_generation=agent.image_generation,
-            video_generation=agent.video_generation,
             cron_enabled=manifest.cron_enabled,
             whatsapp_enabled=manifest.channels.whatsapp.enabled,
         )

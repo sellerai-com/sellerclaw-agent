@@ -390,49 +390,37 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
 
 
 @pytest.mark.parametrize(
-    ("is_entry_point", "has_subagents", "browser", "image", "video", "cron", "expected_allow", "expected_deny"),
+    ("is_entry_point", "has_subagents", "browser", "cron", "expected_allow", "expected_deny"),
     [
         pytest.param(
-            True, True, True, True, True, True,
-            [
-                "group:sessions", "group:web", "web_search", "message", "browser",
-                "exec", "pdf", "cron", "image_generate", "video_generate",
-            ],
+            True, True, True, True,
+            ["group:sessions", "group:web", "web_search", "message", "browser", "exec", "pdf", "cron"],
             [],
             id="entry-point-with-subagents",
         ),
         pytest.param(
-            True, False, True, True, True, True,
+            True, False, True, True,
             [
                 "group:web", "web_search", "message", "browser", "exec", "pdf",
-                "cron", "group:fs", "process", "image_generate", "video_generate",
+                "cron", "group:fs", "process",
             ],
             [],
             id="entry-point-no-subagents",
         ),
         pytest.param(
-            True, True, True, False, False, False,
+            True, True, True, False,
             ["group:sessions", "group:web", "web_search", "message", "browser", "exec", "pdf"],
             [],
-            id="entry-point-cron-disabled-no-media",
+            id="entry-point-cron-disabled",
         ),
         pytest.param(
-            False, False, True, False, False, True,
+            False, False, True, True,
             ["group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf"],
             ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
-            id="subagent-no-media-never-gets-cron",
+            id="subagent-never-gets-cron",
         ),
         pytest.param(
-            False, False, True, True, True, True,
-            [
-                "group:fs", "exec", "process", "web_fetch", "web_search", "browser",
-                "pdf", "image_generate", "video_generate",
-            ],
-            ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
-            id="subagent-with-media",
-        ),
-        pytest.param(
-            False, False, False, False, False, True,
+            False, False, False, True,
             ["group:fs", "exec", "process", "web_fetch", "web_search", "pdf"],
             ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
             id="subagent-browser-disabled",
@@ -443,8 +431,6 @@ def test_derive_agent_tools(
     is_entry_point: bool,
     has_subagents: bool,
     browser: bool,
-    image: bool,
-    video: bool,
     cron: bool,
     expected_allow: list[str],
     expected_deny: list[str],
@@ -453,12 +439,13 @@ def test_derive_agent_tools(
         is_entry_point=is_entry_point,
         has_subagents=has_subagents,
         browser_enabled=browser,
-        image_generation=image,
-        video_generation=video,
         cron_enabled=cron,
     )
     assert allow == expected_allow
     assert deny == expected_deny
+    # The builtin media tools are never granted (media goes through sellerclaw-cli).
+    assert "image_generate" not in allow
+    assert "video_generate" not in allow
 
 
 def test_derive_agent_tools_grants_whatsapp_login_to_entry_point_when_enabled() -> None:
@@ -467,8 +454,6 @@ def test_derive_agent_tools_grants_whatsapp_login_to_entry_point_when_enabled() 
         is_entry_point=True,
         has_subagents=True,
         browser_enabled=True,
-        image_generation=False,
-        video_generation=False,
         cron_enabled=False,
         whatsapp_enabled=True,
     )
@@ -480,8 +465,6 @@ def test_derive_agent_tools_omits_whatsapp_login_when_disabled() -> None:
         is_entry_point=True,
         has_subagents=True,
         browser_enabled=True,
-        image_generation=False,
-        video_generation=False,
         cron_enabled=False,
         whatsapp_enabled=False,
     )
@@ -494,8 +477,6 @@ def test_derive_agent_tools_never_grants_whatsapp_login_to_subagent() -> None:
         is_entry_point=False,
         has_subagents=False,
         browser_enabled=True,
-        image_generation=False,
-        video_generation=False,
         cron_enabled=True,
         whatsapp_enabled=True,
     )
@@ -542,16 +523,19 @@ def test_telegram_channel_enabled_from_manifest() -> None:
     assert all(b["match"].get("channel") != "telegram" for b in cfg_off["bindings"])
 
 
-def test_supervisor_image_video_gated_by_manifest() -> None:
-    m = copy.deepcopy(load_manifest_v2_mapping())
-    m["agents"]["main_agent"]["image_generation"] = False
-    m["agents"]["main_agent"]["video_generation"] = False
-    sup_off = _agent_payload(_cfg_from_mapping(m), "supervisor")["tools"]["allow"]
-    assert "image_generate" not in sup_off
-    assert "video_generate" not in sup_off
-    sup_on = _agent_payload(_cfg_from_mapping(copy.deepcopy(load_manifest_v2_mapping())), "supervisor")["tools"]["allow"]
-    assert "image_generate" in sup_on
-    assert "video_generate" in sup_on
+def test_supervisor_media_builtins_denied_never_allowed() -> None:
+    """Media generation goes through sellerclaw-cli; the builtin tools are denied for the
+    supervisor and never appear in ``allow`` (regardless of the manifest image/video flags),
+    so OpenClaw does not warn about an unknown tool in the allowlist."""
+    for image_video in (True, False):
+        m = copy.deepcopy(load_manifest_v2_mapping())
+        m["agents"]["main_agent"]["image_generation"] = image_video
+        m["agents"]["main_agent"]["video_generation"] = image_video
+        tools = _agent_payload(_cfg_from_mapping(m), "supervisor")["tools"]
+        assert "image_generate" not in tools["allow"]
+        assert "video_generate" not in tools["allow"]
+        assert "image_generate" in tools["deny"]
+        assert "video_generate" in tools["deny"]
 
 
 def test_sellerclaw_ui_channel_has_no_dead_parts_streaming_flag() -> None:
