@@ -77,7 +77,7 @@
           "additionalProperties": true,
           "properties": {
             "enabled": { "type": "boolean" },
-            "allowed_user_ids": { "type": "array", "items": { "type": "string" } }
+            "allowed_numbers": { "type": "array", "items": { "type": "string" } }
           }
         }
       }

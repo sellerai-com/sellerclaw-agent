@@ -107,11 +107,11 @@ class WhatsappManifest:
     """WhatsApp personal-account channel (DM-only). Groups are intentionally unsupported.
 
     No credential is carried: the Baileys session is paired (QR) and persisted on the agent.
-    Only the DM allowlist (E.164 numbers) and the on/off flag travel in the manifest.
+    Only the DM allowlist (E.164 phone numbers) and the on/off flag travel in the manifest.
     """
 
     enabled: bool = False
-    allowed_user_ids: tuple[str, ...] = ()
+    allowed_numbers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -614,7 +614,7 @@ def _parse_channels(value: object) -> ChannelsManifest:
         raise ValueError("channels.whatsapp must be a mapping")
     whatsapp = WhatsappManifest(
         enabled=bool(wa_raw.get("enabled", False)),
-        allowed_user_ids=_tuple_str(wa_raw.get("allowed_user_ids")),
+        allowed_numbers=_tuple_str(wa_raw.get("allowed_numbers")),
     )
 
     if primary == "whatsapp":
@@ -626,13 +626,13 @@ def _parse_channels(value: object) -> ChannelsManifest:
             )
 
     if whatsapp.enabled:
-        allowed_user_ids_raw = wa_raw.get("allowed_user_ids")
-        if allowed_user_ids_raw is None:
+        allowed_numbers_raw = wa_raw.get("allowed_numbers")
+        if allowed_numbers_raw is None:
             raise ValueError(
-                "channels.whatsapp.allowed_user_ids is required when whatsapp is enabled"
+                "channels.whatsapp.allowed_numbers is required when whatsapp is enabled"
             )
-        if not isinstance(allowed_user_ids_raw, list):
-            raise ValueError("channels.whatsapp.allowed_user_ids must be a list")
+        if not isinstance(allowed_numbers_raw, list):
+            raise ValueError("channels.whatsapp.allowed_numbers must be a list")
 
     return ChannelsManifest(primary=primary, telegram=telegram, whatsapp=whatsapp)
 

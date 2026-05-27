@@ -111,7 +111,7 @@ def generate_openclaw_config(
     telegram_allowed_user_ids: tuple[str, ...],
     telegram_allowed_group_ids: tuple[str, ...],
     whatsapp_enabled: bool = False,
-    whatsapp_allowed_user_ids: tuple[str, ...] = (),
+    whatsapp_allowed_numbers: tuple[str, ...] = (),
     allowed_origins: tuple[str, ...] = (),
     browser_enabled: bool = True,
     web_search_enabled: bool = False,
@@ -170,7 +170,7 @@ def generate_openclaw_config(
     # is paired (QR) and persisted in OpenClaw's default whatsapp authDir on the agent. Phone
     # numbers are normalized to digits (OpenClaw matches allowFrom on digits-only E.164).
     whatsapp_allow_from = [
-        digits for uid in whatsapp_allowed_user_ids if (digits := re.sub(r"\D", "", str(uid)))
+        digits for uid in whatsapp_allowed_numbers if (digits := re.sub(r"\D", "", str(uid)))
     ]
     whatsapp_channel: dict[str, object] | None = None
     whatsapp_bindings: list[dict[str, object]] = []

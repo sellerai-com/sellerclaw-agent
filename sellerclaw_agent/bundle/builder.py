@@ -326,7 +326,7 @@ class BundleBuilder:
             telegram_allowed_user_ids=manifest.channels.telegram.allowed_user_ids,
             telegram_allowed_group_ids=manifest.channels.telegram.allowed_group_ids,
             whatsapp_enabled=manifest.channels.whatsapp.enabled,
-            whatsapp_allowed_user_ids=manifest.channels.whatsapp.allowed_user_ids,
+            whatsapp_allowed_numbers=manifest.channels.whatsapp.allowed_numbers,
             allowed_origins=allowed_origins,
             browser_enabled=manifest.agents.browser_enabled_default,
             web_search_enabled=web_search_enabled,

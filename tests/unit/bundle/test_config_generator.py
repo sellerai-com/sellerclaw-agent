@@ -267,7 +267,7 @@ def test_generate_openclaw_config_whatsapp_channel_and_bindings(
     raw = _generate(
         _supervisor_only(make_assembled_agent),
         whatsapp_enabled=True,
-        whatsapp_allowed_user_ids=("+1 (415) 555-0123", "+14155550124"),
+        whatsapp_allowed_numbers=("+1 (415) 555-0123", "+14155550124"),
     )
     payload = json.loads(raw)
     whatsapp = payload["channels"]["whatsapp"]
@@ -288,7 +288,7 @@ def test_generate_openclaw_config_whatsapp_open_policy_without_allowlist(
     raw = _generate(
         _supervisor_only(make_assembled_agent),
         whatsapp_enabled=True,
-        whatsapp_allowed_user_ids=(),
+        whatsapp_allowed_numbers=(),
     )
     payload = json.loads(raw)
     whatsapp = payload["channels"]["whatsapp"]
