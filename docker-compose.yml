@@ -17,7 +17,7 @@ services:
         # fixes built via runtime/build-openclaw-pinned.sh or the
         # openclaw-pinned.yml GitHub Actions workflow.
         OPENCLAW_REPO: "${OPENCLAW_REPO:-ghcr.io/openclaw/openclaw}"
-        OPENCLAW_TAG: "${OPENCLAW_TAG:-2026.5.22}"
+        OPENCLAW_TAG: "${OPENCLAW_TAG:-2026.5.26}"
     ports:
       - "127.0.0.1:8001:8001"
       - "${OPENCLAW_PORT_GATEWAY:-7788}:7788"
