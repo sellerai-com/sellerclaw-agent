@@ -30,6 +30,8 @@ class AssembledAgentConfig:
     heartbeat_md: str | None = None
     thinking_default: str | None = None
     skills: dict[str, str] = field(default_factory=dict)
+    # Per-skill ``references/`` files: skill name -> {path relative to the skill dir -> content}.
+    skill_references: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         agent_id = self.agent_id.strip()
@@ -53,6 +55,17 @@ class AssembledAgentConfig:
                 raise ValueError("Skill names must not be empty.")
             if not str(skill_content).strip():
                 raise ValueError("Skill content must not be empty.")
+
+        for skill_name, files in self.skill_references.items():
+            if skill_name not in self.skills:
+                raise ValueError(
+                    f"skill_references for unknown skill '{skill_name}' (not in skills)."
+                )
+            for relative_path in files:
+                if not str(relative_path).strip():
+                    raise ValueError(
+                        f"Reference paths for skill '{skill_name}' must not be empty."
+                    )
 
         object.__setattr__(self, "agent_id", agent_id)
         object.__setattr__(self, "name", name)

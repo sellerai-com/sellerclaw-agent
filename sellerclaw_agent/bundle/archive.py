@@ -31,6 +31,9 @@ def build_workspaces_from_assembled(assembled: Sequence[AssembledAgentLike]) -> 
             workspaces[f"{prefix}/HEARTBEAT.md"] = agent.heartbeat_md
         for skill_name, content in sorted(agent.skills.items()):
             workspaces[f"{prefix}/skills/{skill_name}/SKILL.md"] = content
+        for skill_name, files in sorted(agent.skill_references.items()):
+            for relative_path, file_content in sorted(files.items()):
+                workspaces[f"{prefix}/skills/{skill_name}/{relative_path}"] = file_content
     return workspaces
 
 

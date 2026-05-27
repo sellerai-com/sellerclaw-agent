@@ -38,6 +38,54 @@ CRON_REPORT_PERIODIC_SECONDS = float(os.environ.get("CRON_REPORT_PERIODIC_SECOND
 _DEBOUNCE_MS = 1600
 _WAIT_FOR_STATE_DIR_SECONDS = 30.0
 _CRON_FILES = {"jobs.json", "jobs-state.json"}
+_MS_MINUTE = 60_000
+_MS_HOUR = 3_600_000
+_MS_DAY = 86_400_000
+
+
+def _positive_int_ms(value: Any) -> int | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    ms = int(value)
+    return ms if ms > 0 else None
+
+
+def _schedule_expr_from_openclaw(schedule: dict[str, Any]) -> str:
+    """Map an OpenClaw schedule block to a 5-field cron or ``every:<ms>`` for the UI."""
+    kind = schedule.get("kind")
+    if kind == "cron":
+        return str(schedule.get("expr") or "")
+    if kind != "every":
+        return ""
+
+    every_ms = _positive_int_ms(schedule.get("everyMs"))
+    if every_ms is None:
+        return ""
+
+    if every_ms % _MS_MINUTE == 0:
+        minutes = every_ms // _MS_MINUTE
+        if minutes == 1:
+            return "* * * * *"
+        if 2 <= minutes <= 59:
+            return f"*/{minutes} * * * *"
+        if minutes == 60:
+            return "0 * * * *"
+
+    if every_ms % _MS_HOUR == 0:
+        hours = every_ms // _MS_HOUR
+        if hours == 1:
+            return "0 * * * *"
+        if 2 <= hours <= 23:
+            return f"0 */{hours} * * *"
+
+    if every_ms % _MS_DAY == 0:
+        days = every_ms // _MS_DAY
+        if days == 1:
+            return "0 0 * * *"
+        if 2 <= days <= 31:
+            return f"0 0 */{days} * *"
+
+    return f"every:{every_ms}"
 
 
 def _ms_to_iso(value: Any) -> str | None:
@@ -101,7 +149,7 @@ def read_cron_snapshot(state_dir: Path) -> dict[str, Any]:
                 "name": str(raw.get("name") or ""),
                 "description": str(raw.get("description") or ""),
                 "enabled": bool(raw.get("enabled", True)),
-                "schedule_expr": str(schedule.get("expr") or ""),
+                "schedule_expr": _schedule_expr_from_openclaw(schedule),
                 "schedule_tz": str(schedule.get("tz") or "UTC"),
                 "payload_message": str(payload.get("message") or ""),
                 "delivery_channel": _opt_str(delivery.get("channel")),

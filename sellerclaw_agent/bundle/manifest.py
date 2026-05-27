@@ -73,9 +73,18 @@ class AgentContent:
     tools_doc: str | None = None
     heartbeat: str | None = None
     skills: tuple[tuple[str, str], ...] = ()
+    # Per-skill references/ files: (skill_name, ((path, content), ...)). Stored as tuples to
+    # keep the frozen dataclass hashable, mirroring ``skills``.
+    skill_references: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
 
     def skills_mapping(self) -> dict[str, str]:
         return {name: content for name, content in self.skills}
+
+    def skill_references_mapping(self) -> dict[str, dict[str, str]]:
+        return {
+            name: {path: content for path, content in files}
+            for name, files in self.skill_references
+        }
 
 
 @dataclass(frozen=True)
@@ -422,6 +431,7 @@ def _parse_agent_content(value: object, label: str) -> AgentContent:
     if not isinstance(skills_raw, (list, tuple)):
         raise TypeError(f"{label}.skills must be a list")
     skills: list[tuple[str, str]] = []
+    skill_references: list[tuple[str, tuple[tuple[str, str], ...]]] = []
     for skill in skills_raw:
         skill_map = _require_mapping(skill, f"{label}.skills[]")
         name = str(skill_map.get("name") or "").strip()
@@ -429,6 +439,9 @@ def _parse_agent_content(value: object, label: str) -> AgentContent:
         if not name:
             raise ValueError(f"{label}.skills[].name must not be empty")
         skills.append((name, content))
+        references = _parse_skill_references(skill_map.get("references"), f"{label}.skills[{name}]")
+        if references:
+            skill_references.append((name, references))
 
     return AgentContent(
         instructions=instructions,
@@ -438,7 +451,25 @@ def _parse_agent_content(value: object, label: str) -> AgentContent:
         tools_doc=_optional_str(data.get("tools_doc")),
         heartbeat=_optional_str(data.get("heartbeat")),
         skills=tuple(skills),
+        skill_references=tuple(skill_references),
     )
+
+
+def _parse_skill_references(value: object, label: str) -> tuple[tuple[str, str], ...]:
+    """Parse a skill's optional ``references`` list. Absent/empty is fine (backward-compatible)."""
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{label}.references must be a list")
+    references: list[tuple[str, str]] = []
+    for reference in value:
+        reference_map = _require_mapping(reference, f"{label}.references[]")
+        path = str(reference_map.get("path") or "").strip()
+        content = str(reference_map.get("content") or "")
+        if not path:
+            raise ValueError(f"{label}.references[].path must not be empty")
+        references.append((path, content))
+    return tuple(references)
 
 
 def _optional_str(value: object) -> str | None:
@@ -775,6 +806,7 @@ def _llm_to_mapping(llm: LlmManifest) -> dict[str, object]:
 
 
 def _agent_content_to_mapping(content: AgentContent) -> dict[str, object]:
+    references_by_skill = dict(content.skill_references)
     return {
         "instructions": content.instructions,
         "soul": content.soul,
@@ -782,8 +814,20 @@ def _agent_content_to_mapping(content: AgentContent) -> dict[str, object]:
         "user_context": content.user_context,
         "tools_doc": content.tools_doc,
         "heartbeat": content.heartbeat,
-        "skills": [{"name": name, "content": body} for name, body in content.skills],
+        "skills": [
+            _skill_to_mapping(name, body, references_by_skill.get(name, ()))
+            for name, body in content.skills
+        ],
     }
+
+
+def _skill_to_mapping(
+    name: str, content: str, references: tuple[tuple[str, str], ...]
+) -> dict[str, object]:
+    mapping: dict[str, object] = {"name": name, "content": content}
+    if references:
+        mapping["references"] = [{"path": path, "content": body} for path, body in references]
+    return mapping
 
 
 def _agent_spec_to_mapping(spec: AgentSpec) -> dict[str, object]:

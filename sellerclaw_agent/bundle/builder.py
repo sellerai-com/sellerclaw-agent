@@ -400,4 +400,5 @@ class BundleBuilder:
             heartbeat_md=heartbeat_md,
             thinking_default=agent.thinking,
             skills=content.skills_mapping(),
+            skill_references=content.skill_references_mapping(),
         )

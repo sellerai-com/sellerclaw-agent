@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -103,6 +103,41 @@ def test_parse_agent_content_and_skills() -> None:
     skills = content.skills_mapping()
     assert set(skills) == {"task-management", "tasks"}
     assert "Use the tasks API" in skills["task-management"]
+
+
+def test_skills_without_references_default_to_empty() -> None:
+    """Backward-compat: a v2 manifest with no ``references`` key parses to empty references."""
+    content = bundle_manifest_from_mapping(_v2()).agents.main_agent.content
+    assert content.skill_references_mapping() == {}
+
+
+def test_skill_references_parse_and_round_trip() -> None:
+    data = _v2()
+    skills = data["agents"]["main_agent"]["content"]["skills"]
+    target = skills[0]["name"]
+    skills[0]["references"] = [
+        {"path": "references/data-model.md", "content": "# Wire model"},
+        {"path": "references/extra/notes.txt", "content": "note"},
+    ]
+
+    content = bundle_manifest_from_mapping(data).agents.main_agent.content
+    assert content.skill_references_mapping() == {
+        target: {
+            "references/data-model.md": "# Wire model",
+            "references/extra/notes.txt": "note",
+        }
+    }
+
+    # Round-trip: references survive on the declaring skill; skills without refs omit the key.
+    out = cast(dict[str, Any], bundle_manifest_from_mapping(data).to_save_manifest_mapping())
+    out_skills = out["agents"]["main_agent"]["content"]["skills"]
+    by_name = {s["name"]: s for s in out_skills}
+    assert by_name[target]["references"] == [
+        {"path": "references/data-model.md", "content": "# Wire model"},
+        {"path": "references/extra/notes.txt", "content": "note"},
+    ]
+    other = next(name for name in by_name if name != target)
+    assert "references" not in by_name[other]
 
 
 def test_parse_telegram_channels() -> None:

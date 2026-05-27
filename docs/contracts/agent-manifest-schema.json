@@ -130,7 +130,19 @@
       "required": ["name", "content"],
       "properties": {
         "name": { "type": "string" },
-        "content": { "type": "string" }
+        "content": { "type": "string" },
+        "references": {
+          "type": "array",
+          "description": "Optional. The skill's references/ subtree, carried verbatim. Each entry is written alongside SKILL.md into the agent workspace at skills/<name>/<path>. Absent or empty when the skill has no reference files.",
+          "items": {
+            "type": "object",
+            "required": ["path", "content"],
+            "properties": {
+              "path": { "type": "string", "description": "Path relative to the skill directory, e.g. references/data-model.md." },
+              "content": { "type": "string" }
+            }
+          }
+        }
       }
     },
     "agentContent": {

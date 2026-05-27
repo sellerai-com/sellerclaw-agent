@@ -11,6 +11,24 @@ from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 
 pytestmark = pytest.mark.unit
 
+_JOB_EVERY_3MIN = {
+    "id": "4e3eccba-f0d4-4dd6-a770-daa01fd54bd0",
+    "agentId": "supervisor",
+    "sessionKey": "agent:supervisor:sellerclaw-ui:direct:b0c2660f-3408-4a0e-94d9-c4124fb32810",
+    "name": "Send привет every 3 minutes",
+    "description": "Recurring message every 3 minutes.",
+    "enabled": True,
+    "createdAtMs": 1779885713790,
+    "schedule": {"kind": "every", "everyMs": 180000, "anchorMs": 1779885713790},
+    "payload": {"kind": "agentTurn", "message": "Send: привет"},
+    "delivery": {
+        "mode": "announce",
+        "to": "sellerclaw-ui:direct:b0c2660f-3408-4a0e-94d9-c4124fb32810",
+        "channel": "sellerclaw-ui",
+        "accountId": "default",
+    },
+}
+
 _JOB = {
     "id": "dbfa2928-244e-4dcf-80fa-edfbea8caa43",
     "agentId": "supervisor",
@@ -62,6 +80,25 @@ def test_read_cron_snapshot_merges_jobs_and_state(tmp_path: Path) -> None:
     # epoch ms converted to ISO-8601 UTC
     assert job["cron_created_at"] is not None and job["cron_created_at"].endswith("+00:00")
     assert job["next_run_at"] is not None and job["next_run_at"].endswith("+00:00")
+
+
+def test_read_cron_snapshot_every_schedule_maps_to_cron_expr(tmp_path: Path) -> None:
+    state_dir = tmp_path / "oc"
+    _write_cron_files(state_dir, jobs=[_JOB_EVERY_3MIN])
+
+    job = read_cron_snapshot(state_dir)["jobs"][0]
+
+    assert job["schedule_expr"] == "*/3 * * * *"
+    assert job["schedule_tz"] == "UTC"
+
+
+def test_read_cron_snapshot_every_non_cron_interval_uses_every_prefix(tmp_path: Path) -> None:
+    """Intervals that do not align to a 5-field cron use ``every:<ms>`` for the UI."""
+    state_dir = tmp_path / "oc"
+    job = {**_JOB_EVERY_3MIN, "schedule": {"kind": "every", "everyMs": 90_000}}
+    _write_cron_files(state_dir, jobs=[job])
+
+    assert read_cron_snapshot(state_dir)["jobs"][0]["schedule_expr"] == "every:90000"
 
 
 def test_read_cron_snapshot_missing_files_returns_empty(tmp_path: Path) -> None:
