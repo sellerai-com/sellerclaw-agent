@@ -439,12 +439,33 @@ fi
 # cached commands keep working.
 # ---------------------------------------------------------------------------
 
+report_cli_source() {
+  local lock="$SCRIPT_DIR/uv.lock"
+  [[ -f "$lock" ]] || return 0
+  local block version source_line
+  block=$(awk '
+    /^\[\[package\]\]/ { capture=0 }
+    /^name = "sellerclaw-cli"$/ { capture=1; next }
+    capture && /^$/ { exit }
+    capture { print }
+  ' "$lock")
+  [[ -n "$block" ]] || return 0
+  version=$(printf '%s\n' "$block" | awk -F'"' '$0 ~ /^version = / {print $2; exit}')
+  source_line=$(printf '%s\n' "$block" | awk '/^source = /{print; exit}')
+  if [[ "$source_line" == *"registry ="* ]]; then
+    log_ok "sellerclaw-cli v${version} (PyPI)"
+  else
+    log_ok "sellerclaw-cli v${version} (local build)"
+  fi
+}
+
 if (( NEED_CLI_UPGRADE )) && [[ -z "${SELLERCLAW_NO_CLI_UPGRADE:-}" ]]; then
   log_step "Updating SellerClaw CLI"
   if uv lock --upgrade-package sellerclaw-cli --quiet 2>/dev/null; then
-    log_ok "sellerclaw-cli resolved to the latest allowed release"
+    report_cli_source
   else
     log_warn "Could not refresh sellerclaw-cli (offline?); using the locked version."
+    report_cli_source
   fi
 fi
 

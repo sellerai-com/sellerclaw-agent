@@ -1,0 +1,4 @@
+Empty placeholder. Mounted to /opt/sellerclaw-cli-src in the agent container when
+SELLERCLAW_CLI_LOCAL_PATH is unset, so docker-compose's bind-mount always succeeds.
+The entrypoint script checks for a pyproject.toml at the mount point and skips the
+editable install when this placeholder is in use.
