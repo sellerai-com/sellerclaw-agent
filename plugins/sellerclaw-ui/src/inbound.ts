@@ -63,16 +63,39 @@ interface ImagePart {
   url: string;
   filename: string;
   contentType: string;
+  fileId: string | null;
 }
 
 interface FilePart {
   url: string;
   filename: string;
   contentType: string;
+  fileId: string | null;
 }
 
 function asStringField(value: unknown): string {
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+/**
+ * Extract the storage ``file_id`` from a SellerClaw download URL.
+ *
+ * The backend serves files at ``.../files/<file_id>/<filename>``. The base prefix in
+ * front of ``/files/`` is empty in tests and ``/agent`` in staging/prod, so we find the
+ * ``files`` segment anywhere in the path and take the next segment as the file_id.
+ * Used as a fallback when the structured ``file_id`` field is missing (older messages
+ * persisted before the field was added).
+ */
+function extractFileIdFromUrl(url: string): string | null {
+  try {
+    const segments = new URL(url).pathname.split("/").filter(Boolean);
+    for (let i = 0; i < segments.length - 2; i += 1) {
+      if (segments[i] === "files") return segments[i + 1] || null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function extractAttachmentParts(parts: unknown): { images: ImagePart[]; files: FilePart[] } {
@@ -84,14 +107,21 @@ function extractAttachmentParts(parts: unknown): { images: ImagePart[]; files: F
     const p = part as Record<string, unknown>;
     const filename = asStringField(p.filename);
     const contentType = asStringField(p.content_type);
+    const explicitFileId = asStringField(p.file_id) || null;
     if (p.type === "image_url" && p.image_url && typeof p.image_url === "object") {
       const url = asStringField((p.image_url as { url?: unknown }).url);
-      if (url) images.push({ url, filename, contentType });
+      if (url) {
+        const fileId = explicitFileId ?? extractFileIdFromUrl(url);
+        images.push({ url, filename, contentType, fileId });
+      }
       continue;
     }
     if (p.type === "file_url" && p.file_url && typeof p.file_url === "object") {
       const url = asStringField((p.file_url as { url?: unknown }).url);
-      if (url) files.push({ url, filename, contentType });
+      if (url) {
+        const fileId = explicitFileId ?? extractFileIdFromUrl(url);
+        files.push({ url, filename, contentType, fileId });
+      }
     }
   }
   return { images, files };
@@ -162,11 +192,13 @@ type AttachmentKind = "image" | "file";
  * runtime's ``MESSAGE_IMAGE_PATTERN`` picks it up and loads the file as a
  * vision block in the user prompt.
  *
- * For non-image files we emit the canonical ``MEDIA:`` marker (filename on
- * one line, MEDIA tag with the absolute path on the next). OpenClaw's
- * media-understanding / file-extraction pipeline detects this and loads the
- * file: PDF/DOCX text is extracted natively, other types are exposed to the
- * agent under ``media/inbound/`` via ``Read``/``Bash`` tools.
+ * For non-image files we emit a structured ``[Attachment: file_id=<id>
+ * local=<abs>]`` marker so the agent can call into ``sellerclaw spreadsheet``
+ * / ``sellerclaw files`` HTTP endpoints by ``file_id`` directly, without
+ * re-uploading. The local path is kept on the same line for legacy tools
+ * (``Read`` / ``Bash``) that still operate on disk. When ``file_id`` is
+ * missing (old messages persisted before the field was added) we fall back
+ * to the legacy ``MEDIA:`` marker.
  *
  * We deliberately do not use ``media://inbound/<id>``: that claim-check URI
  * only resolves when the Gateway pre-registers the id in ``attachmentUris``,
@@ -187,6 +219,9 @@ async function persistAttachmentMarker(
     const saved = await saveMediaBuffer(buffer, finalContentType, "inbound", undefined, displayName);
     if (kind === "image") {
       return `[Image: source: ${saved.path}]`;
+    }
+    if (part.fileId) {
+      return `${displayName}\n[Attachment: file_id=${part.fileId} local=${saved.path}]`;
     }
     return `${displayName}\nMEDIA: \`${saved.path}\``;
   } catch (err) {

@@ -37,6 +37,12 @@ OPENCLAW_BUNDLE_REDACT_SENSITIVE = "tools"
 
 OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 30000
 
+# Bundled OpenClaw skills allowed in every agent workspace. All other bundled skills are
+# dropped at load time; workspace/manifest skills and extra-dir skills are unaffected.
+# Keep the list minimal: SellerClaw business flows live in manifest skills, not OpenClaw
+# stock skills (meme-maker, taskflow, dev debuggers, etc.).
+OPENCLAW_BUNDLE_ALLOWED_SKILLS: tuple[str, ...] = ("healthcheck",)
+
 # Local sellerclaw-agent HTTP port inside the runtime container; plugins call back to it
 # via loopback for media upload proxying. Kept as a module constant so bundle tests can
 # assert the emitted config.
@@ -427,6 +433,9 @@ def generate_openclaw_config(
             "exec": {"security": "full", "ask": "off"},
             "sessions": {"visibility": "all"},
             "agentToAgent": {"enabled": True},
+        },
+        "skills": {
+            "allowBundled": list(OPENCLAW_BUNDLE_ALLOWED_SKILLS),
         },
     }
     return json.dumps(config_payload, indent=2)

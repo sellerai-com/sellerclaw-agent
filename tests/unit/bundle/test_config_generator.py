@@ -178,6 +178,16 @@ def test_generate_openclaw_config_has_gateway_and_models(
     )
 
 
+def test_generate_openclaw_config_allowlists_only_healthcheck_bundled_skill(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Workspace/manifest skills stay; stock OpenClaw bundled skills are gated to healthcheck."""
+    payload = json.loads(
+        _generate(_supervisor_only(make_assembled_agent), sellerclaw_api_url="http://api/")
+    )
+    assert payload["skills"]["allowBundled"] == ["healthcheck"]
+
+
 def test_generate_openclaw_config_cron_failures_redirect_to_cloud_error_sink(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:

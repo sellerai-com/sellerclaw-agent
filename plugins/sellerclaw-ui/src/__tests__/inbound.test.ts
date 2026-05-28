@@ -844,7 +844,7 @@ describe("registerInboundRoute", () => {
 
     const d = dispatchMock.mock.calls[0]![0] as { rawBody: string };
     expect(d.rawBody).toBe(
-      "Look\nreport.csv\nMEDIA: `/home/node/.openclaw/media/inbound/report---saved-csv.csv`",
+      "Look\nreport.csv\n[Attachment: file_id=x local=/home/node/.openclaw/media/inbound/report---saved-csv.csv]",
     );
   });
 
@@ -896,7 +896,7 @@ describe("registerInboundRoute", () => {
 
     const d = dispatchMock.mock.calls[0]![0] as { rawBody: string };
     expect(d.rawBody).toBe(
-      "Summarize\nwhitepaper.pdf\nMEDIA: `/home/node/.openclaw/media/inbound/whitepaper---saved-pdf.pdf`",
+      "Summarize\nwhitepaper.pdf\n[Attachment: file_id=y local=/home/node/.openclaw/media/inbound/whitepaper---saved-pdf.pdf]",
     );
   });
 
@@ -1005,7 +1005,7 @@ describe("registerInboundRoute", () => {
         "see both",
         "[Image: source: /home/node/.openclaw/media/inbound/saved-id.jpg]",
         "data.json",
-        "MEDIA: `/home/node/.openclaw/media/inbound/data---saved-json.json`",
+        "[Attachment: file_id=f local=/home/node/.openclaw/media/inbound/data---saved-json.json]",
       ].join("\n"),
     );
   });
