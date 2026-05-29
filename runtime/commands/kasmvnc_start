@@ -3,6 +3,7 @@ set -euo pipefail
 
 KASM_USER="user"
 VNC_DISPLAY=":1"
+VNC_DISPLAY_NUM="${VNC_DISPLAY#:}"
 
 mkdir -p /home/node/.vnc
 
@@ -13,8 +14,28 @@ exec sleep infinity
 XSTARTUP
 chmod +x /home/node/.vnc/xstartup
 
+# Clean stale state from a previous crashed invocation. Without this, every
+# respawn after a failure hits "Warning: <host>:N is taken because of /tmp/.X${N}-lock"
+# and bails — burning the supervisord retry budget in seconds and ending in FATAL.
+# All four artifacts below are safe to remove: they only exist while a vncserver
+# process holds the display, and we're about to bind it ourselves.
+rm -f \
+    "/tmp/.X${VNC_DISPLAY_NUM}-lock" \
+    "/tmp/.X11-unix/X${VNC_DISPLAY_NUM}" \
+    "/home/node/.vnc/${HOSTNAME}${VNC_DISPLAY}.pid" \
+    "/home/node/.vnc/${HOSTNAME}${VNC_DISPLAY}.log" || true
+
 # Create KasmVNC user from VNC_PASSWORD (or a fallback default).
 printf '%s\n%s\n' "${VNC_PASSWORD:-password}" "${VNC_PASSWORD:-password}" \
     | kasmvncpasswd -u "${KASM_USER}" -ow
 
-exec vncserver "${VNC_DISPLAY}" -fg
+# `-publicIP` short-circuits KasmVNC's STUN probe loop. Without it the server
+# spends 60-90 s polling Google's STUN servers (`stun.l.google.com`, ...) and
+# eventually bails with `ICE: Failed to get public IP, please specify it with
+# -publicIP`. The local browser sidecar inside this container does not need
+# WebRTC NAT discovery — Chrome connects to the X display over the loopback
+# socket, not over WebRTC. Allow operators to override via env when they
+# genuinely need a routable address.
+PUBLIC_IP="${KASMVNC_PUBLIC_IP:-127.0.0.1}"
+
+exec vncserver "${VNC_DISPLAY}" -fg -publicIP "${PUBLIC_IP}"

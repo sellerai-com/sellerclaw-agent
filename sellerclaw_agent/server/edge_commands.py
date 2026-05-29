@@ -118,10 +118,22 @@ async def _execute_remote_command(
             fn = functools.partial(container_mgr.restart, manifest)
         return await loop.run_in_executor(executor, fn)
     if cmd == "update_manifest":
-        return (
-            "failed",
-            "update_manifest is no longer supported; use start or restart",
-        )
+        try:
+            mapping = await client.fetch_edge_manifest()
+        except Exception as exc:  # noqa: BLE001 - surface as command failure
+            _log.warning("fetch_edge_manifest_failed", error=str(exc)[:500])
+            return "failed", str(exc)[:500]
+        storage = ManifestStorage(data_dir)
+        try:
+            storage.save(mapping)
+        except OSError as exc:
+            return "failed", str(exc)[:500]
+        try:
+            manifest = bundle_manifest_from_mapping(mapping)
+        except (TypeError, ValueError) as exc:
+            return "failed", str(exc)[:500]
+        fn = functools.partial(container_mgr.update_manifest, manifest)
+        return await loop.run_in_executor(executor, fn)
     if cmd == "open_browser":
         return await loop.run_in_executor(executor, container_mgr.open_browser)
     if cmd == "close_browser":

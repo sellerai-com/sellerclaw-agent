@@ -14,7 +14,9 @@ from sellerclaw_agent.cloud.supervisor_manager import (
     SupervisorContainerManager,
     _is_ready_payload,
     _parse_uptime_seconds_from_line,
+    bundle_on_disk_matches,
     create_supervisor_manager,
+    read_proxy_url_from_runtime_env,
     write_runtime_env,
 )
 
@@ -338,6 +340,122 @@ def test_restart_writes_bundle_and_calls_restart(
     assert err is None
     assert any("restart" in c for c in calls)
     assert (mgr.bundle_volume_path / "openclaw" / "openclaw.json").is_file()
+
+
+def test_update_manifest_writes_bundle_without_supervisorctl_restart(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """Happy path: hot-reload writes the bundle and does NOT touch supervisorctl.
+
+    OpenClaw's file-watcher picks up the new ``openclaw.json`` — the agent
+    process keeps running, sessions in flight see the new channel/tool config
+    on their next turn.
+    """
+    mgr = _mgr(tmp_path)
+    manifest = make_manifest(proxy_url="")
+    calls: list[list[str]] = []
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.update_manifest(manifest)
+
+    assert outcome == "completed"
+    assert err is None
+    # Crucially: no supervisorctl invocation. The whole point of hot-reload.
+    assert calls == []
+    assert (mgr.bundle_volume_path / "openclaw" / "openclaw.json").is_file()
+
+
+def test_update_manifest_rejects_proxy_change(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """Proxy lives in ``runtime.env`` and supervisord only reads it at start.
+
+    The cloud classifier sends ``BROWSER_PROXY_CHANGED`` down the RESTART path,
+    but the edge double-checks here: if the manifest's proxy differs from the
+    currently baked value we refuse the hot-reload so the user isn't silently
+    left with the old proxy.
+    """
+    mgr = _mgr(tmp_path)
+    write_runtime_env(mgr.bundle_volume_path, proxy_url="http://old-proxy:3128")
+
+    manifest = make_manifest(proxy_url="http://new-proxy:3128")
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
+        outcome, err = mgr.update_manifest(manifest)
+    assert outcome == "failed"
+    assert err is not None and "proxy" in err
+    # No subprocess call attempted; the bundle wasn't rebuilt either.
+    run.assert_not_called()
+
+
+def test_update_manifest_skips_write_when_bundle_unchanged(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """Two debounced applies in a row with identical manifests → second is a no-op.
+
+    Skipping the write keeps OpenClaw's file-watcher quiet (no validation noise
+    in the gateway log on every idempotent setting save).
+    """
+    mgr = _mgr(tmp_path)
+    manifest = make_manifest(proxy_url="")
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", return_value=MagicMock(returncode=0)):
+        first = mgr.update_manifest(manifest)
+    assert first == ("completed", None)
+
+    oc_path = mgr.bundle_volume_path / "openclaw" / "openclaw.json"
+    mtime_before = oc_path.stat().st_mtime_ns
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", return_value=MagicMock(returncode=0)):
+        second = mgr.update_manifest(manifest)
+    assert second == ("completed", None)
+    # File untouched on the second pass.
+    assert oc_path.stat().st_mtime_ns == mtime_before
+
+
+def test_bundle_on_disk_matches_detects_workspace_drift(tmp_path: Path) -> None:
+    """Spot-check the helper directly so callers can rely on cheap equality."""
+    bundle = tmp_path / "bundle"
+    (bundle / "openclaw").mkdir(parents=True)
+    (bundle / "openclaw" / "openclaw.json").write_text("{}", encoding="utf-8")
+    (bundle / "workspaces" / "supervisor").mkdir(parents=True)
+    (bundle / "workspaces" / "supervisor" / "AGENTS.md").write_text("hello", encoding="utf-8")
+
+    assert bundle_on_disk_matches(
+        bundle,
+        openclaw_config="{}",
+        workspaces={"supervisor/AGENTS.md": "hello"},
+    )
+    assert not bundle_on_disk_matches(
+        bundle,
+        openclaw_config="{}",
+        workspaces={"supervisor/AGENTS.md": "world"},
+    )
+    assert not bundle_on_disk_matches(
+        bundle,
+        openclaw_config='{"changed": true}',
+        workspaces={"supervisor/AGENTS.md": "hello"},
+    )
+
+
+def test_read_proxy_url_from_runtime_env_round_trips(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    write_runtime_env(bundle, proxy_url="http://o'neil:x@proxy:3128")
+    assert read_proxy_url_from_runtime_env(bundle) == "http://o'neil:x@proxy:3128"
+
+    write_runtime_env(bundle, proxy_url="")
+    assert read_proxy_url_from_runtime_env(bundle) == ""
+
+    missing = tmp_path / "missing"
+    assert read_proxy_url_from_runtime_env(missing) is None
 
 
 def test_restart_supervisorctl_failure(

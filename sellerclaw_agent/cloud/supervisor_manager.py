@@ -51,6 +51,108 @@ def write_runtime_env(bundle_volume_path: Path, *, proxy_url: str) -> None:
     os.replace(tmp, path)
 
 
+def read_proxy_url_from_runtime_env(bundle_volume_path: Path) -> str | None:
+    """Return the ``PROXY_URL`` value currently baked into ``runtime.env``.
+
+    Returns ``None`` when the file does not exist or contains no ``PROXY_URL``
+    line — distinguishes "first build" from "proxy explicitly empty" for the
+    update-manifest hot-reload guard.
+    """
+    path = bundle_volume_path / _RUNTIME_ENV_FILENAME
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("export PROXY_URL="):
+            continue
+        value = stripped.split("=", 1)[1].strip()
+        if value.startswith("'") and value.endswith("'") and len(value) >= 2:
+            inner = value[1:-1]
+            return inner.replace("'\\''", "'")
+        if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+            return value[1:-1]
+        return value
+    return None
+
+
+def _openclaw_config_payload_signature(raw: str) -> object:
+    """Parse and normalise ``openclaw.json`` for equality checks.
+
+    ``meta.lastTouchedAt`` is rewritten on every build (the bundle generator
+    stamps it with ``datetime.now``), so a naive string compare would always
+    mark the on-disk file as stale. Stripping just that field lets us tell
+    apart "same config, second debounced apply in a row" from "actual edit".
+    """
+    payload = json.loads(raw)
+    if isinstance(payload, dict):
+        meta = payload.get("meta")
+        if isinstance(meta, dict) and "lastTouchedAt" in meta:
+            meta = {k: v for k, v in meta.items() if k != "lastTouchedAt"}
+            payload = {**payload, "meta": meta}
+    return payload
+
+
+def bundle_on_disk_matches(
+    bundle_volume_path: Path,
+    *,
+    openclaw_config: str,
+    workspaces: dict[str, str],
+    shared_skills: dict[str, str] | None = None,
+) -> bool:
+    """Return True iff the on-disk bundle is semantically identical to the args.
+
+    Used by ``update_manifest`` to avoid triggering OpenClaw's config file-watcher
+    when a debounced apply ran after a no-op edit (e.g. saving the same Telegram
+    token twice). False on any read or parse error so we fall through to the
+    normal write. Ignores ``meta.lastTouchedAt`` — see
+    :func:`_openclaw_config_payload_signature`.
+    """
+    oc_path = bundle_volume_path / "openclaw" / "openclaw.json"
+    try:
+        on_disk_raw = oc_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return False
+    try:
+        if _openclaw_config_payload_signature(
+            on_disk_raw
+        ) != _openclaw_config_payload_signature(openclaw_config):
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    ws_root = bundle_volume_path / "workspaces"
+    existing_ws: dict[str, str] = {}
+    if ws_root.exists():
+        for path in ws_root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                existing_ws[str(path.relative_to(ws_root))] = path.read_text(encoding="utf-8")
+            except OSError:
+                return False
+    if existing_ws != workspaces:
+        return False
+
+    shared_root = bundle_volume_path / "shared-skills"
+    existing_shared: dict[str, str] = {}
+    if shared_root.exists():
+        for skill_dir in shared_root.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            skill_path = skill_dir / "SKILL.md"
+            if not skill_path.is_file():
+                continue
+            try:
+                existing_shared[skill_dir.name] = skill_path.read_text(encoding="utf-8")
+            except OSError:
+                return False
+    return existing_shared == (shared_skills or {})
+
+
 def write_bundle_to_disk(
     bundle_volume_path: Path,
     *,
@@ -597,6 +699,60 @@ class SupervisorContainerManager:
         if proc.returncode == 0:
             return "completed", None
         return "failed", out.strip()[:500] or f"exit {proc.returncode}"
+
+    def update_manifest(self, manifest: GenericManifest) -> tuple[str, str | None]:
+        """Rebuild the bundle on disk without bouncing the supervisord process.
+
+        OpenClaw's file-watcher (``gateway.reload.mode=hybrid`` by default)
+        picks up the new ``openclaw.json`` automatically — channels, tool
+        allow-lists, mcp config and cron all hot-apply in place. Workspace
+        rewrites land on disk too, but the running session keeps its
+        already-injected ``AGENTS.md`` / ``SOUL.md``; only new sessions see the
+        updated content. That's why bucket-3 changes carry a separate "Start a
+        new chat" hint on the cloud side.
+
+        Two early returns guard against silently doing the wrong thing:
+
+        * **Proxy change** — ``proxy_url`` lives in ``runtime.env`` and is read
+          by supervisord at process start. A hot-reload can't apply it; the
+          cloud classifier should never route a proxy change here, but reject
+          loudly if the contract slips.
+        * **No-op** — same byte content as on disk. Skipping the write avoids
+          waking the file-watcher for nothing (it would re-validate the config
+          and emit a noise log line on every duplicate save).
+        """
+        current_proxy = read_proxy_url_from_runtime_env(self.bundle_volume_path)
+        new_proxy = (manifest.proxy_url or "").strip()
+        if (current_proxy or "") != new_proxy:
+            return (
+                "failed",
+                "proxy change requires a full restart (PROXY_URL is read by supervisord only at start)",
+            )
+        try:
+            built = self._build_bundle(manifest)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("bundle_build_failed", error=str(exc))
+            return "failed", str(exc)[:500]
+        if bundle_on_disk_matches(
+            self.bundle_volume_path,
+            openclaw_config=built.openclaw_config,
+            workspaces=built.workspaces,
+            shared_skills=built.shared_skills,
+        ):
+            _log.info("update_manifest_noop", reason="bundle_unchanged")
+            return "completed", None
+        try:
+            write_bundle_to_disk(
+                self.bundle_volume_path,
+                openclaw_config=built.openclaw_config,
+                workspaces=built.workspaces,
+                shared_skills=built.shared_skills,
+                proxy_url=manifest.proxy_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("bundle_write_failed", error=str(exc))
+            return "failed", str(exc)[:500]
+        return "completed", None
 
 
 def create_supervisor_manager(

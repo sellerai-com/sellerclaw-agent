@@ -106,10 +106,12 @@ ensure_browser_sidecars_via_supervisor() {
 }
 
 has_user_data_dir=0
+has_remote_debugging=0
 for arg in "$@"; do
   if [[ "$arg" == --user-data-dir=* ]]; then
     has_user_data_dir=1
-    break
+  elif [[ "$arg" == --remote-debugging-port=* || "$arg" == --remote-debugging-pipe* ]]; then
+    has_remote_debugging=1
   fi
 done
 
@@ -129,6 +131,22 @@ extra_args=(
 
 if [[ "$has_user_data_dir" -eq 0 ]]; then
   extra_args+=(--user-data-dir=/home/node/.openclaw/chrome-profile)
+fi
+
+# Ensure Chrome exposes the DevTools Protocol on the port OpenClaw's browser
+# tool probes. The runtime expects ``http://127.0.0.1:7800/json/version`` to be
+# reachable (see ``supervisor_manager.py``'s ``_chrome_debug_list_url`` and the
+# ``browser`` tool's "Failed to start Chrome CDP on port 7800" diagnostic).
+# Older versions of the launcher relied on the caller (OpenClaw's chrome
+# extension) to inject the flag, but some launch paths invoke this wrapper
+# without it — Chrome then starts headfully on the VNC display and the CDP
+# socket is never bound, so every ``browser`` call dies with ECONNREFUSED on
+# 7800. Set it unconditionally unless the caller already chose a port (or the
+# experimental ``--remote-debugging-pipe`` mode).
+if [[ "$has_remote_debugging" -eq 0 ]]; then
+  CDP_PORT="${OPENCLAW_CHROME_DEBUG_PORT:-7800}"
+  # Bind only on loopback; we never want this open to the host network.
+  extra_args+=(--remote-debugging-port="${CDP_PORT}" --remote-debugging-address=127.0.0.1)
 fi
 
 if [[ -n "${PROXY_URL:-}" && -n "${OPENCLAW_CHROME_PROXY_SERVER:-}" ]]; then
