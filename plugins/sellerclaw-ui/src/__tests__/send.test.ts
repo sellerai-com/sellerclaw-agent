@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { extractChatIdFromAddress, sellerclawUiChannelPlugin, setPluginConfig } from "../channel.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import {
+  CHAT_ARCHIVED_ERROR_CODE,
   isTransientWebhookStatus,
   postOpenclawWebhook,
   postWebhookMediaMessage,
@@ -226,6 +227,48 @@ describe("postOpenclawWebhook / postWebhookMessage", () => {
     await vi.runAllTimersAsync();
     const result = await promise;
     expect(result.messageId).toBe("fallback-mid");
+  });
+
+  it("resolves silently on 409 chat_archived (no retry, no throw)", async () => {
+    // Cloud archived the chat between message dispatch and write; treat as terminal success
+    // so the agent run finishes cleanly instead of surfacing a useless error to the user.
+    vi.useRealTimers();
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ error_code: CHAT_ARCHIVED_ERROR_CODE, detail: "Chat is archived." }, 409),
+    );
+    globalThis.fetch = fetchMock;
+
+    const res = await postOpenclawWebhook("https://x/y", { method: "POST" });
+
+    expect(res.headers.get("X-Sellerclaw-Drop-Reason")).toBe(CHAT_ARCHIVED_ERROR_CODE);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+  });
+
+  it("still throws on 409 with a different error_code", async () => {
+    vi.useRealTimers();
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ error_code: "other_conflict", detail: "Mismatch." }, 409),
+    );
+    globalThis.fetch = fetchMock;
+
+    await expect(postOpenclawWebhook("https://x/y", { method: "POST" })).rejects.toThrow(
+      "webhook failed (409)",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+  });
+
+  it("still throws on 409 with no JSON body (defensive)", async () => {
+    vi.useRealTimers();
+    const fetchMock = vi.fn().mockResolvedValue(new Response("plain text", { status: 409 }));
+    globalThis.fetch = fetchMock;
+
+    await expect(postOpenclawWebhook("https://x/y", { method: "POST" })).rejects.toThrow(
+      "webhook failed (409)",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
   });
 });
 

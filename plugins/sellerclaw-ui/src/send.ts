@@ -47,9 +47,34 @@ export function sleep(ms: number): Promise<void> {
   });
 }
 
+/** Cloud's "chat is archived, drop this part silently" rejection. */
+export const CHAT_ARCHIVED_ERROR_CODE = "chat_archived";
+
+/** Synthetic Response signalling cloud rejected the write because the chat is archived. */
+const CHAT_ARCHIVED_RESPONSE: Response = new Response(null, {
+  status: 204,
+  headers: { "X-Sellerclaw-Drop-Reason": CHAT_ARCHIVED_ERROR_CODE },
+});
+
+/** Parse the cloud's ``{error_code, detail}`` envelope; returns empty string if absent. */
+function tryReadErrorCode(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error_code?: unknown };
+    return typeof parsed.error_code === "string" ? parsed.error_code : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * POST to the SellerClaw webhook with retries on network errors and transient HTTP statuses.
  * Does not retry 4xx (except 408/425/429): auth and validation errors won't heal on repeat.
+ *
+ * Exception: HTTP 409 ``chat_archived`` is treated as a terminal **success** — cloud is telling
+ * us the chat became archived between the time the agent picked up the user message and the
+ * time it tries to write the reply (e.g. the user opened a new chat mid-stream). Throwing would
+ * fail the agent's run and surface a useless error; resolving lets the run finish quietly. The
+ * reply is dropped, which is the right outcome: archived chats accept no further writes.
  */
 export async function postOpenclawWebhook(url: string, init: RequestInit): Promise<Response> {
   let lastError: Error | undefined;
@@ -69,6 +94,12 @@ export async function postOpenclawWebhook(url: string, init: RequestInit): Promi
     }
     const status = res.status;
     const detail = await res.text().catch(() => "");
+    if (status === 409 && tryReadErrorCode(detail) === CHAT_ARCHIVED_ERROR_CODE) {
+      console.info(
+        `sellerclaw-ui: webhook ${url} dropped — chat is archived (cloud rejected with chat_archived)`,
+      );
+      return CHAT_ARCHIVED_RESPONSE;
+    }
     lastError = new Error(`sellerclaw-ui: webhook failed (${status}): ${detail.slice(0, 500)}`);
     if (!isTransientWebhookStatus(status)) {
       throw lastError;
