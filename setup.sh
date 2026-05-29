@@ -393,6 +393,34 @@ if (( NEED_ENV_FILE )); then
 fi
 
 # ---------------------------------------------------------------------------
+# Resolve OpenClaw runtime version. Honors the OPENCLAW_TAG env override (from
+# the env file or the caller's shell); otherwise parses the default pinned in
+# docker-compose.yml so we never drift from what `docker compose up` resolves.
+# ---------------------------------------------------------------------------
+
+resolve_openclaw_tag() {
+  if [[ -n "${OPENCLAW_TAG:-}" ]]; then
+    printf '%s' "$OPENCLAW_TAG"
+    return 0
+  fi
+  if [[ -r "$SCRIPT_DIR/docker-compose.yml" ]]; then
+    grep -oE 'OPENCLAW_TAG:-[^}]+' "$SCRIPT_DIR/docker-compose.yml" \
+      | head -n1 \
+      | sed 's/OPENCLAW_TAG:-//'
+  fi
+}
+
+if (( NEED_DOCKER )); then
+  log_step "Checking OpenClaw"
+  openclaw_tag="$(resolve_openclaw_tag)"
+  if [[ -n "$openclaw_tag" ]]; then
+    log_ok "openclaw: ${openclaw_tag}"
+  else
+    log_warn "Could not determine OpenClaw version."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Resolve agent version from git tags (single source of truth, no hardcode).
 # Forwarded to docker-compose as the SELLERCLAW_AGENT_VERSION build-arg and
 # baked into the runtime image as ENV. Non-fatal: if git or tags are missing,
