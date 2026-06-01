@@ -812,3 +812,121 @@ def test_close_browser_idempotent(
 
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
         assert mgr.close_browser() == ("completed", None)
+
+
+def _capture_close_browser(
+    mgr: SupervisorContainerManager,
+) -> tuple[tuple[str, str | None], list[list[str]], str]:
+    """Run ``close_browser`` with a mocked subprocess; return result + commands.
+
+    Returns ``(outcome, ctl_cmds, cleanup_script)`` where ``ctl_cmds`` are the
+    ``supervisorctl`` argv lists and ``cleanup_script`` is the ``/bin/sh -c``
+    body.
+    """
+    ctl_cmds: list[list[str]] = []
+    cleanup_scripts: list[str] = []
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if cmd and cmd[0] == "/bin/sh":
+            cleanup_scripts.append(cmd[2])
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd and cmd[0] == "supervisorctl":
+            ctl_cmds.append(cmd)
+            return MagicMock(returncode=0, stdout="stopped\n", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome = mgr.close_browser()
+    assert len(cleanup_scripts) == 1
+    return outcome, ctl_cmds, cleanup_scripts[0]
+
+
+def test_close_browser_kills_orphan_xvnc_and_clears_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", "/home/node")
+    monkeypatch.delenv("OPENCLAW_BROWSER_DISPLAY", raising=False)
+    monkeypatch.delenv("OPENCLAW_BROWSER_PROFILE_DIR", raising=False)
+    mgr = _mgr(tmp_path)
+
+    outcome, ctl_cmds, script = _capture_close_browser(mgr)
+
+    assert outcome == ("completed", None)
+    # Supervised wrapper is stopped first so autorestart can't relaunch it.
+    assert any("stop" in c and mgr.kasm_program_name in c for c in ctl_cmds)
+    assert any("stop" in c and mgr.gost_program_name in c for c in ctl_cmds)
+    # The orphaned X server (display :1) is killed explicitly. The ``[X]``
+    # bracket trick stops pkill -f from matching this script's own cmdline.
+    assert "pkill -f '[X]vnc :1 '" in script
+    assert "pkill -f '[v]ncserver :1 '" in script
+    # Stale display locks + Chrome singleton locks are removed for a clean reopen.
+    assert "/tmp/.X11-unix/X1" in script
+    assert "/tmp/.X1-lock" in script
+    assert "/home/node/.openclaw/browser/openclaw/user-data'/Singleton*" in script
+    # Chrome itself is still closed.
+    assert "pkill -f '[g]oogle-chrome-stable'" in script
+    # No pkill pattern may appear as a plain literal that would match this
+    # script's own command line (self-kill guard).
+    assert "pkill -f Xvnc" not in script
+    assert "pkill -f google-chrome-stable" not in script
+
+
+def test_close_browser_honors_custom_display_and_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENCLAW_BROWSER_DISPLAY", ":7")
+    monkeypatch.setenv("OPENCLAW_BROWSER_PROFILE_DIR", "/custom/profile")
+    mgr = _mgr(tmp_path)
+
+    outcome, _ctl_cmds, script = _capture_close_browser(mgr)
+
+    assert outcome == ("completed", None)
+    assert "pkill -f '[X]vnc :7 '" in script
+    assert "/tmp/.X11-unix/X7" in script
+    assert "/tmp/.X7-lock" in script
+    assert "'/custom/profile'/Singleton*" in script
+
+
+def test_close_browser_runs_cleanup_even_when_stop_fails(
+    tmp_path: Path,
+) -> None:
+    mgr = _mgr(tmp_path)
+    cleanup_scripts: list[str] = []
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if cmd and cmd[0] == "/bin/sh":
+            cleanup_scripts.append(cmd[2])
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd and cmd[0] == "supervisorctl":
+            return MagicMock(returncode=1, stdout="", stderr="ERROR: gone\n")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.close_browser()
+
+    assert outcome == "failed"
+    assert err is not None and "gone" in err
+    # Cleanup still ran despite the supervisor stop failure.
+    assert len(cleanup_scripts) == 1
+    assert "pkill -f '[X]vnc :1 '" in cleanup_scripts[0]
+
+
+def test_close_browser_failed_when_cleanup_times_out(
+    tmp_path: Path,
+) -> None:
+    import subprocess as _sp
+
+    mgr = _mgr(tmp_path)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if cmd and cmd[0] == "/bin/sh":
+            raise _sp.TimeoutExpired(cmd, 30.0)
+        return MagicMock(returncode=0, stdout="stopped\n", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.close_browser()
+
+    assert outcome == "failed"
+    assert err is not None

@@ -374,6 +374,15 @@ def test_generate_openclaw_config_browser_disabled(
     assert json.loads(raw)["browser"]["enabled"] is False
 
 
+def test_generate_openclaw_config_browser_hardening_and_media_ttl(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    payload = json.loads(_generate(_supervisor_only(make_assembled_agent)))
+    assert payload["browser"]["evaluateEnabled"] is False
+    assert payload["browser"]["snapshotDefaults"] == {"mode": "efficient"}
+    assert payload["media"]["ttlHours"] == 168
+
+
 def test_generate_openclaw_config_allowed_origins_in_control_ui(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:

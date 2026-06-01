@@ -410,7 +410,19 @@ def generate_openclaw_config(
             "executablePath": "/usr/local/bin/openclaw_chrome",
             "remoteCdpTimeoutMs": 10000,
             "remoteCdpHandshakeTimeoutMs": 30000,
+            # Disable in-page JS execution (browser ``evaluate``). Agents drive pages via
+            # snapshot/click/type; running arbitrary JS against untrusted pages is an
+            # injection/abuse surface we don't need.
+            "evaluateEnabled": False,
+            # Capture page snapshots with the compact "efficient" preset (~8k vs ~40-80k
+            # chars) to cut token cost on large pages.
+            "snapshotDefaults": {"mode": "efficient"},
             "profiles": {},
+        },
+        "media": {
+            # Auto-clean persisted media (inbound uploads, browser captures, outbound
+            # files) after 7 days so the local media tree doesn't grow unbounded.
+            "ttlHours": 168,
         },
         "cron": {
             "enabled": cron_enabled,

@@ -494,24 +494,71 @@ class SupervisorContainerManager:
             return "failed", str(exc)[:500]
         return "completed", None
 
-    def close_browser(self) -> tuple[str, str | None]:
-        """Kill Chrome/Chromium and stop VNC sidecars."""
-        pkill_err: str | None = None
+    def _browser_display(self) -> str:
+        """X display the VNC/browser stack runs on (e.g. ``:1``)."""
+        return (os.environ.get("OPENCLAW_BROWSER_DISPLAY") or ":1").strip() or ":1"
+
+    def _browser_profile_dir(self) -> str:
+        """Chrome ``user-data`` dir the OpenClaw browser plugin manages."""
+        home = (os.environ.get("HOME") or "/home/node").rstrip("/")
+        default = f"{home}/.openclaw/browser/openclaw/user-data"
+        return (os.environ.get("OPENCLAW_BROWSER_PROFILE_DIR") or default).strip() or default
+
+    def _cleanup_browser_runtime(self) -> str | None:
+        """Kill Chrome + the (possibly orphaned) Xvnc and clear stale locks.
+
+        ``supervisorctl stop kasmvnc`` only signals the ``vncserver`` wrapper;
+        the ``Xvnc`` server it spawned runs in its own session and survives as
+        an orphan, still holding display ``:N`` via its abstract socket
+        (``@/tmp/.X11-unix/XN``). That is why a reopen later fails with
+        "Cannot establish any listening sockets / server already running": the
+        new Xvnc can't claim the display, the filesystem socket is never
+        recreated, and the Chrome launcher waits forever for it. So we kill the
+        orphaned Xvnc explicitly and drop the stale display + Chrome singleton
+        locks (the latter left behind whenever Chrome is ``pkill``ed rather than
+        quit cleanly) so the next ``open_browser`` starts from a clean slate.
+
+        Returns an error string on failure, else ``None``.
+        """
+        display = self._browser_display()
+        disp_num = display.lstrip(":") or "1"
+        profile = _shell_quote_single(self._browser_profile_dir())
+        # ``pkill -f`` matches full command lines, including this very script's
+        # command line — so a naive ``pkill -f Xvnc`` kills the shell running it
+        # before the later cleanup steps run. The ``[X]`` bracket trick makes
+        # the regex match the real process while NOT matching the literal
+        # ``[X]vnc`` text inside this script.
+        script = (
+            # Close Chrome (launched outside supervisor by openclaw_chrome).
+            "pkill -f '[g]oogle-chrome-stable' 2>/dev/null || true; "
+            "pkill -f '[o]penclaw_chrome' 2>/dev/null || true; "
+            "pkill -f '[/]usr/bin/chromium' 2>/dev/null || true; "
+            # Kill the X server that outlives `supervisorctl stop kasmvnc`.
+            f"pkill -f '[X]vnc {display} ' 2>/dev/null || true; "
+            f"pkill -f '[v]ncserver {display} ' 2>/dev/null || true; "
+            # Drop stale display + Chrome singleton locks so a reopen starts clean.
+            f"rm -f /tmp/.X11-unix/X{disp_num} /tmp/.X{disp_num}-lock 2>/dev/null || true; "
+            f"rm -f {profile}/Singleton* 2>/dev/null || true"
+        )
         try:
             subprocess.run(  # noqa: S603
-                [
-                    "/bin/sh",
-                    "-c",
-                    "pkill -f google-chrome-stable 2>/dev/null || true; "
-                    "pkill -f openclaw_chrome 2>/dev/null || true; "
-                    "pkill -f '/usr/bin/chromium' 2>/dev/null || true",
-                ],
+                ["/bin/sh", "-c", script],
                 check=False,
                 timeout=30.0,
             )
         except Exception as exc:  # noqa: BLE001
-            pkill_err = str(exc)[:500]
+            return str(exc)[:500]
+        return None
 
+    def close_browser(self) -> tuple[str, str | None]:
+        """Close Chrome and fully tear down the VNC display so it can reopen.
+
+        Order matters: stop the supervised ``vncserver`` wrapper first (an
+        explicit stop disables supervisord's autorestart), then kill the
+        now-orphaned ``Xvnc`` and clear locks. Cleanup runs even when the
+        supervisor stop fails, so Chrome/orphans never linger.
+        """
+        stop_err: str | None = None
         try:
             for svc in (self.kasm_program_name, self.gost_program_name):
                 proc = self._run_ctl("stop", svc, timeout=60.0)
@@ -519,12 +566,17 @@ class SupervisorContainerManager:
                 if proc.returncode != 0:
                     lowered = out.lower()
                     if "not running" not in lowered and "no such process" not in lowered:
-                        return "failed", out.strip()[:500] or f"exit {proc.returncode}"
+                        stop_err = out.strip()[:500] or f"exit {proc.returncode}"
+                        break
         except Exception as exc:  # noqa: BLE001
-            return "failed", str(exc)[:500]
+            stop_err = str(exc)[:500]
 
-        if pkill_err is not None:
-            return "failed", pkill_err
+        cleanup_err = self._cleanup_browser_runtime()
+
+        if stop_err is not None:
+            return "failed", stop_err
+        if cleanup_err is not None:
+            return "failed", cleanup_err
         return "completed", None
 
     def _gateway_ready_url(self) -> str:
