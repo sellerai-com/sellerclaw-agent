@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.5.20
+ARG OPENCLAW_TAG=2026.5.27
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -97,8 +97,13 @@ RUN UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/edge-r
     && rm -f /tmp/edge-requirements.txt
 
 # Writable runtime directories for the node user.
-RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins \
-    && chown -R node:node /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins
+# /home/node/.config must be node-owned: the agent server (uvicorn, runs as node)
+# mirrors the sca_ agent token into ~/.config/sellerclaw/config.toml at startup via
+# write_cli_config(). If .config is root-owned, that write fails with EACCES, the
+# sellerclaw CLI has no token, and every agent CLI call gets `401 Missing bearer token`
+# — which the agent then misreports to users (e.g. "No stores are connected").
+RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins /home/node/.config \
+    && chown -R node:node /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins /home/node/.config
 
 # SellerClaw web UI chat delivery channel (OpenClaw plugin).
 # Files must stay root-owned: OpenClaw blocks config-origin plugins with non-root ownership.
@@ -112,18 +117,23 @@ COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/seller
 # Keep only extensions referenced by the generated openclaw.json. This list must stay in
 # sync with every provider used in an agent model ref (models.providers / agents.*.model)
 # and every bundled plugin the config enables (plugins.allow + plugins.entries):
-#   browser, telegram, litellm, memory-core   -> chat + tools + memory
+#   browser, telegram, whatsapp, litellm, memory-core -> chat + tools + memory
 #   anthropic, google                         -> back the `anthropic`/`google` providers
 #                                                (model refs anthropic/claude-*, google/veo-*)
 #   document-extract                          -> bundled plugin enabled for the PDF tool
 # (web search is sellerclaw-web-search, an external plugin under /opt/openclaw-plugins.)
+# whatsapp backs the personal-account WhatsApp channel (Baileys + QR pairing); it activates
+# only when an agent's generated config has channels.whatsapp.enabled. Its baileys /
+# whatsapp-rust-bridge deps live in node_modules (not pruned here), so keeping the extension
+# dir is enough. Pairing writes the session to OpenClaw's default whatsapp authDir, which must
+# sit on a persistent volume so the link survives container restarts.
 # Each provider/plugin extension registers itself at extension-load time; pruning it makes
 # OpenClaw fail to resolve that provider's API or plugin even though the config references
 # it — e.g. the google prune surfaced as `No video-generation provider registered for google`.
 RUN cd /app/dist/extensions && \
     for dir in */; do \
         case "${dir%/}" in \
-            browser|telegram|litellm|memory-core|anthropic|google|document-extract) ;; \
+            browser|telegram|whatsapp|litellm|memory-core|anthropic|google|document-extract) ;; \
             *) rm -rf "$dir" ;; \
         esac; \
     done

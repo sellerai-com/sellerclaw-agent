@@ -15,6 +15,7 @@ server = [
     "fastapi>=0.116.0",
     "uvicorn[standard]>=0.35.0",
     "pydantic>=2.11.0",
+    "watchfiles>=1.0",
 ]
 cli = [
     "rich>=13.0",
@@ -51,6 +52,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 source = "vcs"
+# Allow building when the source tree is not a git checkout (e.g. installed
+# from a GitHub "Download ZIP" tarball, which omits .git). Without this,
+# hatch-vcs aborts the build with "setuptools-scm was unable to detect version".
+fallback-version = "0.0.0+unknown"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "sellerclaw_agent/_version.py"

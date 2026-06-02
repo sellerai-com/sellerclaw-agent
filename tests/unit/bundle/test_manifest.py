@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -54,6 +54,45 @@ def test_parse_resolves_default_flags_for_subagents() -> None:
     assert by_id["scout"].browser_enabled is True
 
 
+def test_parse_reasoning_default_from_fixture_and_absent() -> None:
+    """``agents.reasoning_default`` parses from the fixture ('on') and falls back to 'off'."""
+    assert bundle_manifest_from_mapping(_v2()).agents.reasoning_default == "on"
+
+    data = _v2()
+    data["agents"].pop("reasoning_default", None)
+    assert bundle_manifest_from_mapping(data).agents.reasoning_default == "off"
+
+
+def test_parse_model_info_optional_sizing_fields() -> None:
+    """Only the frontier model carries reasoning/context/output sizing; the rest are None."""
+    manifest = bundle_manifest_from_mapping(_v2())
+    models = {m.id: m for m in manifest.llm.groups["litellm"].models}
+    complex_model = models["complex"]
+    assert complex_model.reasoning is True
+    assert complex_model.context_window == 256000
+    assert complex_model.max_tokens == 32768
+    for non_complex in ("simple", "mini", "image", "video"):
+        entry = models[non_complex]
+        assert entry.reasoning is None
+        assert entry.context_window is None
+        assert entry.max_tokens is None
+
+
+def test_model_info_optional_fields_round_trip_omit_when_unset() -> None:
+    """Saving + reparsing keeps the sizing keys only on the model that declared them."""
+    manifest = bundle_manifest_from_mapping(_v2())
+    mapping = manifest.to_save_manifest_mapping()
+    litellm_models = {m["id"]: m for m in mapping["llm"]["groups"]["litellm"]["models"]}  # type: ignore[index]
+    assert litellm_models["complex"]["contextWindow"] == 256000
+    assert litellm_models["complex"]["maxTokens"] == 32768
+    assert litellm_models["complex"]["reasoning"] is True
+    for non_complex in ("simple", "mini", "image", "video"):
+        entry = litellm_models[non_complex]
+        assert "reasoning" not in entry
+        assert "contextWindow" not in entry
+        assert "maxTokens" not in entry
+
+
 def test_parse_agent_content_and_skills() -> None:
     manifest = bundle_manifest_from_mapping(_v2())
     content = manifest.agents.main_agent.content
@@ -66,6 +105,41 @@ def test_parse_agent_content_and_skills() -> None:
     assert "Use the tasks API" in skills["task-management"]
 
 
+def test_skills_without_references_default_to_empty() -> None:
+    """Backward-compat: a v2 manifest with no ``references`` key parses to empty references."""
+    content = bundle_manifest_from_mapping(_v2()).agents.main_agent.content
+    assert content.skill_references_mapping() == {}
+
+
+def test_skill_references_parse_and_round_trip() -> None:
+    data = _v2()
+    skills = data["agents"]["main_agent"]["content"]["skills"]
+    target = skills[0]["name"]
+    skills[0]["references"] = [
+        {"path": "references/data-model.md", "content": "# Wire model"},
+        {"path": "references/extra/notes.txt", "content": "note"},
+    ]
+
+    content = bundle_manifest_from_mapping(data).agents.main_agent.content
+    assert content.skill_references_mapping() == {
+        target: {
+            "references/data-model.md": "# Wire model",
+            "references/extra/notes.txt": "note",
+        }
+    }
+
+    # Round-trip: references survive on the declaring skill; skills without refs omit the key.
+    out = cast(dict[str, Any], bundle_manifest_from_mapping(data).to_save_manifest_mapping())
+    out_skills = out["agents"]["main_agent"]["content"]["skills"]
+    by_name = {s["name"]: s for s in out_skills}
+    assert by_name[target]["references"] == [
+        {"path": "references/data-model.md", "content": "# Wire model"},
+        {"path": "references/extra/notes.txt", "content": "note"},
+    ]
+    other = next(name for name in by_name if name != target)
+    assert "references" not in by_name[other]
+
+
 def test_parse_telegram_channels() -> None:
     manifest = bundle_manifest_from_mapping(_v2())
     assert manifest.channels.primary == "telegram"
@@ -74,6 +148,34 @@ def test_parse_telegram_channels() -> None:
     assert tg.bot_token == "1234567890"
     assert tg.allowed_user_ids == ("1234567890",)
     assert tg.allowed_group_ids == ("1234567891",)
+
+
+def test_parse_whatsapp_defaults_to_disabled_when_absent() -> None:
+    """Fixture has no whatsapp block → channel parses as disabled with an empty allowlist."""
+    manifest = bundle_manifest_from_mapping(_v2())
+    assert manifest.channels.whatsapp.enabled is False
+    assert manifest.channels.whatsapp.allowed_numbers == ()
+
+
+def test_parse_whatsapp_channel_present() -> None:
+    data = _v2()
+    data["channels"]["whatsapp"] = {
+        "enabled": True,
+        "allowed_numbers": ["14155550123", "14155550124"],
+    }
+    manifest = bundle_manifest_from_mapping(data)
+    wa = manifest.channels.whatsapp
+    assert wa.enabled is True
+    assert wa.allowed_numbers == ("14155550123", "14155550124")
+
+
+def test_parse_whatsapp_primary() -> None:
+    data = _v2()
+    data["channels"]["primary"] = "whatsapp"
+    data["channels"]["whatsapp"] = {"enabled": True, "allowed_numbers": ["14155550123"]}
+    manifest = bundle_manifest_from_mapping(data)
+    assert manifest.channels.primary == "whatsapp"
+    assert manifest.channels.whatsapp.enabled is True
 
 
 @pytest.mark.parametrize(
@@ -162,6 +264,10 @@ def test_parse_malformed_input_raises(
         pytest.param(lambda d: d["channels"]["telegram"].__setitem__("bot_token", ""), "bot_token is required", id="telegram-enabled-no-token"),
         pytest.param(lambda d: d["channels"]["telegram"].pop("allowed_user_ids"), "allowed_user_ids is required", id="telegram-enabled-no-users"),
         pytest.param(lambda d: d["channels"]["telegram"].__setitem__("allowed_user_ids", "1"), "allowed_user_ids must be a list", id="telegram-users-not-list"),
+        pytest.param(lambda d: d["channels"].__setitem__("primary", "whatsapp"), "channels.whatsapp is required when", id="primary-whatsapp-no-whatsapp"),
+        pytest.param(lambda d: (d["channels"].__setitem__("primary", "whatsapp"), d["channels"].__setitem__("whatsapp", {"enabled": False})), "whatsapp.enabled must be true", id="primary-whatsapp-but-disabled"),
+        pytest.param(lambda d: d["channels"].__setitem__("whatsapp", {"enabled": True}), "channels.whatsapp.allowed_numbers is required", id="whatsapp-enabled-no-numbers"),
+        pytest.param(lambda d: d["channels"].__setitem__("whatsapp", {"enabled": True, "allowed_numbers": "1"}), "channels.whatsapp.allowed_numbers must be a list", id="whatsapp-numbers-not-list"),
         pytest.param(lambda d: d["llm"].pop("groups"), "llm.groups is required", id="missing-groups"),
         pytest.param(lambda d: d["llm"]["text_model"].pop("secondary"), "llm.text_model.secondary is required", id="missing-text-secondary"),
         pytest.param(lambda d: d["llm"]["text_model"]["primary"].__setitem__("group", "ghost"), "references unknown group", id="ref-unknown-group"),

@@ -178,6 +178,34 @@ def test_generate_openclaw_config_has_gateway_and_models(
     )
 
 
+def test_generate_openclaw_config_allowlists_only_healthcheck_bundled_skill(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Workspace/manifest skills stay; stock OpenClaw bundled skills are gated to healthcheck."""
+    payload = json.loads(
+        _generate(_supervisor_only(make_assembled_agent), sellerclaw_api_url="http://api/")
+    )
+    assert payload["skills"]["allowBundled"] == ["healthcheck"]
+
+
+def test_generate_openclaw_config_cron_failures_redirect_to_cloud_error_sink(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Cron failures POST to the cloud error sink (webhook) instead of announcing in chat."""
+    raw = _generate(
+        _supervisor_only(make_assembled_agent),
+        sellerclaw_api_url="http://api/",
+    )
+    cron = json.loads(raw)["cron"]
+    assert cron["enabled"] is True
+    # Authenticated with the agent API key (cloud resolves the user via get_agent_user_id).
+    assert cron["webhookToken"] == _AGENT_API_KEY
+    assert cron["failureDestination"] == {
+        "mode": "webhook",
+        "to": "http://api/internal/openclaw/errors",
+    }
+
+
 def test_generate_openclaw_config_model_defaults_drive_and_omit_media(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
@@ -243,6 +271,50 @@ def test_generate_openclaw_config_telegram_channel_and_bindings(
     assert any(b.get("match") == {"channel": "telegram"} for b in bindings)
 
 
+def test_generate_openclaw_config_whatsapp_channel_and_bindings(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    raw = _generate(
+        _supervisor_only(make_assembled_agent),
+        whatsapp_enabled=True,
+        whatsapp_allowed_numbers=("+1 (415) 555-0123", "+14155550124"),
+    )
+    payload = json.loads(raw)
+    whatsapp = payload["channels"]["whatsapp"]
+    assert whatsapp["enabled"] is True
+    assert whatsapp["dmPolicy"] == "allowlist"
+    # Numbers are normalized to digits-only (OpenClaw matches allowFrom on digits).
+    assert whatsapp["allowFrom"] == ["14155550123", "14155550124"]
+    # DM-only: groups are hard-disabled and no group fields are emitted.
+    assert whatsapp["groupPolicy"] == "disabled"
+    assert "groups" not in whatsapp
+    bindings = payload["bindings"]
+    assert any(b.get("match") == {"channel": "whatsapp"} for b in bindings)
+
+
+def test_generate_openclaw_config_whatsapp_open_policy_without_allowlist(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    raw = _generate(
+        _supervisor_only(make_assembled_agent),
+        whatsapp_enabled=True,
+        whatsapp_allowed_numbers=(),
+    )
+    payload = json.loads(raw)
+    whatsapp = payload["channels"]["whatsapp"]
+    assert whatsapp["dmPolicy"] == "open"
+    assert whatsapp["allowFrom"] == []
+
+
+def test_generate_openclaw_config_whatsapp_absent_when_disabled(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    raw = _generate(_supervisor_only(make_assembled_agent), whatsapp_enabled=False)
+    payload = json.loads(raw)
+    assert "whatsapp" not in payload["channels"]
+    assert not any(b.get("match") == {"channel": "whatsapp"} for b in payload["bindings"])
+
+
 def test_generate_openclaw_config_web_search_enabled_wires_sellerclaw_plugin(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
@@ -300,6 +372,15 @@ def test_generate_openclaw_config_browser_disabled(
 ) -> None:
     raw = _generate(_supervisor_only(make_assembled_agent), browser_enabled=False)
     assert json.loads(raw)["browser"]["enabled"] is False
+
+
+def test_generate_openclaw_config_browser_hardening_and_media_ttl(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    payload = json.loads(_generate(_supervisor_only(make_assembled_agent)))
+    assert payload["browser"]["evaluateEnabled"] is False
+    assert payload["browser"]["snapshotDefaults"] == {"mode": "efficient"}
+    assert payload["media"]["ttlHours"] == 168
 
 
 def test_generate_openclaw_config_allowed_origins_in_control_ui(
@@ -417,6 +498,23 @@ def test_generate_openclaw_config_thinking_default_reflects_passed_value(
     assert json.loads(raw)["agents"]["defaults"]["thinkingDefault"] == thinking_default
 
 
+@pytest.mark.parametrize(
+    "reasoning_default",
+    [
+        pytest.param("on", id="on"),
+        pytest.param("off", id="off"),
+        pytest.param("stream", id="stream"),
+    ],
+)
+def test_generate_openclaw_config_reasoning_default_reflects_passed_value(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+    reasoning_default: str,
+) -> None:
+    """``agents.defaults.reasoningDefault`` is exactly the passed value (manifest-driven)."""
+    raw = _generate(_supervisor_only(make_assembled_agent), reasoning_default=reasoning_default)
+    assert json.loads(raw)["agents"]["defaults"]["reasoningDefault"] == reasoning_default
+
+
 def test_generate_openclaw_config_per_agent_thinking_from_assembled_agent(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
@@ -517,19 +615,30 @@ def _generate_default_config(
     return json.loads(raw)
 
 
-def test_generate_openclaw_config_media_defaults_emitted_from_model_defaults(
+def test_generate_openclaw_config_omits_media_model_blocks_keeps_pdf(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """image/video/pdf default blocks are the passed ``model_defaults`` values verbatim.
+    """image/video model blocks are NOT emitted (media goes via sellerclaw-cli); pdfModel stays.
 
-    (Derivation of the underlying refs is the bundle builder's job and covered there.)"""
+    (The LiteLLM {user}image / {user}video groups remain registered cloud-side.)"""
     defaults = _generate_default_config(make_assembled_agent)["agents"]["defaults"]
-    assert defaults["imageGenerationModel"] == {"primary": "litellm/u:abc/image"}
-    assert defaults["videoGenerationModel"] == {"primary": "google/veo-3.1-fast-generate-preview"}
+    assert "imageGenerationModel" not in defaults
+    assert "videoGenerationModel" not in defaults
     assert defaults["pdfModel"] == {
         "primary": "anthropic/claude-sonnet-4-6",
         "fallbacks": ["google/gemini-3.1-pro-preview"],
     }
+
+
+def test_generate_openclaw_config_denies_builtin_media_tools(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Builtin image/video/music generate tools are denied (replaced by sellerclaw-cli media)."""
+    agents = json.loads(_generate(_supervisor_only(make_assembled_agent)))["agents"]["list"]
+    deny = agents[0]["tools"]["deny"]
+    assert "image_generate" in deny
+    assert "video_generate" in deny
+    assert "music_generate" in deny
 
 
 def test_generate_openclaw_config_enables_document_extract_plugin_for_pdf_fallback(

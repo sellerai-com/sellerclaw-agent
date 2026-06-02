@@ -14,7 +14,9 @@ from sellerclaw_agent.cloud.supervisor_manager import (
     SupervisorContainerManager,
     _is_ready_payload,
     _parse_uptime_seconds_from_line,
+    bundle_on_disk_matches,
     create_supervisor_manager,
+    read_proxy_url_from_runtime_env,
     write_runtime_env,
 )
 
@@ -338,6 +340,122 @@ def test_restart_writes_bundle_and_calls_restart(
     assert err is None
     assert any("restart" in c for c in calls)
     assert (mgr.bundle_volume_path / "openclaw" / "openclaw.json").is_file()
+
+
+def test_update_manifest_writes_bundle_without_supervisorctl_restart(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """Happy path: hot-reload writes the bundle and does NOT touch supervisorctl.
+
+    OpenClaw's file-watcher picks up the new ``openclaw.json`` — the agent
+    process keeps running, sessions in flight see the new channel/tool config
+    on their next turn.
+    """
+    mgr = _mgr(tmp_path)
+    manifest = make_manifest(proxy_url="")
+    calls: list[list[str]] = []
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.update_manifest(manifest)
+
+    assert outcome == "completed"
+    assert err is None
+    # Crucially: no supervisorctl invocation. The whole point of hot-reload.
+    assert calls == []
+    assert (mgr.bundle_volume_path / "openclaw" / "openclaw.json").is_file()
+
+
+def test_update_manifest_rejects_proxy_change(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """Proxy lives in ``runtime.env`` and supervisord only reads it at start.
+
+    The cloud classifier sends ``BROWSER_PROXY_CHANGED`` down the RESTART path,
+    but the edge double-checks here: if the manifest's proxy differs from the
+    currently baked value we refuse the hot-reload so the user isn't silently
+    left with the old proxy.
+    """
+    mgr = _mgr(tmp_path)
+    write_runtime_env(mgr.bundle_volume_path, proxy_url="http://old-proxy:3128")
+
+    manifest = make_manifest(proxy_url="http://new-proxy:3128")
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run") as run:
+        outcome, err = mgr.update_manifest(manifest)
+    assert outcome == "failed"
+    assert err is not None and "proxy" in err
+    # No subprocess call attempted; the bundle wasn't rebuilt either.
+    run.assert_not_called()
+
+
+def test_update_manifest_skips_write_when_bundle_unchanged(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """Two debounced applies in a row with identical manifests → second is a no-op.
+
+    Skipping the write keeps OpenClaw's file-watcher quiet (no validation noise
+    in the gateway log on every idempotent setting save).
+    """
+    mgr = _mgr(tmp_path)
+    manifest = make_manifest(proxy_url="")
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", return_value=MagicMock(returncode=0)):
+        first = mgr.update_manifest(manifest)
+    assert first == ("completed", None)
+
+    oc_path = mgr.bundle_volume_path / "openclaw" / "openclaw.json"
+    mtime_before = oc_path.stat().st_mtime_ns
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", return_value=MagicMock(returncode=0)):
+        second = mgr.update_manifest(manifest)
+    assert second == ("completed", None)
+    # File untouched on the second pass.
+    assert oc_path.stat().st_mtime_ns == mtime_before
+
+
+def test_bundle_on_disk_matches_detects_workspace_drift(tmp_path: Path) -> None:
+    """Spot-check the helper directly so callers can rely on cheap equality."""
+    bundle = tmp_path / "bundle"
+    (bundle / "openclaw").mkdir(parents=True)
+    (bundle / "openclaw" / "openclaw.json").write_text("{}", encoding="utf-8")
+    (bundle / "workspaces" / "supervisor").mkdir(parents=True)
+    (bundle / "workspaces" / "supervisor" / "AGENTS.md").write_text("hello", encoding="utf-8")
+
+    assert bundle_on_disk_matches(
+        bundle,
+        openclaw_config="{}",
+        workspaces={"supervisor/AGENTS.md": "hello"},
+    )
+    assert not bundle_on_disk_matches(
+        bundle,
+        openclaw_config="{}",
+        workspaces={"supervisor/AGENTS.md": "world"},
+    )
+    assert not bundle_on_disk_matches(
+        bundle,
+        openclaw_config='{"changed": true}',
+        workspaces={"supervisor/AGENTS.md": "hello"},
+    )
+
+
+def test_read_proxy_url_from_runtime_env_round_trips(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    write_runtime_env(bundle, proxy_url="http://o'neil:x@proxy:3128")
+    assert read_proxy_url_from_runtime_env(bundle) == "http://o'neil:x@proxy:3128"
+
+    write_runtime_env(bundle, proxy_url="")
+    assert read_proxy_url_from_runtime_env(bundle) == ""
+
+    missing = tmp_path / "missing"
+    assert read_proxy_url_from_runtime_env(missing) is None
 
 
 def test_restart_supervisorctl_failure(
@@ -694,3 +812,121 @@ def test_close_browser_idempotent(
 
     with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
         assert mgr.close_browser() == ("completed", None)
+
+
+def _capture_close_browser(
+    mgr: SupervisorContainerManager,
+) -> tuple[tuple[str, str | None], list[list[str]], str]:
+    """Run ``close_browser`` with a mocked subprocess; return result + commands.
+
+    Returns ``(outcome, ctl_cmds, cleanup_script)`` where ``ctl_cmds`` are the
+    ``supervisorctl`` argv lists and ``cleanup_script`` is the ``/bin/sh -c``
+    body.
+    """
+    ctl_cmds: list[list[str]] = []
+    cleanup_scripts: list[str] = []
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if cmd and cmd[0] == "/bin/sh":
+            cleanup_scripts.append(cmd[2])
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd and cmd[0] == "supervisorctl":
+            ctl_cmds.append(cmd)
+            return MagicMock(returncode=0, stdout="stopped\n", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome = mgr.close_browser()
+    assert len(cleanup_scripts) == 1
+    return outcome, ctl_cmds, cleanup_scripts[0]
+
+
+def test_close_browser_kills_orphan_xvnc_and_clears_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", "/home/node")
+    monkeypatch.delenv("OPENCLAW_BROWSER_DISPLAY", raising=False)
+    monkeypatch.delenv("OPENCLAW_BROWSER_PROFILE_DIR", raising=False)
+    mgr = _mgr(tmp_path)
+
+    outcome, ctl_cmds, script = _capture_close_browser(mgr)
+
+    assert outcome == ("completed", None)
+    # Supervised wrapper is stopped first so autorestart can't relaunch it.
+    assert any("stop" in c and mgr.kasm_program_name in c for c in ctl_cmds)
+    assert any("stop" in c and mgr.gost_program_name in c for c in ctl_cmds)
+    # The orphaned X server (display :1) is killed explicitly. The ``[X]``
+    # bracket trick stops pkill -f from matching this script's own cmdline.
+    assert "pkill -f '[X]vnc :1 '" in script
+    assert "pkill -f '[v]ncserver :1 '" in script
+    # Stale display locks + Chrome singleton locks are removed for a clean reopen.
+    assert "/tmp/.X11-unix/X1" in script
+    assert "/tmp/.X1-lock" in script
+    assert "/home/node/.openclaw/browser/openclaw/user-data'/Singleton*" in script
+    # Chrome itself is still closed.
+    assert "pkill -f '[g]oogle-chrome-stable'" in script
+    # No pkill pattern may appear as a plain literal that would match this
+    # script's own command line (self-kill guard).
+    assert "pkill -f Xvnc" not in script
+    assert "pkill -f google-chrome-stable" not in script
+
+
+def test_close_browser_honors_custom_display_and_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENCLAW_BROWSER_DISPLAY", ":7")
+    monkeypatch.setenv("OPENCLAW_BROWSER_PROFILE_DIR", "/custom/profile")
+    mgr = _mgr(tmp_path)
+
+    outcome, _ctl_cmds, script = _capture_close_browser(mgr)
+
+    assert outcome == ("completed", None)
+    assert "pkill -f '[X]vnc :7 '" in script
+    assert "/tmp/.X11-unix/X7" in script
+    assert "/tmp/.X7-lock" in script
+    assert "'/custom/profile'/Singleton*" in script
+
+
+def test_close_browser_runs_cleanup_even_when_stop_fails(
+    tmp_path: Path,
+) -> None:
+    mgr = _mgr(tmp_path)
+    cleanup_scripts: list[str] = []
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if cmd and cmd[0] == "/bin/sh":
+            cleanup_scripts.append(cmd[2])
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd and cmd[0] == "supervisorctl":
+            return MagicMock(returncode=1, stdout="", stderr="ERROR: gone\n")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.close_browser()
+
+    assert outcome == "failed"
+    assert err is not None and "gone" in err
+    # Cleanup still ran despite the supervisor stop failure.
+    assert len(cleanup_scripts) == 1
+    assert "pkill -f '[X]vnc :1 '" in cleanup_scripts[0]
+
+
+def test_close_browser_failed_when_cleanup_times_out(
+    tmp_path: Path,
+) -> None:
+    import subprocess as _sp
+
+    mgr = _mgr(tmp_path)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if cmd and cmd[0] == "/bin/sh":
+            raise _sp.TimeoutExpired(cmd, 30.0)
+        return MagicMock(returncode=0, stdout="stopped\n", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.close_browser()
+
+    assert outcome == "failed"
+    assert err is not None

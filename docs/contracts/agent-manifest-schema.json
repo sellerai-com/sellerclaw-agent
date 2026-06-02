@@ -48,6 +48,7 @@
       "required": ["main_agent"],
       "properties": {
         "thinking_default": { "type": "string" },
+        "reasoning_default": { "type": "string", "enum": ["on", "off", "stream"] },
         "model_default": { "type": "string" },
         "browser_enabled_default": { "type": "boolean" },
         "image_generation_default": { "type": "boolean" },
@@ -69,6 +70,14 @@
             "bot_token": { "type": "string" },
             "allowed_user_ids": { "type": "array", "items": { "type": "string" } },
             "allowed_group_ids": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "whatsapp": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "allowed_numbers": { "type": "array", "items": { "type": "string" } }
           }
         }
       }
@@ -94,6 +103,7 @@
     "modelInfo": {
       "type": "object",
       "additionalProperties": true,
+      "description": "reasoning/contextWindow/maxTokens are optional; non-frontier models omit them so OpenClaw applies its defaults.",
       "required": ["id"],
       "properties": {
         "id": { "type": "string" },
@@ -120,7 +130,19 @@
       "required": ["name", "content"],
       "properties": {
         "name": { "type": "string" },
-        "content": { "type": "string" }
+        "content": { "type": "string" },
+        "references": {
+          "type": "array",
+          "description": "Optional. The skill's references/ subtree, carried verbatim. Each entry is written alongside SKILL.md into the agent workspace at skills/<name>/<path>. Absent or empty when the skill has no reference files.",
+          "items": {
+            "type": "object",
+            "required": ["path", "content"],
+            "properties": {
+              "path": { "type": "string", "description": "Path relative to the skill directory, e.g. references/data-model.md." },
+              "content": { "type": "string" }
+            }
+          }
+        }
       }
     },
     "agentContent": {

@@ -17,7 +17,7 @@ services:
         # fixes built via runtime/build-openclaw-pinned.sh or the
         # openclaw-pinned.yml GitHub Actions workflow.
         OPENCLAW_REPO: "${OPENCLAW_REPO:-ghcr.io/openclaw/openclaw}"
-        OPENCLAW_TAG: "${OPENCLAW_TAG:-2026.5.20}"
+        OPENCLAW_TAG: "${OPENCLAW_TAG:-2026.5.27}"
     ports:
       - "127.0.0.1:8001:8001"
       - "${OPENCLAW_PORT_GATEWAY:-7788}:7788"
@@ -28,6 +28,12 @@ services:
       - ./.openclaw/openclaw-config-bundle:/opt/config-bundle
       # Runtime OpenClaw home: workspace-*/MEMORY.md, agents, synced from bundle on startup
       - ./.openclaw/openclaw-state:/home/node/.openclaw
+      # Developer-only: when SELLERCLAW_CLI_LOCAL_PATH is set in dev.env, mount the local
+      # sellerclaw-cli checkout so the entrypoint can `uv pip install -e` it system-wide
+      # without an image rebuild. When unset, the always-empty .no-local-cli/ placeholder
+      # is mounted and the entrypoint detects no pyproject.toml → no-op. Never populated
+      # in production / CI (dev.env is gitignored).
+      - "${SELLERCLAW_CLI_LOCAL_PATH:-./runtime/.no-local-cli}:/opt/sellerclaw-cli-src:ro"
     environment:
       SELLERCLAW_DATA_DIR: /data
       SELLERCLAW_API_URL: "${SELLERCLAW_API_URL:-http://host.docker.internal:8000}"

@@ -76,6 +76,7 @@ def make_assembled_agent() -> Callable[..., AssembledAgentConfig]:
         heartbeat_md: str | None = None,
         thinking_default: str | None = None,
         skills: dict[str, str] | None = None,
+        skill_references: dict[str, dict[str, str]] | None = None,
     ) -> AssembledAgentConfig:
         return AssembledAgentConfig(
             agent_id=agent_id,
@@ -95,6 +96,7 @@ def make_assembled_agent() -> Callable[..., AssembledAgentConfig]:
             heartbeat_md=heartbeat_md,
             thinking_default=thinking_default,
             skills=skills if skills is not None else {"file-storage": "# File Storage"},
+            skill_references=skill_references if skill_references is not None else {},
         )
 
     return _make

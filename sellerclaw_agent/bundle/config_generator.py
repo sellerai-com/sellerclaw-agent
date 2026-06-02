@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -35,6 +36,12 @@ OPENCLAW_BUNDLE_CONSOLE_STYLE = "pretty"
 OPENCLAW_BUNDLE_REDACT_SENSITIVE = "tools"
 
 OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 30000
+
+# Bundled OpenClaw skills allowed in every agent workspace. All other bundled skills are
+# dropped at load time; workspace/manifest skills and extra-dir skills are unaffected.
+# Keep the list minimal: SellerClaw business flows live in manifest skills, not OpenClaw
+# stock skills (meme-maker, taskflow, dev debuggers, etc.).
+OPENCLAW_BUNDLE_ALLOWED_SKILLS: tuple[str, ...] = ("healthcheck",)
 
 # Local sellerclaw-agent HTTP port inside the runtime container; plugins call back to it
 # via loopback for media upload proxying. Kept as a module constant so bundle tests can
@@ -83,11 +90,14 @@ def _build_control_ui_config(
 def _merge_openclaw_channels(
     *,
     telegram_channel: dict[str, object] | None,
+    whatsapp_channel: dict[str, object] | None,
     sellerclaw_ui: dict[str, object],
 ) -> dict[str, object]:
     channels: dict[str, object] = {"sellerclaw-ui": sellerclaw_ui}
     if telegram_channel is not None:
         channels["telegram"] = telegram_channel
+    if whatsapp_channel is not None:
+        channels["whatsapp"] = whatsapp_channel
     return channels
 
 
@@ -106,6 +116,8 @@ def generate_openclaw_config(
     telegram_bot_token: str,
     telegram_allowed_user_ids: tuple[str, ...],
     telegram_allowed_group_ids: tuple[str, ...],
+    whatsapp_enabled: bool = False,
+    whatsapp_allowed_numbers: tuple[str, ...] = (),
     allowed_origins: tuple[str, ...] = (),
     browser_enabled: bool = True,
     web_search_enabled: bool = False,
@@ -113,6 +125,7 @@ def generate_openclaw_config(
     primary_channel: str = "sellerclaw-ui",
     model_defaults: ModelDefaults,
     thinking_default: str = "adaptive",
+    reasoning_default: str = "off",
     cron_enabled: bool = True,
     web_fetch_enabled: bool = True,
 ) -> str:
@@ -120,9 +133,10 @@ def generate_openclaw_config(
 
     ``providers`` is the fully built ``models.providers`` mapping (manifest-driven,
     assembled by the bundle builder). ``model_defaults`` carries the manifest-derived
-    ``agents.defaults`` model blocks. ``thinking_default`` is likewise resolved from
-    the manifest by the caller. Per-agent heartbeat is disabled (no ``heartbeat`` block
-    is emitted for any agent).
+    ``agents.defaults`` model blocks. ``thinking_default`` / ``reasoning_default`` are
+    likewise resolved from the manifest by the caller and emitted under
+    ``agents.defaults`` (``thinkingDefault`` / ``reasoningDefault``). Per-agent heartbeat
+    is disabled (no ``heartbeat`` block is emitted for any agent).
     """
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)
@@ -154,6 +168,29 @@ def generate_openclaw_config(
             {
                 "agentId": entry_point,
                 "match": {"channel": "telegram"},
+            },
+        ]
+
+    # WhatsApp (personal account, Baileys). DM-only: groupPolicy is hard-disabled, so the
+    # agent never reads or replies in WhatsApp groups. No credential is emitted — the session
+    # is paired (QR) and persisted in OpenClaw's default whatsapp authDir on the agent. Phone
+    # numbers are normalized to digits (OpenClaw matches allowFrom on digits-only E.164).
+    whatsapp_allow_from = [
+        digits for uid in whatsapp_allowed_numbers if (digits := re.sub(r"\D", "", str(uid)))
+    ]
+    whatsapp_channel: dict[str, object] | None = None
+    whatsapp_bindings: list[dict[str, object]] = []
+    if whatsapp_enabled:
+        whatsapp_channel = {
+            "enabled": True,
+            "dmPolicy": "allowlist" if whatsapp_allow_from else "open",
+            "allowFrom": whatsapp_allow_from,
+            "groupPolicy": "disabled",
+        }
+        whatsapp_bindings = [
+            {
+                "agentId": entry_point,
+                "match": {"channel": "whatsapp"},
             },
         ]
 
@@ -211,7 +248,17 @@ def generate_openclaw_config(
             "name": agent.name,
             "workspace": f"/home/node/.openclaw/workspace-{agent.agent_id}",
             "model": agent.model_ref,
-            "tools": {"allow": list(agent.tools_allow), "deny": list(agent.tools_deny)},
+            "tools": {
+                "allow": list(agent.tools_allow),
+                # Deny OpenClaw builtin media tools: media generation goes through
+                # sellerclaw-cli (cloud media endpoints), because the builtin tools' async
+                # completion delivery is lost on the request-scoped sellerclaw-ui channel.
+                "deny": list(
+                    dict.fromkeys(
+                        [*agent.tools_deny, "image_generate", "video_generate", "music_generate"]
+                    )
+                ),
+            },
         }
         if agent.is_entry_point:
             payload["default"] = True
@@ -249,6 +296,7 @@ def generate_openclaw_config(
         "bootstrapMaxChars": OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
         "model": model_defaults.model,
         "thinkingDefault": thinking_default,
+        "reasoningDefault": reasoning_default,
         "blockStreamingDefault": "on",
         "blockStreamingChunk": {
             "minChars": 800,
@@ -265,11 +313,10 @@ def generate_openclaw_config(
             },
         },
     }
-    # Media model blocks are emitted only when the manifest supplied the source field.
-    if model_defaults.image_generation_model is not None:
-        agents_defaults["imageGenerationModel"] = model_defaults.image_generation_model
-    if model_defaults.video_generation_model is not None:
-        agents_defaults["videoGenerationModel"] = model_defaults.video_generation_model
+    # image/video model blocks are intentionally NOT emitted: media generation goes through
+    # sellerclaw-cli (cloud media endpoints) and the builtin image_generate/video_generate tools
+    # (which read these blocks) are denied. The LiteLLM {user}image / {user}video groups stay
+    # registered cloud-side and are used by the media endpoints under the user's virtual key.
     if model_defaults.pdf_model is not None:
         agents_defaults["pdfModel"] = model_defaults.pdf_model
 
@@ -314,6 +361,7 @@ def generate_openclaw_config(
         },
         "bindings": [
             *telegram_bindings,
+            *whatsapp_bindings,
             {
                 "agentId": entry_point,
                 "match": {"channel": "sellerclaw-ui"},
@@ -326,6 +374,7 @@ def generate_openclaw_config(
         },
         "channels": _merge_openclaw_channels(
             telegram_channel=telegram_channel,
+            whatsapp_channel=whatsapp_channel,
             sellerclaw_ui=sellerclaw_ui_plugin_config,
         ),
         "plugins": {
@@ -361,9 +410,33 @@ def generate_openclaw_config(
             "executablePath": "/usr/local/bin/openclaw_chrome",
             "remoteCdpTimeoutMs": 10000,
             "remoteCdpHandshakeTimeoutMs": 30000,
+            # Disable in-page JS execution (browser ``evaluate``). Agents drive pages via
+            # snapshot/click/type; running arbitrary JS against untrusted pages is an
+            # injection/abuse surface we don't need.
+            "evaluateEnabled": False,
+            # Capture page snapshots with the compact "efficient" preset (~8k vs ~40-80k
+            # chars) to cut token cost on large pages.
+            "snapshotDefaults": {"mode": "efficient"},
             "profiles": {},
         },
-        "cron": {"enabled": cron_enabled},
+        "media": {
+            # Auto-clean persisted media (inbound uploads, browser captures, outbound
+            # files) after 7 days so the local media tree doesn't grow unbounded.
+            "ttlHours": 168,
+        },
+        "cron": {
+            "enabled": cron_enabled,
+            # Redirect cron failure notifications to the cloud error sink instead of
+            # announcing "Cron job … failed" as a chat message to the seller. The
+            # runtime POSTs the failure payload to ``failureDestination.to`` with
+            # ``Authorization: Bearer <webhookToken>``; the cloud authenticates that
+            # token via ``get_agent_user_id`` (same agent API key the channel uses).
+            "webhookToken": (agent_api_key or "").strip(),
+            "failureDestination": {
+                "mode": "webhook",
+                "to": f"{sellerclaw_api_url.strip().rstrip('/')}/internal/openclaw/errors",
+            },
+        },
         "tools": {
             "web": {
                 "fetch": {"enabled": web_fetch_enabled},
@@ -372,6 +445,9 @@ def generate_openclaw_config(
             "exec": {"security": "full", "ask": "off"},
             "sessions": {"visibility": "all"},
             "agentToAgent": {"enabled": True},
+        },
+        "skills": {
+            "allowBundled": list(OPENCLAW_BUNDLE_ALLOWED_SKILLS),
         },
     }
     return json.dumps(config_payload, indent=2)

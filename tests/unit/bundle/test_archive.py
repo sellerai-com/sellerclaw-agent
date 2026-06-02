@@ -111,6 +111,44 @@ def test_build_workspaces_from_assembled_includes_heartbeat_md_when_set(
     assert ws[f"{agent.agent_id}/HEARTBEAT.md"] == "# HEARTBEAT.md\n- check X"
 
 
+def test_build_workspaces_from_assembled_writes_skill_reference_files(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    agent = make_assembled_agent(
+        agent_id="shopify",
+        skills={"shopify-products": "# Products"},
+        skill_references={
+            "shopify-products": {
+                "references/data-model.md": "# Wire model",
+                "references/extra/notes.txt": "nested note",
+            }
+        },
+    )
+    ws = build_workspaces_from_assembled([agent])
+    assert ws["shopify/skills/shopify-products/SKILL.md"] == "# Products"
+    assert ws["shopify/skills/shopify-products/references/data-model.md"] == "# Wire model"
+    assert ws["shopify/skills/shopify-products/references/extra/notes.txt"] == "nested note"
+
+
+def test_skill_reference_files_change_the_gateway_version(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """A reference-only edit must produce a different bundle version so it gets re-delivered."""
+    without_ref = make_assembled_agent(agent_id="shopify", skills={"p": "# P"})
+    with_ref = make_assembled_agent(
+        agent_id="shopify",
+        skills={"p": "# P"},
+        skill_references={"p": {"references/data-model.md": "# Wire model"}},
+    )
+    version_without = build_gateway_version(
+        openclaw_config="{}", workspaces=build_workspaces_from_assembled([without_ref])
+    )
+    version_with = build_gateway_version(
+        openclaw_config="{}", workspaces=build_workspaces_from_assembled([with_ref])
+    )
+    assert version_without != version_with
+
+
 def test_build_gateway_archive_empty_workspaces() -> None:
     payload = GatewayArchivePayload(
         openclaw_config="{}",

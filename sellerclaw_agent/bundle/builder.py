@@ -60,9 +60,8 @@ def derive_agent_tools(
     is_entry_point: bool,
     has_subagents: bool,
     browser_enabled: bool,
-    image_generation: bool,
-    video_generation: bool,
     cron_enabled: bool,
+    whatsapp_enabled: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Derive the OpenClaw ``tools.allow`` / ``tools.deny`` lists for one agent.
 
@@ -70,14 +69,22 @@ def derive_agent_tools(
 
     - Entry point (supervisor): broad allow; ``group:sessions`` when it has subagents,
       otherwise ``group:fs`` + ``process``. ``cron`` only here, and only when enabled.
+      ``whatsapp_login`` (in-chat QR pairing tool) only here, and only when WhatsApp is on.
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
-    - ``browser`` is present per agent only when ``browser_enabled``; ``image_generate`` /
-      ``video_generate`` only when the matching flag is set — for every agent.
+    - ``browser`` is present per agent only when ``browser_enabled``. The builtin
+      ``image_generate`` / ``video_generate`` tools are **never** allowed here: media generation
+      goes through sellerclaw-cli (cloud endpoints) and the builtins are denied in config
+      generation, so adding them to ``allow`` only produces an "unknown tool" warning.
     """
     if is_entry_point:
         allow = ["group:web", "web_search", "message", "browser", "exec", "pdf"]
         if cron_enabled:
             allow.append("cron")
+        # WhatsApp links a personal account by QR; the agent runs ``whatsapp_login`` in the
+        # chat to render the QR image for the seller to scan. Only granted when the channel
+        # is enabled so the tool surface stays minimal otherwise.
+        if whatsapp_enabled:
+            allow.append("whatsapp_login")
         if has_subagents:
             allow = ["group:sessions", *allow]
         else:
@@ -101,10 +108,6 @@ def derive_agent_tools(
             "cron",
             "gateway",
         ]
-    if image_generation:
-        allow.append("image_generate")
-    if video_generation:
-        allow.append("video_generate")
     if not browser_enabled:
         allow = [tool for tool in allow if tool != "browser"]
     return allow, deny
@@ -135,32 +138,76 @@ def _openclaw_model_ref(manifest: GenericManifest, ref: ModelRef) -> str:
     return f"{ref.group}/{prefix}{ref.model}"
 
 
-def _build_provider_models(group: ModelGroup) -> list[dict[str, object]]:
+# LiteLLM virtual media group role ids. Together with the manifest's image/video model refs
+# (see ``_media_model_refs``), these are NOT rendered into OpenClaw ``models.providers``: media
+# generation goes through sellerclaw-cli (cloud endpoints), the builtin image_generate /
+# video_generate tools are denied, and the underlying media models (e.g. Veo) are unused by
+# OpenClaw. The ``{user}image`` / ``{user}video`` groups stay registered in LiteLLM (cloud-side)
+# for the media endpoints (under the user's virtual key).
+_MEDIA_VIRTUAL_GROUP_IDS = frozenset({"image", "video"})
+
+
+def _media_model_refs(llm: object) -> set[tuple[str, str]]:
+    """``(provider, model_id)`` pairs the manifest designates as image/video models.
+
+    Catches both the LiteLLM virtual ``image``/``video`` groups and the underlying media
+    models (e.g. ``google/veo-...``), so neither is rendered into the config.
+    """
+    refs: set[tuple[str, str]] = set()
+    candidates: list[ModelRef | None] = [
+        getattr(llm, "image_model_primary", None),
+        getattr(llm, "video_model_primary", None),
+        *getattr(llm, "image_model_fallbacks", ()),
+        *getattr(llm, "video_model_fallbacks", ()),
+    ]
+    for ref in candidates:
+        if ref is not None:
+            refs.add((ref.group, ref.model))
+    return refs
+
+
+def _build_provider_models(
+    provider_name: str,
+    group: ModelGroup,
+    media_refs: set[tuple[str, str]],
+) -> list[dict[str, object]]:
     """Render a group's OpenClaw ``models[]`` list from its manifest metadata.
 
-    The group's ``model_name_prefix`` is applied to each model id (non-empty only for
-    the LiteLLM virtual group); all other metadata is copied verbatim.
+    The group's ``model_name_prefix`` is applied to each model id (non-empty only for the
+    LiteLLM virtual group); all other metadata is copied verbatim. Image/video models are
+    skipped (``media_refs`` + the LiteLLM virtual media groups).
     """
-    return [
-        {
+    models: list[dict[str, object]] = []
+    for m in group.models:
+        if (provider_name, m.id) in media_refs:
+            continue
+        if group.model_name_prefix and m.id in _MEDIA_VIRTUAL_GROUP_IDS:
+            continue
+        entry: dict[str, object] = {
             "id": f"{group.model_name_prefix}{m.id}",
             "name": m.name,
-            "reasoning": m.reasoning,
             "input": list(m.input),
-            "contextWindow": m.context_window,
-            "maxTokens": m.max_tokens,
         }
-        for m in group.models
-    ]
+        # Optional sizing/reasoning keys flow through only when the manifest set them
+        # (frontier model only); otherwise OpenClaw applies its own defaults.
+        if m.reasoning is not None:
+            entry["reasoning"] = m.reasoning
+        if m.context_window is not None:
+            entry["contextWindow"] = m.context_window
+        if m.max_tokens is not None:
+            entry["maxTokens"] = m.max_tokens
+        models.append(entry)
+    return models
 
 
 def build_providers(manifest: GenericManifest) -> dict[str, object]:
     """Build the OpenClaw ``models.providers`` mapping from ``manifest.llm.groups``.
 
-    Each provider is built strictly from its own group: ``baseUrl`` / ``apiKey`` come
-    from the group, ``api`` is emitted only when the group declares one, and the
-    ``models[]`` list carries the group's (prefixed) model ids + metadata.
+    Each provider is built strictly from its own group: ``baseUrl`` / ``apiKey`` come from
+    the group, ``api`` is emitted only when the group declares one, and the ``models[]`` list
+    carries the group's (prefixed) model ids + metadata — minus image/video models.
     """
+    media_refs = _media_model_refs(manifest.llm)
     providers: dict[str, object] = {}
     for name, group in manifest.llm.groups.items():
         entry: dict[str, object] = {
@@ -169,7 +216,7 @@ def build_providers(manifest: GenericManifest) -> dict[str, object]:
         }
         if group.api is not None:
             entry["api"] = group.api
-        entry["models"] = _build_provider_models(group)
+        entry["models"] = _build_provider_models(name, group, media_refs)
         providers[name] = entry
     return providers
 
@@ -278,6 +325,8 @@ class BundleBuilder:
             telegram_bot_token=manifest.channels.telegram.bot_token,
             telegram_allowed_user_ids=manifest.channels.telegram.allowed_user_ids,
             telegram_allowed_group_ids=manifest.channels.telegram.allowed_group_ids,
+            whatsapp_enabled=manifest.channels.whatsapp.enabled,
+            whatsapp_allowed_numbers=manifest.channels.whatsapp.allowed_numbers,
             allowed_origins=allowed_origins,
             browser_enabled=manifest.agents.browser_enabled_default,
             web_search_enabled=web_search_enabled,
@@ -285,6 +334,7 @@ class BundleBuilder:
             primary_channel=manifest.channels.primary,
             model_defaults=build_model_defaults(manifest),
             thinking_default=manifest.agents.thinking_default,
+            reasoning_default=manifest.agents.reasoning_default,
             cron_enabled=manifest.cron_enabled,
             web_fetch_enabled=manifest.web_fetch_enabled,
         )
@@ -323,9 +373,8 @@ class BundleBuilder:
             is_entry_point=agent.is_entry_point,
             has_subagents=bool(agent.subagent_ids),
             browser_enabled=agent.browser_enabled,
-            image_generation=agent.image_generation,
-            video_generation=agent.video_generation,
             cron_enabled=manifest.cron_enabled,
+            whatsapp_enabled=manifest.channels.whatsapp.enabled,
         )
         content = agent.content
         # Heartbeat is honored only for the main (entry-point) agent, matching prior behavior.
@@ -351,4 +400,5 @@ class BundleBuilder:
             heartbeat_md=heartbeat_md,
             thinking_default=agent.thinking,
             skills=content.skills_mapping(),
+            skill_references=content.skill_references_mapping(),
         )

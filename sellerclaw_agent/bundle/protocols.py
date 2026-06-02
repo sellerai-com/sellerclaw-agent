@@ -56,3 +56,6 @@ class AssembledAgentLike(Protocol):
 
     @property
     def skills(self) -> dict[str, str]: ...
+
+    @property
+    def skill_references(self) -> dict[str, dict[str, str]]: ...

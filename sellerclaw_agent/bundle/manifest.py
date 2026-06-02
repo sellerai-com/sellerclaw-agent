@@ -15,14 +15,19 @@ class ModelRef:
 
 @dataclass(frozen=True)
 class ModelInfo:
-    """OpenClaw model metadata entry inside a provider group."""
+    """OpenClaw model metadata entry inside a provider group.
+
+    ``reasoning`` / ``context_window`` / ``max_tokens`` are optional: when the manifest
+    omits them (every non-frontier model does), they stay ``None`` and are dropped from
+    the emitted OpenClaw config so the runtime applies its own defaults.
+    """
 
     id: str
     name: str
-    reasoning: bool
     input: tuple[str, ...]
-    context_window: int
-    max_tokens: int
+    reasoning: bool | None = None
+    context_window: int | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -68,9 +73,18 @@ class AgentContent:
     tools_doc: str | None = None
     heartbeat: str | None = None
     skills: tuple[tuple[str, str], ...] = ()
+    # Per-skill references/ files: (skill_name, ((path, content), ...)). Stored as tuples to
+    # keep the frozen dataclass hashable, mirroring ``skills``.
+    skill_references: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
 
     def skills_mapping(self) -> dict[str, str]:
         return {name: content for name, content in self.skills}
+
+    def skill_references_mapping(self) -> dict[str, dict[str, str]]:
+        return {
+            name: {path: content for path, content in files}
+            for name, files in self.skill_references
+        }
 
 
 @dataclass(frozen=True)
@@ -98,6 +112,18 @@ class TelegramManifest:
 
 
 @dataclass(frozen=True)
+class WhatsappManifest:
+    """WhatsApp personal-account channel (DM-only). Groups are intentionally unsupported.
+
+    No credential is carried: the Baileys session is paired (QR) and persisted on the agent.
+    Only the DM allowlist (E.164 phone numbers) and the on/off flag travel in the manifest.
+    """
+
+    enabled: bool = False
+    allowed_numbers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class WebSearchManifest:
     """Web search is configured only on the monolith; the manifest carries a single toggle."""
 
@@ -108,6 +134,7 @@ class WebSearchManifest:
 class ChannelsManifest:
     primary: str = "sellerclaw-ui"
     telegram: TelegramManifest = field(default_factory=TelegramManifest)
+    whatsapp: WhatsappManifest = field(default_factory=WhatsappManifest)
 
 
 @dataclass(frozen=True)
@@ -115,6 +142,7 @@ class AgentsManifest:
     """Agents block: defaults + the main agent + ordered subagents."""
 
     thinking_default: str
+    reasoning_default: str
     model_default: str
     browser_enabled_default: bool
     image_generation_default: bool
@@ -231,6 +259,13 @@ def _coerce_int(value: object, default: int = 0) -> int:
     raise TypeError(f"Expected int-like value, got {type(value)}")
 
 
+def _optional_int(value: object) -> int | None:
+    """Coerce an int-like value, returning ``None`` when the key is absent/null."""
+    if value is None:
+        return None
+    return _coerce_int(value)
+
+
 def _parse_model_info(value: object, label: str) -> ModelInfo:
     data = _require_mapping(value, label)
     if "id" not in data or data.get("id") is None:
@@ -238,13 +273,14 @@ def _parse_model_info(value: object, label: str) -> ModelInfo:
     model_id = str(data["id"]).strip()
     if not model_id:
         raise ValueError(f"{label}.id must not be empty")
+    reasoning_raw = data.get("reasoning")
     return ModelInfo(
         id=model_id,
         name=str(data.get("name", model_id)),
-        reasoning=bool(data.get("reasoning", False)),
         input=_tuple_str(data.get("input")),
-        context_window=_coerce_int(data.get("contextWindow", 0)),
-        max_tokens=_coerce_int(data.get("maxTokens", 0)),
+        reasoning=None if reasoning_raw is None else bool(reasoning_raw),
+        context_window=_optional_int(data.get("contextWindow")),
+        max_tokens=_optional_int(data.get("maxTokens")),
     )
 
 
@@ -395,6 +431,7 @@ def _parse_agent_content(value: object, label: str) -> AgentContent:
     if not isinstance(skills_raw, (list, tuple)):
         raise TypeError(f"{label}.skills must be a list")
     skills: list[tuple[str, str]] = []
+    skill_references: list[tuple[str, tuple[tuple[str, str], ...]]] = []
     for skill in skills_raw:
         skill_map = _require_mapping(skill, f"{label}.skills[]")
         name = str(skill_map.get("name") or "").strip()
@@ -402,6 +439,9 @@ def _parse_agent_content(value: object, label: str) -> AgentContent:
         if not name:
             raise ValueError(f"{label}.skills[].name must not be empty")
         skills.append((name, content))
+        references = _parse_skill_references(skill_map.get("references"), f"{label}.skills[{name}]")
+        if references:
+            skill_references.append((name, references))
 
     return AgentContent(
         instructions=instructions,
@@ -411,7 +451,25 @@ def _parse_agent_content(value: object, label: str) -> AgentContent:
         tools_doc=_optional_str(data.get("tools_doc")),
         heartbeat=_optional_str(data.get("heartbeat")),
         skills=tuple(skills),
+        skill_references=tuple(skill_references),
     )
+
+
+def _parse_skill_references(value: object, label: str) -> tuple[tuple[str, str], ...]:
+    """Parse a skill's optional ``references`` list. Absent/empty is fine (backward-compatible)."""
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{label}.references must be a list")
+    references: list[tuple[str, str]] = []
+    for reference in value:
+        reference_map = _require_mapping(reference, f"{label}.references[]")
+        path = str(reference_map.get("path") or "").strip()
+        content = str(reference_map.get("content") or "")
+        if not path:
+            raise ValueError(f"{label}.references[].path must not be empty")
+        references.append((path, content))
+    return tuple(references)
 
 
 def _optional_str(value: object) -> str | None:
@@ -479,6 +537,8 @@ def _parse_agent_spec(
 def _parse_agents(value: object) -> AgentsManifest:
     data = _require_mapping(value, "agents")
     thinking_default = str(data.get("thinking_default") or "adaptive").strip() or "adaptive"
+    # Reasoning-visibility default for every agent. Absent -> OpenClaw's own default ("off").
+    reasoning_default = str(data.get("reasoning_default") or "off").strip() or "off"
     model_default = str(data.get("model_default") or "primary").strip() or "primary"
     if model_default not in ("primary", "secondary"):
         raise ValueError(
@@ -525,6 +585,7 @@ def _parse_agents(value: object) -> AgentsManifest:
 
     return AgentsManifest(
         thinking_default=thinking_default,
+        reasoning_default=reasoning_default,
         model_default=model_default,
         browser_enabled_default=browser_enabled_default,
         image_generation_default=image_generation_default,
@@ -534,7 +595,7 @@ def _parse_agents(value: object) -> AgentsManifest:
     )
 
 
-_ALLOWED_PRIMARY_CHANNELS = ("sellerclaw-ui", "telegram")
+_ALLOWED_PRIMARY_CHANNELS = ("sellerclaw-ui", "telegram", "whatsapp")
 
 
 def _parse_channels(value: object) -> ChannelsManifest:
@@ -578,7 +639,33 @@ def _parse_channels(value: object) -> ChannelsManifest:
         if not isinstance(allowed_user_ids_raw, list):
             raise ValueError("channels.telegram.allowed_user_ids must be a list")
 
-    return ChannelsManifest(primary=primary, telegram=telegram)
+    whatsapp_present = "whatsapp" in data and data.get("whatsapp") is not None
+    wa_raw = data.get("whatsapp") or {}
+    if not isinstance(wa_raw, dict):
+        raise ValueError("channels.whatsapp must be a mapping")
+    whatsapp = WhatsappManifest(
+        enabled=bool(wa_raw.get("enabled", False)),
+        allowed_numbers=_tuple_str(wa_raw.get("allowed_numbers")),
+    )
+
+    if primary == "whatsapp":
+        if not whatsapp_present:
+            raise ValueError("channels.whatsapp is required when channels.primary is 'whatsapp'")
+        if not whatsapp.enabled:
+            raise ValueError(
+                "channels.whatsapp.enabled must be true when channels.primary is 'whatsapp'"
+            )
+
+    if whatsapp.enabled:
+        allowed_numbers_raw = wa_raw.get("allowed_numbers")
+        if allowed_numbers_raw is None:
+            raise ValueError(
+                "channels.whatsapp.allowed_numbers is required when whatsapp is enabled"
+            )
+        if not isinstance(allowed_numbers_raw, list):
+            raise ValueError("channels.whatsapp.allowed_numbers must be a list")
+
+    return ChannelsManifest(primary=primary, telegram=telegram, whatsapp=whatsapp)
 
 
 def _normalize_agent_api_base_path(value: object) -> str:
@@ -655,14 +742,19 @@ def _model_ref_to_mapping(ref: ModelRef) -> dict[str, str]:
 
 
 def _model_info_to_mapping(info: ModelInfo) -> dict[str, object]:
-    return {
+    out: dict[str, object] = {
         "id": info.id,
         "name": info.name,
-        "reasoning": info.reasoning,
         "input": list(info.input),
-        "contextWindow": info.context_window,
-        "maxTokens": info.max_tokens,
     }
+    # Optional sizing/reasoning keys are emitted only when set (frontier model only).
+    if info.reasoning is not None:
+        out["reasoning"] = info.reasoning
+    if info.context_window is not None:
+        out["contextWindow"] = info.context_window
+    if info.max_tokens is not None:
+        out["maxTokens"] = info.max_tokens
+    return out
 
 
 def _model_group_to_mapping(group: ModelGroup) -> dict[str, object]:
@@ -714,6 +806,7 @@ def _llm_to_mapping(llm: LlmManifest) -> dict[str, object]:
 
 
 def _agent_content_to_mapping(content: AgentContent) -> dict[str, object]:
+    references_by_skill = dict(content.skill_references)
     return {
         "instructions": content.instructions,
         "soul": content.soul,
@@ -721,8 +814,20 @@ def _agent_content_to_mapping(content: AgentContent) -> dict[str, object]:
         "user_context": content.user_context,
         "tools_doc": content.tools_doc,
         "heartbeat": content.heartbeat,
-        "skills": [{"name": name, "content": body} for name, body in content.skills],
+        "skills": [
+            _skill_to_mapping(name, body, references_by_skill.get(name, ()))
+            for name, body in content.skills
+        ],
     }
+
+
+def _skill_to_mapping(
+    name: str, content: str, references: tuple[tuple[str, str], ...]
+) -> dict[str, object]:
+    mapping: dict[str, object] = {"name": name, "content": content}
+    if references:
+        mapping["references"] = [{"path": path, "content": body} for path, body in references]
+    return mapping
 
 
 def _agent_spec_to_mapping(spec: AgentSpec) -> dict[str, object]:
@@ -741,6 +846,7 @@ def _agent_spec_to_mapping(spec: AgentSpec) -> dict[str, object]:
 def _agents_to_mapping(agents: AgentsManifest) -> dict[str, object]:
     return {
         "thinking_default": agents.thinking_default,
+        "reasoning_default": agents.reasoning_default,
         "model_default": agents.model_default,
         "browser_enabled_default": agents.browser_enabled_default,
         "image_generation_default": agents.image_generation_default,

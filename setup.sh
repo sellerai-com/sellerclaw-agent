@@ -393,6 +393,34 @@ if (( NEED_ENV_FILE )); then
 fi
 
 # ---------------------------------------------------------------------------
+# Resolve OpenClaw runtime version. Honors the OPENCLAW_TAG env override (from
+# the env file or the caller's shell); otherwise parses the default pinned in
+# docker-compose.yml so we never drift from what `docker compose up` resolves.
+# ---------------------------------------------------------------------------
+
+resolve_openclaw_tag() {
+  if [[ -n "${OPENCLAW_TAG:-}" ]]; then
+    printf '%s' "$OPENCLAW_TAG"
+    return 0
+  fi
+  if [[ -r "$SCRIPT_DIR/docker-compose.yml" ]]; then
+    grep -oE 'OPENCLAW_TAG:-[^}]+' "$SCRIPT_DIR/docker-compose.yml" \
+      | head -n1 \
+      | sed 's/OPENCLAW_TAG:-//'
+  fi
+}
+
+if (( NEED_DOCKER )); then
+  log_step "Checking OpenClaw"
+  openclaw_tag="$(resolve_openclaw_tag)"
+  if [[ -n "$openclaw_tag" ]]; then
+    log_ok "openclaw: ${openclaw_tag}"
+  else
+    log_warn "Could not determine OpenClaw version."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Resolve agent version from git tags (single source of truth, no hardcode).
 # Forwarded to docker-compose as the SELLERCLAW_AGENT_VERSION build-arg and
 # baked into the runtime image as ENV. Non-fatal: if git or tags are missing,
@@ -407,6 +435,27 @@ if [[ -z "${SELLERCLAW_AGENT_VERSION:-}" ]] && have_cmd git && [[ -d "$SCRIPT_DI
   fi
 fi
 
+# When installed from a ZIP tarball (no .git folder) the build backend cannot
+# read a version from VCS. pyproject.toml falls back to "0.0.0+unknown", but
+# we warn the user so they know self-update and `./setup.sh start` after a
+# `git pull` won't work — they'll need a proper `git clone` to upgrade.
+if [[ ! -d "$SCRIPT_DIR/.git" ]] && (( NEED_INSTALLER || NEED_CLI_UPGRADE )); then
+  log_warn "No .git directory detected — looks like a ZIP install."
+  log_warn "  The agent will run with version '0.0.0+unknown' and you won't be"
+  log_warn "  able to upgrade via 'git pull'. For updates, clone the repository:"
+  log_warn "    git clone https://github.com/sellerai-com/sellerclaw-agent.git"
+fi
+
+# Paths containing non-ASCII characters or spaces frequently break Python
+# packaging tools (uv build cache, hatchling, setuptools). Warn early so the
+# user can move the project to a clean path before the first build attempt.
+if [[ "$SCRIPT_DIR" =~ [^[:ascii:]] ]] || [[ "$SCRIPT_DIR" == *" "* ]]; then
+  log_warn "Project path contains spaces or non-ASCII characters:"
+  log_warn "    $SCRIPT_DIR"
+  log_warn "  This can break Docker/uv/hatchling. If the install fails, move the"
+  log_warn "  project to a path like '\$HOME/sellerclaw-agent' and retry."
+fi
+
 # ---------------------------------------------------------------------------
 # Keep sellerclaw-cli current.
 #
@@ -418,12 +467,33 @@ fi
 # cached commands keep working.
 # ---------------------------------------------------------------------------
 
+report_cli_source() {
+  local lock="$SCRIPT_DIR/uv.lock"
+  [[ -f "$lock" ]] || return 0
+  local block version source_line
+  block=$(awk '
+    /^\[\[package\]\]/ { capture=0 }
+    /^name = "sellerclaw-cli"$/ { capture=1; next }
+    capture && /^$/ { exit }
+    capture { print }
+  ' "$lock")
+  [[ -n "$block" ]] || return 0
+  version=$(printf '%s\n' "$block" | awk -F'"' '$0 ~ /^version = / {print $2; exit}')
+  source_line=$(printf '%s\n' "$block" | awk '/^source = /{print; exit}')
+  if [[ "$source_line" == *"registry ="* ]]; then
+    log_ok "sellerclaw-cli v${version} (PyPI)"
+  else
+    log_ok "sellerclaw-cli v${version} (local build)"
+  fi
+}
+
 if (( NEED_CLI_UPGRADE )) && [[ -z "${SELLERCLAW_NO_CLI_UPGRADE:-}" ]]; then
   log_step "Updating SellerClaw CLI"
   if uv lock --upgrade-package sellerclaw-cli --quiet 2>/dev/null; then
-    log_ok "sellerclaw-cli resolved to the latest allowed release"
+    report_cli_source
   else
     log_warn "Could not refresh sellerclaw-cli (offline?); using the locked version."
+    report_cli_source
   fi
 fi
 

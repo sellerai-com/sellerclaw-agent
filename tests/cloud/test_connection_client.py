@@ -52,6 +52,48 @@ async def test_connect_success(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_report_cron_jobs_posts_snapshot_and_returns_true(tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/agent/cron/snapshot"
+        assert request.headers.get("authorization") == "Bearer access-1"
+        assert request.headers.get("content-type") == "application/json"
+        seen["body"] = _json_body(request)
+        return httpx.Response(204)
+
+    storage = _write_creds(tmp_path)
+    client = SellerClawConnectionClient(
+        credentials_storage=storage,
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    snapshot = {
+        "captured_at": "2026-05-25T12:00:00+00:00",
+        "snapshot_hash": "abc",
+        "jobs": [{"openclaw_job_id": "job-1", "name": "Daily"}],
+    }
+    accepted = await client.report_cron_jobs(snapshot)
+
+    assert accepted is True
+    assert seen["body"] == snapshot
+
+
+@pytest.mark.asyncio
+async def test_report_cron_jobs_raises_on_server_error(tmp_path: Path) -> None:
+    from sellerclaw_agent.cloud.exceptions import CloudConnectionError
+
+    storage = _write_creds(tmp_path)
+    client = SellerClawConnectionClient(
+        credentials_storage=storage,
+        base_url="http://example",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(503)),
+    )
+    with pytest.raises(CloudConnectionError):
+        await client.report_cron_jobs({"captured_at": "x", "jobs": []})
+
+
+@pytest.mark.asyncio
 async def test_ping_401_raises_cloud_auth_error(tmp_path: Path) -> None:
     from sellerclaw_agent.cloud.exceptions import CloudAuthError
 
