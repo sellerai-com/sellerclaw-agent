@@ -410,7 +410,7 @@ resolve_openclaw_tag() {
   fi
 }
 
-if (( NEED_DOCKER )); then
+if (( NEED_DOCKER )) && [[ "$SUBCMD" != "stop" ]]; then
   log_step "Checking OpenClaw"
   openclaw_tag="$(resolve_openclaw_tag)"
   if [[ -n "$openclaw_tag" ]]; then
