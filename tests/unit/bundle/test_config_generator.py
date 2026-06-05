@@ -462,8 +462,11 @@ def test_generate_openclaw_config_agent_model_comes_from_model_ref(
 def test_generate_openclaw_config_heartbeat_disabled_for_all_agents(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """Heartbeat is disabled: no ``heartbeat`` block is emitted for any agent or in
-    ``agents.defaults``. compaction / memory-flush still come from ``model_defaults``."""
+    """Heartbeat is disabled via an explicit ``agents.defaults.heartbeat.every = "0m"`` —
+    OpenClaw's default is an enabled 30m/1h poll, so omitting the block would leave it running.
+    It also pins the cheap ``simple`` tier (memory-flush group) as a cost guard in case heartbeat
+    is ever re-enabled. No per-agent heartbeat block is emitted. compaction / memory-flush still
+    come from ``model_defaults``."""
     raw = _generate(
         _supervisor_only(make_assembled_agent),
         model_defaults=ModelDefaults(
@@ -474,7 +477,7 @@ def test_generate_openclaw_config_heartbeat_disabled_for_all_agents(
     )
     payload = json.loads(raw)
     defaults = payload["agents"]["defaults"]
-    assert "heartbeat" not in defaults
+    assert defaults["heartbeat"] == {"every": "0m", "model": "litellm/u:abc/simple"}
     assert defaults["compaction"]["model"] == "litellm/u:abc/simple"
     assert defaults["compaction"]["memoryFlush"]["model"] == "litellm/u:abc/simple"
     for agent in payload["agents"]["list"]:

@@ -135,8 +135,10 @@ def generate_openclaw_config(
     assembled by the bundle builder). ``model_defaults`` carries the manifest-derived
     ``agents.defaults`` model blocks. ``thinking_default`` / ``reasoning_default`` are
     likewise resolved from the manifest by the caller and emitted under
-    ``agents.defaults`` (``thinkingDefault`` / ``reasoningDefault``). Per-agent heartbeat
-    is disabled (no ``heartbeat`` block is emitted for any agent).
+    ``agents.defaults`` (``thinkingDefault`` / ``reasoningDefault``). The agent heartbeat
+    is disabled for all agents via ``agents.defaults.heartbeat.every = "0m"`` — OpenClaw's
+    built-in default is an *enabled* 30m/1h poll, so the block must be emitted to turn it off
+    (omitting it leaves the default running).
     """
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)
@@ -319,6 +321,19 @@ def generate_openclaw_config(
     # registered cloud-side and are used by the media endpoints under the user's virtual key.
     if model_defaults.pdf_model is not None:
         agents_defaults["pdfModel"] = model_defaults.pdf_model
+
+    # Disable the OpenClaw agent heartbeat for every agent. Omitting the block is NOT enough:
+    # OpenClaw's built-in default is an enabled periodic poll (30m, or 1h under token auth)
+    # that runs a full premium-model turn each cycle and emits nothing useful here (our
+    # HEARTBEAT.md is empty). ``every: "0m"`` turns it off and also stops HEARTBEAT.md being
+    # injected into normal runs. Scheduled/proactive work runs via the separate ``cron``
+    # system, so this does not affect scheduled tasks.
+    #
+    # ``model`` is a belt-and-suspenders cost guard: heartbeat is off, but if it is ever
+    # re-enabled (cadence changed, or an OpenClaw default slips through), it must use the cheap
+    # ``simple`` tier — never the primary ``complex`` model with high thinking. We reuse the
+    # simple-tier group already resolved for memory-flush rather than thread a new manifest field.
+    agents_defaults["heartbeat"] = {"every": "0m", "model": model_defaults.memory_flush_model}
 
     config_payload = {
         "meta": {"lastTouchedAt": last_touched_at},
