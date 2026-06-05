@@ -126,6 +126,7 @@ def generate_openclaw_config(
     model_defaults: ModelDefaults,
     thinking_default: str = "adaptive",
     reasoning_default: str = "off",
+    heartbeat_every: str = "0m",
     cron_enabled: bool = True,
     web_fetch_enabled: bool = True,
 ) -> str:
@@ -135,8 +136,10 @@ def generate_openclaw_config(
     assembled by the bundle builder). ``model_defaults`` carries the manifest-derived
     ``agents.defaults`` model blocks. ``thinking_default`` / ``reasoning_default`` are
     likewise resolved from the manifest by the caller and emitted under
-    ``agents.defaults`` (``thinkingDefault`` / ``reasoningDefault``). Per-agent heartbeat
-    is disabled (no ``heartbeat`` block is emitted for any agent).
+    ``agents.defaults`` (``thinkingDefault`` / ``reasoningDefault``). The agent heartbeat
+    cadence is cloud-owned (``heartbeat_every``, from the manifest); ``"0m"`` disables the poll.
+    The block is always emitted because OpenClaw's built-in default is an *enabled* 30m/1h poll,
+    so omitting it would leave that running; the model is pinned to the cheap ``simple`` tier.
     """
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)
@@ -319,6 +322,17 @@ def generate_openclaw_config(
     # registered cloud-side and are used by the media endpoints under the user's virtual key.
     if model_defaults.pdf_model is not None:
         agents_defaults["pdfModel"] = model_defaults.pdf_model
+
+    # Agent heartbeat. Cadence is cloud-owned (``heartbeat_every`` from the manifest); the cloud
+    # also owns HEARTBEAT.md, so the on/off policy lives there. ``"0m"`` disables the periodic
+    # poll — emitting the block is required because OpenClaw's built-in default is an enabled
+    # 30m/1h poll, so omitting it would leave that running. Scheduled/proactive work runs via the
+    # separate ``cron`` system, so this never affects scheduled tasks.
+    #
+    # ``model`` is a belt-and-suspenders cost guard owned here: whatever cadence the cloud sets,
+    # an enabled heartbeat must use the cheap ``simple`` tier, never the primary ``complex`` model
+    # with high thinking. We reuse the simple-tier group already resolved for memory-flush.
+    agents_defaults["heartbeat"] = {"every": heartbeat_every, "model": model_defaults.memory_flush_model}
 
     config_payload = {
         "meta": {"lastTouchedAt": last_touched_at},
