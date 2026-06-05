@@ -126,6 +126,7 @@ def generate_openclaw_config(
     model_defaults: ModelDefaults,
     thinking_default: str = "adaptive",
     reasoning_default: str = "off",
+    heartbeat_every: str = "0m",
     cron_enabled: bool = True,
     web_fetch_enabled: bool = True,
 ) -> str:
@@ -136,9 +137,9 @@ def generate_openclaw_config(
     ``agents.defaults`` model blocks. ``thinking_default`` / ``reasoning_default`` are
     likewise resolved from the manifest by the caller and emitted under
     ``agents.defaults`` (``thinkingDefault`` / ``reasoningDefault``). The agent heartbeat
-    is disabled for all agents via ``agents.defaults.heartbeat.every = "0m"`` — OpenClaw's
-    built-in default is an *enabled* 30m/1h poll, so the block must be emitted to turn it off
-    (omitting it leaves the default running).
+    cadence is cloud-owned (``heartbeat_every``, from the manifest); ``"0m"`` disables the poll.
+    The block is always emitted because OpenClaw's built-in default is an *enabled* 30m/1h poll,
+    so omitting it would leave that running; the model is pinned to the cheap ``simple`` tier.
     """
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)
@@ -322,18 +323,16 @@ def generate_openclaw_config(
     if model_defaults.pdf_model is not None:
         agents_defaults["pdfModel"] = model_defaults.pdf_model
 
-    # Disable the OpenClaw agent heartbeat for every agent. Omitting the block is NOT enough:
-    # OpenClaw's built-in default is an enabled periodic poll (30m, or 1h under token auth)
-    # that runs a full premium-model turn each cycle and emits nothing useful here (our
-    # HEARTBEAT.md is empty). ``every: "0m"`` turns it off and also stops HEARTBEAT.md being
-    # injected into normal runs. Scheduled/proactive work runs via the separate ``cron``
-    # system, so this does not affect scheduled tasks.
+    # Agent heartbeat. Cadence is cloud-owned (``heartbeat_every`` from the manifest); the cloud
+    # also owns HEARTBEAT.md, so the on/off policy lives there. ``"0m"`` disables the periodic
+    # poll — emitting the block is required because OpenClaw's built-in default is an enabled
+    # 30m/1h poll, so omitting it would leave that running. Scheduled/proactive work runs via the
+    # separate ``cron`` system, so this never affects scheduled tasks.
     #
-    # ``model`` is a belt-and-suspenders cost guard: heartbeat is off, but if it is ever
-    # re-enabled (cadence changed, or an OpenClaw default slips through), it must use the cheap
-    # ``simple`` tier — never the primary ``complex`` model with high thinking. We reuse the
-    # simple-tier group already resolved for memory-flush rather than thread a new manifest field.
-    agents_defaults["heartbeat"] = {"every": "0m", "model": model_defaults.memory_flush_model}
+    # ``model`` is a belt-and-suspenders cost guard owned here: whatever cadence the cloud sets,
+    # an enabled heartbeat must use the cheap ``simple`` tier, never the primary ``complex`` model
+    # with high thinking. We reuse the simple-tier group already resolved for memory-flush.
+    agents_defaults["heartbeat"] = {"every": heartbeat_every, "model": model_defaults.memory_flush_model}
 
     config_payload = {
         "meta": {"lastTouchedAt": last_touched_at},

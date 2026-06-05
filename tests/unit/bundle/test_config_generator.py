@@ -484,6 +484,24 @@ def test_generate_openclaw_config_heartbeat_disabled_for_all_agents(
         assert "heartbeat" not in agent
 
 
+def test_generate_openclaw_config_heartbeat_cadence_is_cloud_owned(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """The cadence comes from the manifest (``heartbeat_every``); the model stays pinned to the
+    cheap simple tier no matter the cadence, so an enabled heartbeat never burns the primary."""
+    raw = _generate(
+        _supervisor_only(make_assembled_agent),
+        heartbeat_every="30m",
+        model_defaults=ModelDefaults(
+            model={"primary": "litellm/u:abc/complex"},
+            compaction_model="litellm/u:abc/simple",
+            memory_flush_model="litellm/u:abc/simple",
+        ),
+    )
+    defaults = json.loads(raw)["agents"]["defaults"]
+    assert defaults["heartbeat"] == {"every": "30m", "model": "litellm/u:abc/simple"}
+
+
 @pytest.mark.parametrize(
     "thinking_default",
     [

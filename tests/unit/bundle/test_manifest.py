@@ -63,6 +63,18 @@ def test_parse_reasoning_default_from_fixture_and_absent() -> None:
     assert bundle_manifest_from_mapping(data).agents.reasoning_default == "off"
 
 
+def test_parse_heartbeat_every_from_mapping_and_absent() -> None:
+    """``agents.heartbeat.every`` parses from the mapping; absent -> '0m' (disabled), never
+    OpenClaw's enabled default."""
+    data = _v2()
+    data["agents"]["heartbeat"] = {"every": "30m"}
+    assert bundle_manifest_from_mapping(data).agents.heartbeat_every == "30m"
+
+    data2 = _v2()
+    data2["agents"].pop("heartbeat", None)
+    assert bundle_manifest_from_mapping(data2).agents.heartbeat_every == "0m"
+
+
 def test_parse_model_info_optional_sizing_fields() -> None:
     """Only the frontier model carries reasoning/context/output sizing; the rest are None."""
     manifest = bundle_manifest_from_mapping(_v2())

@@ -149,6 +149,9 @@ class AgentsManifest:
     video_generation_default: bool
     main_agent: AgentSpec
     subagents: tuple[AgentSpec, ...]
+    # OpenClaw heartbeat cadence (``agents.defaults.heartbeat.every``). Cloud-owned policy.
+    # ``"0m"`` disables the periodic poll; absent in older manifests -> stay disabled.
+    heartbeat_every: str = "0m"
 
 
 @dataclass(frozen=True)
@@ -547,6 +550,11 @@ def _parse_agents(value: object) -> AgentsManifest:
     browser_enabled_default = bool(data.get("browser_enabled_default", True))
     image_generation_default = bool(data.get("image_generation_default", False))
     video_generation_default = bool(data.get("video_generation_default", False))
+    # Heartbeat cadence (cloud-owned). Absent -> "0m" (disabled); never falls back to the
+    # OpenClaw default, which is an enabled hourly poll.
+    heartbeat = data.get("heartbeat")
+    heartbeat_data = heartbeat if isinstance(heartbeat, dict) else {}
+    heartbeat_every = str(heartbeat_data.get("every") or "0m").strip() or "0m"
 
     subagents_raw = data.get("subagents") or []
     if not isinstance(subagents_raw, (list, tuple)):
@@ -592,6 +600,7 @@ def _parse_agents(value: object) -> AgentsManifest:
         video_generation_default=video_generation_default,
         main_agent=main_agent,
         subagents=tuple(subagent_specs),
+        heartbeat_every=heartbeat_every,
     )
 
 
@@ -851,6 +860,7 @@ def _agents_to_mapping(agents: AgentsManifest) -> dict[str, object]:
         "browser_enabled_default": agents.browser_enabled_default,
         "image_generation_default": agents.image_generation_default,
         "video_generation_default": agents.video_generation_default,
+        "heartbeat": {"every": agents.heartbeat_every},
         "main_agent": _agent_spec_to_mapping(agents.main_agent),
         "subagents": [_agent_spec_to_mapping(s) for s in agents.subagents],
     }
