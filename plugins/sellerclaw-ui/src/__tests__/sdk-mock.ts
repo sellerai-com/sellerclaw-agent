@@ -32,6 +32,16 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
   dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("openclaw/plugin-sdk/reply-payload", () => ({
+  // Lightweight reproduction of the SDK's check: a payload is reasoning when
+  // ``isReasoning === true`` or the text starts with ``reasoning:`` / ``thinking…_``.
+  isReasoningReplyPayload: (payload: Record<string, unknown>) => {
+    if (payload?.isReasoning === true) return true;
+    const text = typeof payload?.text === "string" ? payload.text : "";
+    return /^(?:reasoning:|thinking\.{0,3}(?=\s*(?:>\s*)?_))/iu.test(text.trimStart());
+  },
+}));
+
 vi.mock("openclaw/plugin-sdk/agent-harness-runtime", () => ({
   abortAgentHarnessRun: vi.fn(),
   resolveActiveEmbeddedRunSessionId: vi.fn().mockReturnValue(null),

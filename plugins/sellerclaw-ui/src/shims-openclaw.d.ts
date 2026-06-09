@@ -82,3 +82,8 @@ declare module "openclaw/plugin-sdk/core" {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   export function createChatChannelPlugin<T = unknown>(cfg: unknown): any;
 }
+
+declare module "openclaw/plugin-sdk/reply-payload" {
+  /** Classify a deliver payload as the runtime's reasoning ("thinking") channel. */
+  export function isReasoningReplyPayload(payload: Record<string, unknown>): boolean;
+}

@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
+import { isReasoningReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { readJsonWebhookBodyOrReject } from "openclaw/plugin-sdk/webhook-ingress";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import {
@@ -9,6 +10,7 @@ import {
 
 import { resolveSellerclawUiAccount } from "./channel.js";
 import {
+  postThought,
   postTurnEnd,
   postTurnPart,
   postTurnStart,
@@ -449,6 +451,9 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         const emittedTexts = new Set<string>();
         // Source paths/URLs already delivered as media this turn (same reason).
         const sentMedia = new Set<string>();
+        // Monotonic counter for thought stream parts (per turn). Frontend dedupes by seq.
+        let thoughtSeq = 0;
+        const thoughtAgentId = payload.agent_id || "supervisor";
 
         await dispatchInboundDirectDmWithRuntime({
           cfg: api.config,
@@ -467,6 +472,34 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           commandAuthorized: true,
           deliver: async (replyPayload: unknown) => {
             const { text, mediaUrls } = readDeliverPayload(replyPayload);
+
+            // Reasoning blocks travel on a separate transient channel and are NOT
+            // appended as user-visible parts. The UI renders them as a collapsible
+            // "Thinking…" panel. ``isReasoningReplyPayload`` checks both the
+            // ``isReasoning`` flag and the legacy ``reasoning:`` / ``thinking…``
+            // text prefix used by the block-reply-pipeline.
+            if (
+              typeof replyPayload === "object" &&
+              replyPayload !== null &&
+              isReasoningReplyPayload(replyPayload as Record<string, unknown>) &&
+              text.trim()
+            ) {
+              try {
+                await postThought(account, sessionKey, payload.chat_id, {
+                  message_id: partsMessageId,
+                  agent_id: thoughtAgentId,
+                  kind: "text",
+                  text,
+                  seq: thoughtSeq++,
+                });
+              } catch (err) {
+                logError(
+                  api,
+                  `sellerclaw-ui: thought post failed session_key=${sessionKey}: ${String(err)}`,
+                );
+              }
+              return;
+            }
 
             // One ordered turn per dispatch: media and text become ordered parts.
             // Media keeps its position relative to the streamed text (no separate

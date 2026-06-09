@@ -326,3 +326,36 @@ export async function postTurnEnd(
     ...(chatId ? { chat_id: chatId } : {}),
   });
 }
+
+// --- Thought (reasoning) stream ----------------------------------------------------
+//
+// Reasoning payloads from OpenClaw (``payload.isReasoning === true``) are NOT part of
+// the user-visible message — they travel on a separate transient channel so the cloud
+// can publish them as SSE without persisting to ``chat_messages.raw_content``. The UI
+// renders them as a collapsible "Thinking…" panel above the streamed reply.
+
+const THOUGHT_PATH = "/internal/openclaw/thought";
+
+export type ThoughtKind = "text";
+
+export type ThoughtPayload = {
+  message_id: string;
+  agent_id: string;
+  parent_agent_id?: string;
+  kind: ThoughtKind;
+  text: string;
+  seq: number;
+};
+
+export async function postThought(
+  account: ScwUiAccount,
+  sessionKey: string,
+  chatId: string | null,
+  payload: ThoughtPayload,
+): Promise<void> {
+  await postTurnRequest(account, THOUGHT_PATH, {
+    session_key: sessionKey,
+    ...(chatId ? { chat_id: chatId } : {}),
+    ...payload,
+  });
+}
