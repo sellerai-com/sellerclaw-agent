@@ -62,6 +62,16 @@ def _edge_ping_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _unified_stream_enabled() -> bool:
+    """Use the single ``/agent/stream`` channel (default) instead of two separate SSE streams.
+
+    Set ``SELLERCLAW_UNIFIED_STREAM=0`` to fall back to the legacy chat+hooks streams without a
+    redeploy (e.g. if the cloud hasn't shipped ``/agent/stream`` yet).
+    """
+    raw = (os.environ.get("SELLERCLAW_UNIFIED_STREAM", "1") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _ = _app
@@ -98,6 +108,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from sellerclaw_agent.cloud.chat_listener import run_edge_chat_sse_loop
         from sellerclaw_agent.cloud.cron_reporter import run_cron_reporter_loop
         from sellerclaw_agent.cloud.hooks_listener import run_edge_hooks_sse_loop
+        from sellerclaw_agent.cloud.unified_listener import run_edge_unified_sse_loop
         from sellerclaw_agent.server.edge_commands import (
             CommandResultStore,
             RemoteCommandWork,
@@ -141,22 +152,33 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 registry=registry,
             ),
         )
-        background_holders.append(
-            start_watched_background(
-                lambda: run_edge_chat_sse_loop(stop, registry=registry),
-                name="chat_sse",
-                stop=stop,
-                registry=registry,
-            ),
-        )
-        background_holders.append(
-            start_watched_background(
-                lambda: run_edge_hooks_sse_loop(stop, registry=registry),
-                name="hooks_sse",
-                stop=stop,
-                registry=registry,
-            ),
-        )
+        if _unified_stream_enabled():
+            # Single connection carrying both chat and hooks (halves per-agent SSE connections).
+            background_holders.append(
+                start_watched_background(
+                    lambda: run_edge_unified_sse_loop(stop, registry=registry),
+                    name="unified_sse",
+                    stop=stop,
+                    registry=registry,
+                ),
+            )
+        else:
+            background_holders.append(
+                start_watched_background(
+                    lambda: run_edge_chat_sse_loop(stop, registry=registry),
+                    name="chat_sse",
+                    stop=stop,
+                    registry=registry,
+                ),
+            )
+            background_holders.append(
+                start_watched_background(
+                    lambda: run_edge_hooks_sse_loop(stop, registry=registry),
+                    name="hooks_sse",
+                    stop=stop,
+                    registry=registry,
+                ),
+            )
         background_holders.append(
             start_watched_background(
                 lambda: run_cron_reporter_loop(stop, registry=registry),
