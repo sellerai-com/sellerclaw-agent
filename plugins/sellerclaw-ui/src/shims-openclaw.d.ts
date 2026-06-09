@@ -17,6 +17,32 @@ declare module "openclaw/plugin-sdk/channel-inbound" {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     params: Record<string, any>,
   ): Promise<void>;
+  // Inner step of the direct-DM dispatch (session recording + runDispatch); used by our local
+  // re-implementation that forwards reasoning-stream callbacks. See inbound-reply-with-reasoning.ts.
+  export function runPreparedInboundReply(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    params: Record<string, any>,
+  ): Promise<void>;
+}
+
+declare module "openclaw/plugin-sdk/inbound-envelope" {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  export function resolveInboundRouteEnvelopeBuilderWithRuntime(params: Record<string, any>): {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    route: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    buildEnvelope: (args: Record<string, any>) => { storePath: unknown; body: unknown };
+  };
+}
+
+declare module "openclaw/plugin-sdk/channel-reply-pipeline" {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  export function createChannelReplyPipeline(params: Record<string, any>): {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onModelSelected: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [key: string]: any;
+  };
 }
 
 declare module "openclaw/plugin-sdk/agent-harness-runtime" {
@@ -81,4 +107,11 @@ declare module "openclaw/plugin-sdk/core" {
   export function createChannelPluginBase(cfg: unknown): any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   export function createChatChannelPlugin<T = unknown>(cfg: unknown): any;
+}
+
+declare module "openclaw/plugin-sdk/reply-payload" {
+  /** Classify a deliver payload as the runtime's reasoning ("thinking") channel. */
+  export function isReasoningReplyPayload(payload: Record<string, unknown>): boolean;
+  /** Normalize an outbound reply payload to the fields channels receive. */
+  export function normalizeOutboundReplyPayload(payload: unknown): Record<string, unknown>;
 }

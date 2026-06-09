@@ -394,22 +394,28 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
     [
         pytest.param(
             True, True, True, True,
-            ["group:sessions", "group:web", "web_search", "message", "browser", "exec", "pdf", "cron"],
+            [
+                "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
+                "message", "browser", "exec", "pdf", "cron",
+            ],
             [],
             id="entry-point-with-subagents",
         ),
         pytest.param(
             True, False, True, True,
             [
-                "group:web", "web_search", "message", "browser", "exec", "pdf",
-                "cron", "group:fs", "process",
+                "group:fs", "group:web", "web_search", "message", "browser", "exec", "pdf",
+                "cron", "process",
             ],
             [],
             id="entry-point-no-subagents",
         ),
         pytest.param(
             True, True, True, False,
-            ["group:sessions", "group:web", "web_search", "message", "browser", "exec", "pdf"],
+            [
+                "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
+                "message", "browser", "exec", "pdf",
+            ],
             [],
             id="entry-point-cron-disabled",
         ),

@@ -2,6 +2,8 @@
 name = "sellerclaw-agent"
 dynamic = ["version"]
 description = "SellerClaw edge agent (OpenClaw wrapper) with CLI onboarding"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.0",

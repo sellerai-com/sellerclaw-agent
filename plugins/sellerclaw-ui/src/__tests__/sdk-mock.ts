@@ -30,6 +30,34 @@ vi.mock("openclaw/plugin-sdk/runtime-store", () => ({
 
 vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
   dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue(undefined),
+  runPreparedInboundReply: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Building blocks our local ``inbound-reply-with-reasoning`` composes. The plugin imports that
+// module at load time, so every test file that loads the plugin needs these specifiers to resolve
+// (they only exist inside the OpenClaw container at runtime). Tests that actually exercise the
+// dispatch mock the local module or these directly; here we just keep imports resolvable.
+vi.mock("openclaw/plugin-sdk/inbound-envelope", () => ({
+  resolveInboundRouteEnvelopeBuilderWithRuntime: vi.fn(() => ({
+    route: { sessionKey: "test-session", agentId: "supervisor", accountId: "default" },
+    buildEnvelope: () => ({ storePath: "/tmp/store", body: "envelope" }),
+  })),
+}));
+
+vi.mock("openclaw/plugin-sdk/channel-reply-pipeline", () => ({
+  createChannelReplyPipeline: vi.fn(() => ({ onModelSelected: vi.fn() })),
+}));
+
+vi.mock("openclaw/plugin-sdk/reply-payload", () => ({
+  // Lightweight reproduction of the SDK's check: a payload is reasoning when
+  // ``isReasoning === true`` or the text starts with ``reasoning:`` / ``thinking…_``.
+  isReasoningReplyPayload: (payload: Record<string, unknown>) => {
+    if (payload?.isReasoning === true) return true;
+    const text = typeof payload?.text === "string" ? payload.text : "";
+    return /^(?:reasoning:|thinking\.{0,3}(?=\s*(?:>\s*)?_))/iu.test(text.trimStart());
+  },
+  normalizeOutboundReplyPayload: (payload: unknown) =>
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {},
 }));
 
 vi.mock("openclaw/plugin-sdk/agent-harness-runtime", () => ({

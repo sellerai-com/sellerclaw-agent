@@ -192,6 +192,6 @@ Learn more or get in touch:
 
 ## License
 
-SellerClaw Agent is available under the **Business Source License 1.1 (BSL 1.1)**. Self-hosting, modification, and non-production use are permitted. Offering the software as a hosted service to third parties is not allowed. The license converts to **Apache 2.0** on March 2, 2030.
+SellerClaw Agent is open source under the **Apache License 2.0**. You are free to use, modify, and redistribute it — including for commercial and hosted/managed-service use — subject to the terms of the license.
 
-See [LICENSE](LICENSE) for full terms.
+See [LICENSE](LICENSE) for full terms and [NOTICE](NOTICE) for attribution.

@@ -30,7 +30,50 @@ def ping_interval_when_suspended() -> float:
     return 28.0 + random.uniform(0.0, 2.0)
 
 
-def sse_interval_after_error(previous_backoff: float, *, max_seconds: float = 30.0) -> float:
-    """Double previous SSE error backoff up to ``max_seconds``, with jitter."""
-    nxt = min(max_seconds, max(2.0, previous_backoff * 2.0))
-    return min(max_seconds, nxt + random.uniform(0.0, 0.5))
+# Reconnect-delay ceilings, kept deliberately small: a dropped stream means the user's agent
+# is offline, so we must reconnect quickly. The jitter window only has to be wide enough to
+# spread the fleet's reconnects under the cloud's pooled-DB capacity — ~15s is plenty for that
+# and is the worst case a user waits only after repeated failures (an isolated drop retries in
+# ~0-2s). The cloud-side concurrency limit absorbs any residual burst.
+_SSE_BACKOFF_BASE = 2.0
+_SSE_BACKOFF_MAX = 15.0
+_SSE_OVERLOAD_MAX = 20.0
+_SSE_CLEAN_RECONNECT_MAX = 5.0
+_OVERLOAD_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def is_overload_status(status_code: int | None) -> bool:
+    """True when an HTTP status means the cloud is shedding load (429 / 5xx)."""
+    return status_code in _OVERLOAD_STATUS
+
+
+def sse_reconnect_sleep(ceiling: float) -> float:
+    """FULL-jitter delay in ``[0, ceiling]`` before reconnecting an SSE stream.
+
+    Full jitter (vs the old ``+0..0.5s``) is what actually de-synchronises a fleet-wide
+    reconnect: when the cloud drops every agent's stream at once, they spread across the
+    whole window instead of a sub-second spike that immediately re-overwhelms the server.
+    """
+    return random.uniform(0.0, max(0.0, ceiling))
+
+
+def sse_clean_reconnect_sleep() -> float:
+    """Short full-jitter delay after a *clean* stream close.
+
+    A clean close usually means the cloud restarted/redeployed and dropped every agent at
+    once. Reconnecting immediately (the old behaviour) stampedes; a few seconds of jitter
+    spreads the fleet out.
+    """
+    return random.uniform(0.0, _SSE_CLEAN_RECONNECT_MAX)
+
+
+def sse_backoff_ceiling(previous_ceiling: float, *, overloaded: bool = False) -> float:
+    """Grow the SSE reconnect ceiling (deterministic exponential doubling), capped.
+
+    ``overloaded`` — the cloud answered 429/5xx, i.e. it is actively shedding load (e.g. a
+    proxy concurrency limit) — raises the cap so the fleet backs off harder instead of
+    re-piling on a struggling server. Without this a cloud-side hard_limit just converts the
+    reconnect storm into a 503-retry storm.
+    """
+    cap = _SSE_OVERLOAD_MAX if overloaded else _SSE_BACKOFF_MAX
+    return min(cap, max(_SSE_BACKOFF_BASE, previous_ceiling * 2.0))

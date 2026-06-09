@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -14,18 +13,25 @@ from uuid import UUID
 import httpx
 import structlog
 
-from sellerclaw_agent.async_backoff import ping_interval_when_suspended, sleep_until, sse_interval_after_error
+from sellerclaw_agent.async_backoff import (
+    is_overload_status,
+    ping_interval_when_suspended,
+    sleep_until,
+    sse_backoff_ceiling,
+    sse_clean_reconnect_sleep,
+    sse_reconnect_sleep,
+)
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.edge_sse_common import OpenClawGate, make_openclaw_gate, raise_for_edge_sse_status
 from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
     CloudAuthError,
     CloudConnectionError,
     CloudConnectionInactiveError,
     CloudSessionInvalidatedError,
-    agent_api_error_code,
 )
 from sellerclaw_agent.cloud.openclaw_forwarder import (
     INBOUND_FORWARD_TIMEOUT,
@@ -49,34 +55,6 @@ _log = structlog.get_logger(__name__)
 # read timeout (~4× heartbeat) lets us detect silently-dead TCP (proxy NAT drop,
 # container pause) promptly and reconnect, instead of sitting idle for up to an hour.
 _SSE_TIMEOUT = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=30.0)
-
-# Throttle supervisord probes while draining SSE (each probe is a ``supervisorctl`` subprocess).
-_OPENCLAW_PROBE_TTL_SEC = 5.0
-# When the probe itself fails, keep the stale "error" verdict longer to avoid hot loops.
-_OPENCLAW_PROBE_ERROR_TTL_SEC = 15.0
-
-
-def _api_detail_message(payload: dict[str, Any]) -> str:
-    detail = payload.get("detail")
-    if isinstance(detail, dict):
-        msg = detail.get("message")
-        if isinstance(msg, str):
-            return msg
-    if isinstance(detail, str):
-        return detail
-    return "Request failed"
-
-
-async def _error_response_json(response: httpx.Response) -> dict[str, Any]:
-    try:
-        await response.aread()
-    except Exception:
-        return {}
-    try:
-        raw = response.json()
-    except ValueError:
-        return {}
-    return raw if isinstance(raw, dict) else {}
 
 
 class _MessageIdDedup:
@@ -119,6 +97,75 @@ def _inbound_body_from_sse(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+async def forward_cancel(payload: dict[str, Any], *, forwarder: LocalOpenClawForwarder) -> None:
+    """Forward a ``cancel`` event: abort the in-flight OpenClaw run for this chat (best-effort)."""
+    cancel_chat_id = str(payload.get("chat_id") or "") or None
+    cancel_agent_id = str(payload.get("agent_id") or "") or None
+    if not cancel_chat_id or not cancel_agent_id:
+        _log.warning("chat_cancel_missing_fields", chat_id=cancel_chat_id, agent_id=cancel_agent_id)
+        return
+    try:
+        await forwarder.post_abort_json({"chat_id": cancel_chat_id, "agent_id": cancel_agent_id})
+    except httpx.ConnectError as exc:
+        _log.info("chat_cancel_dropped", reason="gateway_unreachable", chat_id=cancel_chat_id, error=str(exc))
+    except httpx.TimeoutException as exc:
+        _log.info("chat_cancel_dropped", reason="gateway_timeout", chat_id=cancel_chat_id, error=str(exc))
+    except Exception:
+        _log.exception("chat_cancel_forward_failed", chat_id=cancel_chat_id)
+
+
+async def forward_user_message(
+    payload: dict[str, Any],
+    *,
+    forwarder: LocalOpenClawForwarder,
+    dedup: _MessageIdDedup,
+    openclaw_gate: OpenClawGate,
+) -> None:
+    """Forward a ``user_message`` event to local OpenClaw inbound (deduped, gated on readiness)."""
+    mid = str(payload.get("message_id") or "")
+    if mid and dedup.already_forwarded(mid):
+        return
+    chat_id = str(payload.get("chat_id") or "") or None
+    user_id = str(payload.get("user_id") or "") or None
+    running, oc_status, oc_err = await openclaw_gate()
+    if not running:
+        _log.info(
+            "chat_message_dropped",
+            reason="openclaw_not_running",
+            openclaw_status=oc_status,
+            openclaw_error=oc_err,
+            message_id=mid or None,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+        return
+    try:
+        body = _inbound_body_from_sse(payload)
+        await forwarder.post_inbound_json(body)
+        if mid:
+            dedup.record_forwarded(mid)
+    except httpx.ConnectError as exc:
+        _log.info(
+            "chat_message_dropped",
+            reason="gateway_unreachable",
+            message_id=mid or None,
+            chat_id=chat_id,
+            user_id=user_id,
+            error=str(exc),
+        )
+    except httpx.TimeoutException as exc:
+        _log.info(
+            "chat_message_dropped",
+            reason="gateway_timeout",
+            message_id=mid or None,
+            chat_id=chat_id,
+            user_id=user_id,
+            error=str(exc),
+        )
+    except Exception:
+        _log.exception("chat_forward_failed", message_id=mid or "?", chat_id=chat_id, user_id=user_id)
+
+
 async def _consume_chat_sse(
     *,
     agent_token: str,
@@ -128,19 +175,7 @@ async def _consume_chat_sse(
     dedup: _MessageIdDedup,
     stop: asyncio.Event,
 ) -> None:
-    probe_at = 0.0
-    probe_status = ""
-    probe_err: str | None = None
-
-    async def _openclaw_gate() -> tuple[bool, str, str | None]:
-        nonlocal probe_at, probe_status, probe_err
-        now_m = time.monotonic()
-        ttl = _OPENCLAW_PROBE_ERROR_TTL_SEC if probe_status == "error" else _OPENCLAW_PROBE_TTL_SEC
-        if probe_status and now_m - probe_at < ttl:
-            return probe_status == "running", probe_status, probe_err
-        probe_at = now_m
-        probe_status, probe_err = await asyncio.to_thread(supervisor_mgr.probe_openclaw_status)
-        return probe_status == "running", probe_status, probe_err
+    _openclaw_gate = make_openclaw_gate(supervisor_mgr)
 
     base = get_sellerclaw_api_url().rstrip("/")
     url = f"{base}/agent/chat/stream"
@@ -148,24 +183,7 @@ async def _consume_chat_sse(
     headers = {"Authorization": f"Bearer {agent_token}"}
     async with async_client(timeout=_SSE_TIMEOUT) as client:
         async with client.stream("GET", url, headers=headers, params=params) as response:
-            if response.status_code == 401:
-                raise CloudAuthError("chat_sse_unauthorized", status_code=401)
-            if response.status_code == 403:
-                err_body = await _error_response_json(response)
-                code = agent_api_error_code(err_body)
-                if code == "agent_suspended":
-                    raise CloudAgentSuspendedError(_api_detail_message(err_body))
-                if code == "agent_session_invalidated":
-                    raise CloudSessionInvalidatedError(
-                        _api_detail_message(err_body) or "chat_sse_session_invalidated",
-                        status_code=403,
-                    )
-                if code in ("agent_connection_inactive", "agent_connection_not_found"):
-                    raise CloudConnectionInactiveError(
-                        _api_detail_message(err_body) or "chat_sse_connection_inactive"
-                    )
-                raise CloudConnectionError("chat_sse_forbidden")
-            response.raise_for_status()
+            await raise_for_edge_sse_status(response, label="chat_sse")
             async for event_name, data in iter_sse_events(response):
                 if stop.is_set():
                     break
@@ -174,48 +192,6 @@ async def _consume_chat_sse(
                 if event_name == "error":
                     _log.warning("chat_sse_error_event", data_preview=data[:300])
                     continue
-                if event_name == "cancel":
-                    # Stop request: abort the in-flight OpenClaw run for this chat. Best-effort
-                    # and not deduped (it targets the assistant turn, not a user message).
-                    try:
-                        cancel_payload = json.loads(data)
-                    except json.JSONDecodeError:
-                        _log.warning("chat_sse_invalid_json")
-                        continue
-                    if not isinstance(cancel_payload, dict):
-                        continue
-                    cancel_chat_id = str(cancel_payload.get("chat_id") or "") or None
-                    cancel_agent_id = str(cancel_payload.get("agent_id") or "") or None
-                    if not cancel_chat_id or not cancel_agent_id:
-                        _log.warning(
-                            "chat_cancel_missing_fields",
-                            chat_id=cancel_chat_id,
-                            agent_id=cancel_agent_id,
-                        )
-                        continue
-                    try:
-                        await forwarder.post_abort_json(
-                            {"chat_id": cancel_chat_id, "agent_id": cancel_agent_id}
-                        )
-                    except httpx.ConnectError as exc:
-                        _log.info(
-                            "chat_cancel_dropped",
-                            reason="gateway_unreachable",
-                            chat_id=cancel_chat_id,
-                            error=str(exc),
-                        )
-                    except httpx.TimeoutException as exc:
-                        _log.info(
-                            "chat_cancel_dropped",
-                            reason="gateway_timeout",
-                            chat_id=cancel_chat_id,
-                            error=str(exc),
-                        )
-                    except Exception:
-                        _log.exception("chat_cancel_forward_failed", chat_id=cancel_chat_id)
-                    continue
-                if event_name != "user_message":
-                    continue
                 try:
                     payload = json.loads(data)
                 except json.JSONDecodeError:
@@ -223,59 +199,12 @@ async def _consume_chat_sse(
                     continue
                 if not isinstance(payload, dict):
                     continue
-                mid = str(payload.get("message_id") or "")
-                if mid and dedup.already_forwarded(mid):
+                if event_name == "cancel":
+                    await forward_cancel(payload, forwarder=forwarder)
                     continue
-                chat_id = str(payload.get("chat_id") or "") or None
-                user_id = str(payload.get("user_id") or "") or None
-                running, oc_status, oc_err = await _openclaw_gate()
-                if not running:
-                    _log.info(
-                        "chat_message_dropped",
-                        reason="openclaw_not_running",
-                        openclaw_status=oc_status,
-                        openclaw_error=oc_err,
-                        message_id=mid or None,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                    )
-                    continue
-                try:
-                    body = _inbound_body_from_sse(payload)
-                    await forwarder.post_inbound_json(body)
-                    if mid:
-                        dedup.record_forwarded(mid)
-                except httpx.ConnectError as exc:
-                    _log.info(
-                        "chat_message_dropped",
-                        reason="gateway_unreachable",
-                        message_id=mid or None,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        error=str(exc),
-                    )
-                except httpx.TimeoutException as exc:
-                    _log.info(
-                        "chat_message_dropped",
-                        reason="gateway_timeout",
-                        message_id=mid or None,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        error=str(exc),
-                    )
-                except httpx.HTTPStatusError:
-                    _log.exception(
-                        "chat_forward_failed",
-                        message_id=mid or "?",
-                        chat_id=chat_id,
-                        user_id=user_id,
-                    )
-                except Exception:
-                    _log.exception(
-                        "chat_forward_failed",
-                        message_id=mid or "?",
-                        chat_id=chat_id,
-                        user_id=user_id,
+                if event_name == "user_message":
+                    await forward_user_message(
+                        payload, forwarder=forwarder, dedup=dedup, openclaw_gate=_openclaw_gate
                     )
 
 
@@ -338,6 +267,9 @@ async def run_edge_chat_sse_loop(
                 finally:
                     if registry is not None:
                         registry.mark_sse_connected(False)
+                # Clean close usually means the cloud restarted/redeployed and dropped every
+                # agent at once — jitter the reconnect so the fleet doesn't stampede.
+                await sleep_until(stop, sse_clean_reconnect_sleep())
                 backoff = 2.0
         except CloudSessionInvalidatedError as exc:
             _log.warning("chat_sse_session_invalidated_clearing_session", error=str(exc))
@@ -368,12 +300,15 @@ async def run_edge_chat_sse_loop(
                 backoff = 2.0
                 continue
             _log.warning("chat_sse_stopped", error=str(exc))
-            await sleep_until(stop, backoff)
-            backoff = sse_interval_after_error(backoff)
+            await sleep_until(stop, sse_reconnect_sleep(backoff))
+            backoff = sse_backoff_ceiling(backoff)
             continue
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            _log.warning("chat_sse_stopped", error=str(exc))
-            await sleep_until(stop, backoff)
-            backoff = sse_interval_after_error(backoff)
+            overloaded = isinstance(exc, httpx.HTTPStatusError) and is_overload_status(
+                exc.response.status_code
+            )
+            _log.warning("chat_sse_stopped", error=str(exc), overloaded=overloaded)
+            await sleep_until(stop, sse_reconnect_sleep(backoff))
+            backoff = sse_backoff_ceiling(backoff, overloaded=overloaded)
