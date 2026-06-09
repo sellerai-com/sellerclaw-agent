@@ -310,11 +310,20 @@ log_cgroup_limits() {
     python -m openclaw_diagnostics cgroup-limits
 }
 
-hydrate_bundle_assets() {
+fetch_config_bundle_if_configured() {
+    # Pull the bundle archive from CONFIG_BUNDLE_URL when set (managed deploys).
+    # No-ops for the self-paired push model, where the cloud writes the bundle
+    # directly via POST /manifest.
     if [ -x "/usr/local/bin/fetch_config_bundle" ]; then
         /usr/local/bin/fetch_config_bundle
     fi
+}
 
+materialize_bundle() {
+    # Copy the already-staged bundle (/opt/config-bundle) into the locations
+    # OpenClaw actually reads. Does NOT fetch — the bundle is assumed present —
+    # so this is safe to call both at boot and on a hot-reload (`apply-bundle`)
+    # without clobbering a freshly written bundle.
     local bundle_openclaw_config="/opt/config-bundle/openclaw/openclaw.json"
     if [ -f "${bundle_openclaw_config}" ]; then
         mkdir -p "${RUNTIME_CONFIG_ROOT}"
@@ -337,6 +346,11 @@ hydrate_bundle_assets() {
     if [ -d "${bundle_shared_skills_root}" ]; then
         cp -a "${bundle_shared_skills_root}/." "${SHARED_SKILLS_DIR}/"
     fi
+}
+
+hydrate_bundle_assets() {
+    fetch_config_bundle_if_configured
+    materialize_bundle
 }
 
 cleanup_stale_chrome_locks() {
@@ -510,6 +524,22 @@ main() {
     export HOME="/home/node"
     export OPENCLAW_CONFIG_PATH="${CONFIG_PATH}"
 
+    # apply-bundle: materialise the already-staged /opt/config-bundle into the live
+    # config + workspaces and exit, WITHOUT re-fetching or bouncing the gateway. Used
+    # by the edge agent's update_manifest hot-reload so a team/config change reaches
+    # OpenClaw's config file-watcher (refreshed ${CONFIG_PATH}) and new sessions
+    # (refreshed workspace AGENTS.md) without a restart. Runs as the same user (node)
+    # as the gateway so file ownership stays consistent.
+    if [ "${1:-gateway}" = "apply-bundle" ]; then
+        materialize_bundle
+        discover_agent_ids
+        ensure_state_dirs
+        copy_runtime_config
+        sync_all_workspaces
+        log "apply-bundle complete"
+        return 0
+    fi
+
     hydrate_agent_api_key
     hydrate_bundle_assets
     discover_agent_ids
@@ -550,7 +580,7 @@ main() {
             fi
             ;;
         *)
-            echo "Usage: openclaw_start [gateway|sync-workspaces|reset-memory <agent-id|all>]" >&2
+            echo "Usage: openclaw_start [gateway|apply-bundle|sync-workspaces|reset-memory <agent-id|all>]" >&2
             exit 1
             ;;
     esac

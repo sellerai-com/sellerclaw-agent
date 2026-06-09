@@ -10,6 +10,13 @@ const { dispatchMock, readBodyMock, postWebhookMock, saveMediaBufferMock } = vi.
 
 vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
   dispatchInboundDirectDmWithRuntime: (...args: unknown[]) => dispatchMock(...args),
+  runPreparedInboundReply: vi.fn(),
+}));
+
+// inbound.ts now dispatches through our local re-implementation (which forwards reasoning-stream
+// callbacks); mock it onto the same dispatchMock so the existing arg-capture assertions hold.
+vi.mock("../inbound-reply-with-reasoning.js", () => ({
+  dispatchInboundDirectDmWithReasoning: (...args: unknown[]) => dispatchMock(...args),
 }));
 
 vi.mock("openclaw/plugin-sdk/reply-payload", () => ({
@@ -323,6 +330,65 @@ describe("registerInboundRoute", () => {
       expect(body).toMatchObject({
         kind: "text",
         text: "weighing the trade-offs…",
+        agent_id: "supervisor",
+        seq: 0,
+        session_key: "agent:supervisor:sellerclaw-ui:direct:c1",
+        chat_id: "c1",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("streams reasoning via replyOptions.onReasoningStream and posts a thought when the block closes", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "hi" },
+      });
+
+      const { api, registerHttpRoute } = buildApi();
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = getHandler(registerHttpRoute);
+
+      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+      await handler(req, res);
+
+      const arg = dispatchMock.mock.calls[0]![0] as {
+        replyOptions?: {
+          onReasoningStream?: (e: { text?: string }) => void;
+          onReasoningEnd?: () => void;
+        };
+      };
+      expect(arg.replyOptions?.onReasoningStream).toBeTypeOf("function");
+      expect(arg.replyOptions?.onReasoningEnd).toBeTypeOf("function");
+
+      // OpenClaw streams the CUMULATIVE reasoning text; the plugin diffs it to a delta and
+      // accumulates, posting nothing until the reasoning block closes.
+      arg.replyOptions!.onReasoningStream!({ text: "Let me think." });
+      arg.replyOptions!.onReasoningStream!({ text: "Let me think. Step two." });
+      expect(
+        fetchMock.mock.calls.some((c) => String(c[0]).endsWith("/internal/openclaw/thought")),
+      ).toBe(false);
+
+      arg.replyOptions!.onReasoningEnd!();
+      // postThought is fire-and-forget — let its microtask reach the fetch call.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const thoughtCalls = fetchMock.mock.calls.filter((c) =>
+        String(c[0]).endsWith("/internal/openclaw/thought"),
+      );
+      expect(thoughtCalls).toHaveLength(1);
+      const body = JSON.parse(
+        String((thoughtCalls[0]![1] as RequestInit).body),
+      ) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        kind: "text",
+        text: "Let me think. Step two.",
         agent_id: "supervisor",
         seq: 0,
         session_key: "agent:supervisor:sellerclaw-ui:direct:c1",

@@ -11,6 +11,7 @@ import pytest
 
 from sellerclaw_agent.cloud import chat_listener as cl
 from sellerclaw_agent.cloud import unified_listener as ul
+from sellerclaw_agent.cloud.edge_sse_common import make_openclaw_gate
 from sellerclaw_agent.cloud.exceptions import CloudConnectionError
 from sellerclaw_agent.cloud.openclaw_forwarder import LocalOpenClawForwarder
 
@@ -79,7 +80,7 @@ async def _run_unified_consume(
             agent_token="sca_access",
             agent_instance_id=uuid4(),
             forwarder=forwarder,
-            supervisor_mgr=supervisor,  # type: ignore[arg-type]
+            openclaw_gate=make_openclaw_gate(supervisor),  # type: ignore[arg-type]
             dedup=cl._MessageIdDedup(),
             stop=asyncio.Event(),
         )
@@ -148,7 +149,43 @@ async def test_unified_consume_403_forbidden_raises(monkeypatch: pytest.MonkeyPa
                 agent_token="sca_access",
                 agent_instance_id=uuid4(),
                 forwarder=forwarder,
-                supervisor_mgr=_FakeSupervisor(status="running"),  # type: ignore[arg-type]
+                openclaw_gate=make_openclaw_gate(_FakeSupervisor(status="running")),  # type: ignore[arg-type]
                 dedup=cl._MessageIdDedup(),
                 stop=asyncio.Event(),
             )
+
+
+@pytest.mark.asyncio
+async def test_wait_until_openclaw_ready_returns_false_when_stopping() -> None:
+    """A stop signal short-circuits the wait so the loop can shut down promptly."""
+    stop = asyncio.Event()
+    stop.set()
+
+    async def gate() -> tuple[bool, str, str | None]:
+        return (False, "stopped", None)
+
+    assert await ul._wait_until_openclaw_ready(gate, stop) is False
+
+
+@pytest.mark.asyncio
+async def test_wait_until_openclaw_ready_holds_off_until_stable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """We connect only after OpenClaw has been up across the stability window (hysteresis)."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ul.time, "monotonic", lambda: clock["t"])
+
+    async def _fast_sleep(stop: asyncio.Event, seconds: float) -> None:
+        clock["t"] += seconds  # advance the clock instead of really sleeping
+
+    monkeypatch.setattr(ul, "sleep_until", _fast_sleep)
+
+    probes = iter([(False, "stopped", None), (True, "running", None), (True, "running", None)])
+
+    async def gate() -> tuple[bool, str, str | None]:
+        try:
+            return next(probes)
+        except StopIteration:
+            return (True, "running", None)
+
+    assert await ul._wait_until_openclaw_ready(gate, asyncio.Event()) is True
+    # down → up(start counting) → still up one window later ⇒ connect; two poll sleeps elapsed.
+    assert clock["t"] == pytest.approx(2 * ul._OPENCLAW_WAIT_POLL_SECONDS)

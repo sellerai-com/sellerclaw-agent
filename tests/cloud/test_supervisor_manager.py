@@ -342,16 +342,16 @@ def test_restart_writes_bundle_and_calls_restart(
     assert (mgr.bundle_volume_path / "openclaw" / "openclaw.json").is_file()
 
 
-def test_update_manifest_writes_bundle_without_supervisorctl_restart(
+def test_update_manifest_writes_bundle_and_activates_without_restart(
     tmp_path: Path,
     make_manifest: Callable[..., GenericManifest],
     with_agent_api_key: None,
 ) -> None:
-    """Happy path: hot-reload writes the bundle and does NOT touch supervisorctl.
+    """Happy path: hot-reload writes the bundle and activates it via ``apply-bundle``.
 
-    OpenClaw's file-watcher picks up the new ``openclaw.json`` — the agent
-    process keeps running, sessions in flight see the new channel/tool config
-    on their next turn.
+    It must materialise the staged bundle into the live config/workspaces (so the
+    change actually reaches the running gateway) but must NOT restart/start the
+    gateway via supervisorctl — that's what keeps it a hot-reload.
     """
     mgr = _mgr(tmp_path)
     manifest = make_manifest(proxy_url="")
@@ -366,8 +366,34 @@ def test_update_manifest_writes_bundle_without_supervisorctl_restart(
 
     assert outcome == "completed"
     assert err is None
-    # Crucially: no supervisorctl invocation. The whole point of hot-reload.
-    assert calls == []
+    # Activation runs `openclaw_start apply-bundle` — and nothing else.
+    assert calls == [[mgr.openclaw_start_cmd, "apply-bundle"]]
+    # Crucially: no supervisorctl restart/start. The whole point of hot-reload.
+    assert not any("supervisorctl" in c[0] for c in calls)
+    assert (mgr.bundle_volume_path / "openclaw" / "openclaw.json").is_file()
+
+
+def test_update_manifest_fails_when_apply_bundle_errors(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """A non-zero ``apply-bundle`` surfaces as a failed command, not a silent success.
+
+    Otherwise the cloud would mark the change applied while the live config stays stale.
+    """
+    mgr = _mgr(tmp_path)
+    manifest = make_manifest(proxy_url="")
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        return MagicMock(returncode=3, stdout="", stderr="materialize failed\n")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.update_manifest(manifest)
+
+    assert outcome == "failed"
+    assert err is not None and "materialize failed" in err
+    # The bundle was still staged to disk; only activation failed.
     assert (mgr.bundle_volume_path / "openclaw" / "openclaw.json").is_file()
 
 

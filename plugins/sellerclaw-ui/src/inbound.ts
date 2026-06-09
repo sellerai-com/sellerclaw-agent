@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
+import { dispatchInboundDirectDmWithReasoning } from "./inbound-reply-with-reasoning.js";
 import { isReasoningReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { readJsonWebhookBodyOrReject } from "openclaw/plugin-sdk/webhook-ingress";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
@@ -455,7 +455,57 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         let thoughtSeq = 0;
         const thoughtAgentId = payload.agent_id || "supervisor";
 
-        await dispatchInboundDirectDmWithRuntime({
+        // Reasoning ("thinking") stream → transient /thought channel. OpenClaw streams the
+        // running CUMULATIVE reasoning text via ``replyOptions.onReasoningStream`` (NOT via the
+        // ``deliver`` reply channel) and closes each reasoning block with ``onReasoningEnd``. We
+        // diff the cumulative to a delta, accumulate it, and post one thought item per closed
+        // block. The frontend renders these as the collapsible "Thinking…" panel; nothing is
+        // persisted. ``reasoningPrior`` tracks the engine's cumulative (never reset mid-turn so
+        // cross-block diffing stays correct); ``reasoningBuf`` holds deltas since the last flush.
+        let reasoningPrior = "";
+        let reasoningBuf = "";
+        const REASONING_FLUSH_AT = 2000;
+        const postThoughtText = (raw: string): void => {
+          const text = raw.trim();
+          if (!text) return;
+          const seq = thoughtSeq++;
+          void postThought(account, sessionKey, payload.chat_id, {
+            message_id: partsMessageId,
+            agent_id: thoughtAgentId,
+            kind: "text",
+            text,
+            seq,
+          }).catch((err) => {
+            logError(
+              api,
+              `sellerclaw-ui: thought post failed session_key=${sessionKey}: ${String(err)}`,
+            );
+          });
+        };
+        const onReasoningStream = (evt: { text?: string }): void => {
+          // DIAG (temporary): confirm whether this dispatcher ever invokes onReasoningStream.
+          // eslint-disable-next-line no-console
+          console.error(`DIAG sellerclaw-ui onReasoningStream fired len=${evt?.text?.length ?? 0}`);
+          const t = (evt?.text ?? "").trim();
+          if (!t || t === reasoningPrior) return;
+          reasoningBuf += t.startsWith(reasoningPrior) ? t.slice(reasoningPrior.length) : t;
+          reasoningPrior = t;
+          // Bound a single item's size if a block stays open unusually long; cut on a line
+          // boundary so we don't split mid-sentence.
+          if (reasoningBuf.length >= REASONING_FLUSH_AT) {
+            const nl = reasoningBuf.lastIndexOf("\n");
+            const cut = nl > 0 ? nl : reasoningBuf.length;
+            postThoughtText(reasoningBuf.slice(0, cut));
+            reasoningBuf = reasoningBuf.slice(cut);
+          }
+        };
+        const onReasoningEnd = (): void => {
+          const rest = reasoningBuf;
+          reasoningBuf = "";
+          postThoughtText(rest);
+        };
+
+        await dispatchInboundDirectDmWithReasoning({
           cfg: api.config,
           runtime,
           channel: "sellerclaw-ui",
@@ -470,6 +520,10 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           messageId: payload.message_id ?? crypto.randomUUID(),
           timestamp: Date.now(),
           commandAuthorized: true,
+          // Reasoning stream → "Thinking…" panel. OpenClaw forwards these from ``replyOptions``
+          // into the run (``onReasoningStream``/``onReasoningEnd``); without them the agent's
+          // reasoning is produced but never reaches the chat.
+          replyOptions: { onReasoningStream, onReasoningEnd },
           deliver: async (replyPayload: unknown) => {
             const { text, mediaUrls } = readDeliverPayload(replyPayload);
 

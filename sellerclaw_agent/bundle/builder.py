@@ -67,8 +67,10 @@ def derive_agent_tools(
 
     Returns ``(allow, deny)``. All capability tools are manifest-driven:
 
-    - Entry point (supervisor): broad allow; ``group:sessions`` when it has subagents,
-      otherwise ``group:fs`` + ``process``. ``cron`` only here, and only when enabled.
+    - Entry point (supervisor): broad allow including ``group:fs`` (file access, always).
+      When it has subagents it additionally gets ``group:sessions`` + ``agents_list`` to
+      inspect and drive its team; otherwise (solo agent) it gets ``process`` to run/manage
+      long-lived processes itself. ``cron`` only here, and only when enabled.
       ``whatsapp_login`` (in-chat QR pairing tool) only here, and only when WhatsApp is on.
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
     - ``browser`` is present per agent only when ``browser_enabled``. The builtin
@@ -77,7 +79,9 @@ def derive_agent_tools(
       generation, so adding them to ``allow`` only produces an "unknown tool" warning.
     """
     if is_entry_point:
-        allow = ["group:web", "web_search", "message", "browser", "exec", "pdf"]
+        # The supervisor gets file access (``group:fs``) unconditionally so it can read and
+        # write workspace files itself, not only delegate.
+        allow = ["group:fs", "group:web", "web_search", "message", "browser", "exec", "pdf"]
         if cron_enabled:
             allow.append("cron")
         # WhatsApp links a personal account by QR; the agent runs ``whatsapp_login`` in the
@@ -86,9 +90,11 @@ def derive_agent_tools(
         if whatsapp_enabled:
             allow.append("whatsapp_login")
         if has_subagents:
-            allow = ["group:sessions", *allow]
+            # ``agents_list`` lets the supervisor enumerate its available team alongside
+            # ``group:sessions`` (spawn/list/manage live child sessions).
+            allow = ["group:sessions", "agents_list", *allow]
         else:
-            allow.extend(["group:fs", "process"])
+            allow.append("process")
         deny: list[str] = []
     else:
         allow = [

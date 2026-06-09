@@ -282,11 +282,29 @@ class SupervisorContainerManager:
     kasm_program_name: str = "kasmvnc"
     gost_program_name: str = "gost"
     credentials_data_dir: Path | None = None
+    openclaw_start_cmd: str = "/usr/local/bin/openclaw_start"
 
     def _run_ctl(self, *args: str, timeout: float) -> subprocess.CompletedProcess[str]:
         cmd = ["supervisorctl", "-c", self.supervisord_config, *args]
         return subprocess.run(
             cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    def _apply_bundle(self, *, timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
+        """Activate the freshly written bundle into the live config + workspaces.
+
+        Runs ``openclaw_start apply-bundle`` (same user as the gateway): it copies the
+        staged ``/opt/config-bundle`` into the locations OpenClaw actually reads
+        (``/opt/openclaw-config``, ``/opt/openclaw-workspaces`` and ``~/.openclaw``) so
+        the config file-watcher reloads ``openclaw.json`` and new sessions pick up the
+        updated workspace ``AGENTS.md`` — without bouncing the gateway. Does NOT
+        re-fetch the bundle; it is already on disk from :func:`write_bundle_to_disk`.
+        """
+        return subprocess.run(
+            [self.openclaw_start_cmd, "apply-bundle"],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -753,15 +771,20 @@ class SupervisorContainerManager:
         return "failed", out.strip()[:500] or f"exit {proc.returncode}"
 
     def update_manifest(self, manifest: GenericManifest) -> tuple[str, str | None]:
-        """Rebuild the bundle on disk without bouncing the supervisord process.
+        """Rebuild + activate the bundle on disk without bouncing the gateway process.
 
-        OpenClaw's file-watcher (``gateway.reload.mode=hybrid`` by default)
-        picks up the new ``openclaw.json`` automatically — channels, tool
-        allow-lists, mcp config and cron all hot-apply in place. Workspace
-        rewrites land on disk too, but the running session keeps its
-        already-injected ``AGENTS.md`` / ``SOUL.md``; only new sessions see the
-        updated content. That's why bucket-3 changes carry a separate "Start a
-        new chat" hint on the cloud side.
+        Writing the bundle alone is not enough: it lands in the staging volume
+        (``/opt/config-bundle``), but OpenClaw reads its config and workspaces from
+        ``~/.openclaw`` (materialised from the staging bundle only at process start).
+        So after writing we run ``openclaw_start apply-bundle`` to copy the staging
+        bundle into the live locations. OpenClaw's file-watcher
+        (``gateway.reload.mode=hybrid`` by default) then picks up the refreshed
+        ``openclaw.json`` — channels, tool allow-lists, mcp config, cron and the
+        subagent roster (``allowAgents``) hot-apply in place. Workspaces land on disk
+        too, but the running session keeps its already-injected ``AGENTS.md`` /
+        ``SOUL.md``; only new sessions see the updated content. That's why bucket-3
+        changes (e.g. enabling/removing a specialist) carry a separate "Start a new
+        chat" hint on the cloud side.
 
         Two early returns guard against silently doing the wrong thing:
 
@@ -804,6 +827,18 @@ class SupervisorContainerManager:
         except Exception as exc:  # noqa: BLE001
             _log.warning("bundle_write_failed", error=str(exc))
             return "failed", str(exc)[:500]
+        # Activate the staged bundle into the live config/workspaces so the change
+        # actually reaches the running gateway (see method docstring). Without this the
+        # write only pre-stages for the next start/restart and the hot-reload is a no-op.
+        try:
+            proc = self._apply_bundle()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("apply_bundle_failed", error=str(exc))
+            return "failed", str(exc)[:500]
+        if proc.returncode != 0:
+            out = ((proc.stderr or "") + (proc.stdout or "")).strip()
+            _log.warning("apply_bundle_nonzero", returncode=proc.returncode, output=out[:500])
+            return "failed", out[:500] or f"apply-bundle exit {proc.returncode}"
         return "completed", None
 
 
@@ -827,4 +862,5 @@ def create_supervisor_manager(
         kasm_program_name=os.environ.get("OPENCLAW_SUPERVISOR_KASM_PROGRAM", "kasmvnc"),
         gost_program_name=os.environ.get("OPENCLAW_SUPERVISOR_GOST_PROGRAM", "gost"),
         credentials_data_dir=data_dir,
+        openclaw_start_cmd=os.environ.get("OPENCLAW_START_CMD", "/usr/local/bin/openclaw_start"),
     )

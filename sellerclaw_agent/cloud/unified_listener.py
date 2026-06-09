@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -30,7 +31,7 @@ from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.cloud.chat_listener import _MessageIdDedup, forward_cancel, forward_user_message
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
-from sellerclaw_agent.cloud.edge_sse_common import make_openclaw_gate, raise_for_edge_sse_status
+from sellerclaw_agent.cloud.edge_sse_common import OpenClawGate, make_openclaw_gate, raise_for_edge_sse_status
 from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
     CloudAuthError,
@@ -46,7 +47,7 @@ from sellerclaw_agent.cloud.openclaw_forwarder import (
 )
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
 from sellerclaw_agent.cloud.sse_codec import iter_sse_events
-from sellerclaw_agent.cloud.supervisor_manager import SupervisorContainerManager, create_supervisor_manager
+from sellerclaw_agent.cloud.supervisor_manager import create_supervisor_manager
 from sellerclaw_agent.http_clients import async_client
 from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 from sellerclaw_agent.server.secrets_store import get_secrets
@@ -59,17 +60,46 @@ _log = structlog.get_logger(__name__)
 _SSE_TIMEOUT = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=30.0)
 
 
+# While OpenClaw is not running, holding the cloud SSE open is pure waste: every delivered
+# event is dropped (the forwarders gate on OpenClaw readiness) yet the server still counts the
+# connection. So we DON'T connect until OpenClaw is up. Poll the local supervisor at this cadence
+# and require it to stay up for a short window (hysteresis) so a crash-loop blip doesn't trigger a
+# connect + catch-up storm. The catch-up on the eventual connect delivers anything queued meanwhile.
+_OPENCLAW_WAIT_POLL_SECONDS = 5.0
+_OPENCLAW_STABLE_SECONDS = 5.0
+
+
+async def _wait_until_openclaw_ready(openclaw_gate: OpenClawGate, stop: asyncio.Event) -> bool:
+    """Block until OpenClaw has been running for ``_OPENCLAW_STABLE_SECONDS``. False if stopping."""
+    running_since: float | None = None
+    logged_wait = False
+    while not stop.is_set():
+        running, status, err = await openclaw_gate()
+        if running:
+            now = time.monotonic()
+            if running_since is None:
+                running_since = now
+            if now - running_since >= _OPENCLAW_STABLE_SECONDS:
+                return True
+        else:
+            running_since = None
+            if not logged_wait:
+                _log.info("edge_sse_waiting_for_openclaw", status=status, error=err)
+                logged_wait = True
+        await sleep_until(stop, _OPENCLAW_WAIT_POLL_SECONDS)
+    return False
+
+
 async def _consume_unified_sse(
     *,
     agent_token: str,
     agent_instance_id: UUID,
     forwarder: LocalOpenClawForwarder,
-    supervisor_mgr: SupervisorContainerManager,
+    openclaw_gate: OpenClawGate,
     dedup: _MessageIdDedup,
     stop: asyncio.Event,
 ) -> None:
     """Drain the unified SSE stream, routing each frame to the chat or hooks handler by name."""
-    openclaw_gate = make_openclaw_gate(supervisor_mgr)
     base = get_sellerclaw_api_url().rstrip("/")
     url = f"{base}/agent/stream"
     params = {"agent_instance_id": str(agent_instance_id)}
@@ -112,6 +142,7 @@ async def run_edge_unified_sse_loop(
     creds_storage = CredentialsStorage(data_dir)
     session_storage = EdgeSessionStorage(data_dir)
     supervisor_mgr = create_supervisor_manager()
+    openclaw_gate = make_openclaw_gate(supervisor_mgr)
     dedup = _MessageIdDedup()
     backoff = 2.0
 
@@ -139,6 +170,13 @@ async def run_edge_unified_sse_loop(
             await sleep_until(stop, 10.0)
             continue
 
+        # Hold off opening the cloud SSE until OpenClaw is up: a stream held while it's down just
+        # drops every event and wastes a server connection. The catch-up on connect delivers
+        # anything queued while we waited.
+        if not await _wait_until_openclaw_ready(openclaw_gate, stop):
+            continue
+        backoff = 2.0
+
         try:
             async with async_client(timeout=INBOUND_FORWARD_TIMEOUT) as oc_http:
                 forwarder = LocalOpenClawForwarder(
@@ -155,7 +193,7 @@ async def run_edge_unified_sse_loop(
                         agent_token=bearer,
                         agent_instance_id=sess.agent_instance_id,
                         forwarder=forwarder,
-                        supervisor_mgr=supervisor_mgr,
+                        openclaw_gate=openclaw_gate,
                         dedup=dedup,
                         stop=stop,
                     )
