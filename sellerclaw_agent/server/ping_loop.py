@@ -25,6 +25,7 @@ from sellerclaw_agent.cloud.agent_activity import (
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
+from sellerclaw_agent.cloud.state_backup import read_applied_config_version
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
@@ -47,6 +48,11 @@ from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 _log = structlog.get_logger(__name__)
 
 AGENT_PROTOCOL_VERSION = 2
+
+# Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
+# build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the
+# agent-info UI can show which OpenClaw build is running. None on images without it.
+OPENCLAW_VERSION = os.environ.get("OPENCLAW_VERSION") or None
 
 
 def _browser_ping_payload(probe: BrowserStatusProbe) -> dict[str, object]:
@@ -186,6 +192,8 @@ async def run_edge_ping_loop(
                 command_result=None,
                 browser=browser_payload,
                 agent_activity=activity_payload,
+                config_version=read_applied_config_version(),
+                openclaw_version=OPENCLAW_VERSION,
             )
         except CloudAgentSuspendedError:
             _log.warning("edge_agent_suspended_waiting_resume")
@@ -312,6 +320,8 @@ async def _flush_command_ack(
             command_result=result_payload,
             browser=browser_payload,
             agent_activity=activity_payload,
+            config_version=read_applied_config_version(),
+            openclaw_version=OPENCLAW_VERSION,
         )
     except CloudAgentSuspendedError:
         _log.warning("edge_ping_ack_suspended")
