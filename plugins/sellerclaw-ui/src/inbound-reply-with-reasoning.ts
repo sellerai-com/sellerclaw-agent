@@ -79,26 +79,8 @@ export async function dispatchInboundDirectDmWithReasoning(params: DispatchParam
         dispatcherOptions: {
           ...replyPipeline,
           deliver: async (payload: unknown) => {
-            const raw =
-              payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
-            // DIAG (temporary): reveal exactly what the buffered dispatcher hands us — in
-            // particular whether the ``isReasoning`` marker survives to this boundary.
-            // eslint-disable-next-line no-console
-            console.error(
-              `DIAG sellerclaw-ui deliver: keys=[${Object.keys(raw).join(",")}] ` +
-                `isReasoning=${String(raw.isReasoning)} ` +
-                `text=${String(raw.text ?? "")
-                  .slice(0, 70)
-                  .replace(/\n/g, " ")}`,
-            );
             const normalized =
               payload && typeof payload === "object" ? normalizeOutboundReplyPayload(payload) : {};
-            // Candidate fix: the engine normalizer drops ``isReasoning``; re-attach it here (we own
-            // this wrapper) so the plugin's deliver handler can route reasoning to the transient
-            // /thought channel instead of rendering it as a visible reply.
-            if (raw.isReasoning === true) {
-              (normalized as Record<string, unknown>).isReasoning = true;
-            }
             return await params.deliver(normalized);
           },
           onError: params.onDispatchError,
