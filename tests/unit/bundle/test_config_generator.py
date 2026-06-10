@@ -151,6 +151,9 @@ def test_generate_openclaw_config_has_gateway_and_models(
     # as "missing-meta-vs-last-good" and silently restores the previous backup.
     assert isinstance(payload["meta"]["lastTouchedAt"], str)
     assert payload["meta"]["lastTouchedAt"].endswith("Z")
+    # `meta` must stay a closed set OpenClaw accepts — no extra keys (it rejects unknowns
+    # with "meta: Invalid input"). The applied config_version lives in a sidecar, not here.
+    assert set(payload["meta"]) == {"lastTouchedAt"}
     assert payload["gateway"]["auth"]["token"] == "g"
     assert "litellm" in payload["models"]["providers"]
     assert payload["agents"]["list"][0]["id"] == "supervisor"
