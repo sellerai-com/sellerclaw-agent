@@ -116,3 +116,51 @@ def state_dir_has_restoreable_data(state_dir: Path) -> bool:
 
 def default_openclaw_state_dir() -> Path:
     return Path(os.environ.get("OPENCLAW_STATE_DIR", "/home/node/.openclaw"))
+
+
+# Applied manifest config_version is kept in a SellerClaw-owned sidecar file, NOT inside
+# openclaw.json: OpenClaw validates its `meta` block with a closed schema and rejects unknown
+# keys ("meta: Invalid input"), refusing to start. The agent writes this file right after it
+# applies a bundle and reports its contents in every ping.
+_CONFIG_VERSION_FILENAME = "sellerclaw-config-version"
+
+
+def applied_config_version_path(state_dir: Path | None = None) -> Path:
+    return (state_dir or default_openclaw_state_dir()) / _CONFIG_VERSION_FILENAME
+
+
+def write_applied_config_version(version: int, state_dir: Path | None = None) -> None:
+    """Persist the config_version the agent just applied (atomic replace).
+
+    Best-effort: callers invoke this after a successful bundle apply; a write failure must
+    not fail the apply (the cloud just won't see the new version until the next successful
+    write and re-applies — self-healing).
+    """
+    path = applied_config_version_path(state_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(str(int(version)), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def read_applied_config_version(state_dir: Path | None = None) -> int | None:
+    """Read the config_version the agent last applied (from the sidecar state file).
+
+    Returns ``None`` when the file is missing/unreadable/malformed — the cloud treats a
+    missing value as "unknown" and the ping simply omits ``config_version`` (no reconcile).
+    This is what the edge agent reports in every ping so the cloud can detect an undelivered
+    manifest.
+    """
+    path = applied_config_version_path(state_dir)
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        version = int(raw)
+    except ValueError:
+        return None
+    return version if version >= 0 else None

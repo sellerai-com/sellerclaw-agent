@@ -447,6 +447,32 @@ def test_update_manifest_skips_write_when_bundle_unchanged(
     assert oc_path.stat().st_mtime_ns == mtime_before
 
 
+def test_update_manifest_writes_applied_config_version(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a successful apply the agent records the applied config_version in the sidecar
+    state file it reports in pings (it must NOT go into openclaw.json — OpenClaw rejects
+    unknown meta keys)."""
+    from sellerclaw_agent.cloud.state_backup import read_applied_config_version
+
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(tmp_path))
+    mgr = _mgr(tmp_path)
+    manifest = make_manifest(proxy_url="", overrides={"config_version": 7})
+
+    with patch(
+        "sellerclaw_agent.cloud.supervisor_manager.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="", stderr=""),
+    ):
+        outcome, err = mgr.update_manifest(manifest)
+
+    assert outcome == "completed"
+    assert err is None
+    assert read_applied_config_version(tmp_path) == 7
+
+
 def test_bundle_on_disk_matches_detects_workspace_drift(tmp_path: Path) -> None:
     """Spot-check the helper directly so callers can rely on cheap equality."""
     bundle = tmp_path / "bundle"

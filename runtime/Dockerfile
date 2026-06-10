@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.6.1
+ARG OPENCLAW_TAG=2026.6.5
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -186,6 +186,12 @@ FROM base AS staging
 # even when started via plain `docker run` without an env-file.
 ARG SELLERCLAW_AGENT_VERSION=0.0.0+unknown
 ENV SELLERCLAW_AGENT_VERSION=${SELLERCLAW_AGENT_VERSION}
+
+# Underlying OpenClaw runtime version (the base image tag). Re-declare the
+# pre-FROM build-arg so this stage can bake it into ENV; reported to sellerclaw
+# on every ping and surfaced in the agent-info UI.
+ARG OPENCLAW_TAG
+ENV OPENCLAW_VERSION=${OPENCLAW_TAG}
 
 COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
 COPY sellerclaw-agent/pyproject.toml sellerclaw-agent/uv.lock /tmp/proj/

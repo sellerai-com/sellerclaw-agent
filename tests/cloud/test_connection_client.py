@@ -262,6 +262,61 @@ async def test_ping_no_pending_command(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ping_includes_openclaw_version_when_provided(tmp_path: Path) -> None:
+    seen: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/connection/ping":
+            seen["body"] = _json_body(request)
+            return httpx.Response(200, json={"pending_command": None})
+        return httpx.Response(404)
+
+    storage = _write_creds(tmp_path)
+    client = SellerClawConnectionClient(
+        credentials_storage=storage,
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    await client.ping(
+        agent_instance_id=UUID("66666666-6666-4666-8666-666666666666"),
+        agent_version="1",
+        protocol_version=1,
+        openclaw_status="running",
+        openclaw_error=None,
+        command_result=None,
+        openclaw_version="2026.6.5",
+    )
+    assert seen["body"]["openclaw_version"] == "2026.6.5"
+
+
+@pytest.mark.asyncio
+async def test_ping_omits_openclaw_version_when_absent(tmp_path: Path) -> None:
+    seen: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/connection/ping":
+            seen["body"] = _json_body(request)
+            return httpx.Response(200, json={"pending_command": None})
+        return httpx.Response(404)
+
+    storage = _write_creds(tmp_path)
+    client = SellerClawConnectionClient(
+        credentials_storage=storage,
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    await client.ping(
+        agent_instance_id=UUID("66666666-6666-4666-8666-666666666666"),
+        agent_version="1",
+        protocol_version=1,
+        openclaw_status="running",
+        openclaw_error=None,
+        command_result=None,
+    )
+    assert "openclaw_version" not in seen["body"]
+
+
+@pytest.mark.asyncio
 async def test_upload_state_backup_returns_true_on_204(tmp_path: Path) -> None:
     payload = b"\x1f\x8b\x08fake"
 
@@ -497,6 +552,58 @@ async def test_ping_includes_browser_payload_in_json_body(tmp_path: Path) -> Non
         openclaw_error=None,
         command_result=None,
         browser=browser,
+    )
+    assert out.pending_command is None
+
+
+@pytest.mark.asyncio
+async def test_ping_includes_config_version_in_json_body(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/connection/ping":
+            body = _json_body(request)
+            assert body["config_version"] == 42
+            return httpx.Response(200, json={"pending_command": None})
+        return httpx.Response(404)
+
+    storage = _write_creds(tmp_path)
+    client = SellerClawConnectionClient(
+        credentials_storage=storage,
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    out = await client.ping(
+        agent_instance_id=UUID("77777777-7777-4777-8777-777777777777"),
+        agent_version="1",
+        protocol_version=2,
+        openclaw_status="running",
+        openclaw_error=None,
+        command_result=None,
+        config_version=42,
+    )
+    assert out.pending_command is None
+
+
+@pytest.mark.asyncio
+async def test_ping_omits_config_version_when_none(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/agent/connection/ping":
+            assert "config_version" not in _json_body(request)
+            return httpx.Response(200, json={"pending_command": None})
+        return httpx.Response(404)
+
+    storage = _write_creds(tmp_path)
+    client = SellerClawConnectionClient(
+        credentials_storage=storage,
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    out = await client.ping(
+        agent_instance_id=UUID("77777777-7777-4777-8777-777777777777"),
+        agent_version="1",
+        protocol_version=2,
+        openclaw_status="running",
+        openclaw_error=None,
+        command_result=None,
     )
     assert out.pending_command is None
 

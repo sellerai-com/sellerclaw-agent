@@ -8,11 +8,30 @@ import pytest
 from sellerclaw_agent.cloud.state_backup import (
     build_state_backup_archive,
     iter_state_backup_files,
+    read_applied_config_version,
     restore_state_backup,
     state_dir_has_restoreable_data,
+    write_applied_config_version,
 )
 
 pytestmark = pytest.mark.unit
+
+
+def test_write_then_read_applied_config_version_roundtrips(tmp_path: Path) -> None:
+    # Version lives in a SellerClaw sidecar file, NOT in openclaw.json (OpenClaw's meta is a
+    # closed schema and rejects unknown keys).
+    write_applied_config_version(42, tmp_path)
+    assert not (tmp_path / "openclaw.json").exists()
+    assert read_applied_config_version(tmp_path) == 42
+    # Monotonic on the cloud side, but the file itself just reflects the last write.
+    write_applied_config_version(43, tmp_path)
+    assert read_applied_config_version(tmp_path) == 43
+
+
+def test_read_applied_config_version_none_when_missing_or_malformed(tmp_path: Path) -> None:
+    assert read_applied_config_version(tmp_path) is None
+    (tmp_path / "sellerclaw-config-version").write_text("not-an-int", encoding="utf-8")
+    assert read_applied_config_version(tmp_path) is None
 
 
 def _write_tree(base: Path) -> None:

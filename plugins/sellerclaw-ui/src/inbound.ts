@@ -483,9 +483,6 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           });
         };
         const onReasoningStream = (evt: { text?: string }): void => {
-          // DIAG (temporary): confirm whether this dispatcher ever invokes onReasoningStream.
-          // eslint-disable-next-line no-console
-          console.error(`DIAG sellerclaw-ui onReasoningStream fired len=${evt?.text?.length ?? 0}`);
           const t = (evt?.text ?? "").trim();
           if (!t || t === reasoningPrior) return;
           reasoningBuf += t.startsWith(reasoningPrior) ? t.slice(reasoningPrior.length) : t;

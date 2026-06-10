@@ -268,6 +268,8 @@ class SellerClawConnectionClient:
         command_result: dict[str, Any] | None,
         browser: dict[str, Any] | None = None,
         agent_activity: dict[str, Any] | None = None,
+        config_version: int | None = None,
+        openclaw_version: str | None = None,
     ) -> PingResponse:
         body: dict[str, Any] = {
             "agent_instance_id": str(agent_instance_id),
@@ -277,10 +279,18 @@ class SellerClawConnectionClient:
             "openclaw_error": openclaw_error,
             "command_result": command_result,
         }
+        if openclaw_version is not None:
+            # Underlying OpenClaw runtime version (image tag baked at build), surfaced
+            # in the cloud agent-info UI. Optional for older cloud backends.
+            body["openclaw_version"] = openclaw_version
         if browser is not None:
             body["browser"] = browser
         if agent_activity is not None:
             body["agent_activity"] = agent_activity
+        if config_version is not None:
+            # Manifest version the agent currently has applied (meta.configVersion of the
+            # active openclaw.json). Lets the cloud detect and re-push undelivered changes.
+            body["config_version"] = config_version
         status, data = await self._request_json("POST", "/agent/connection/ping", json_body=body)
         if status == 401:
             raise CloudAuthError(self._detail_message(data), status_code=401)

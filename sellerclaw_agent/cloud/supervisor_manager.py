@@ -16,6 +16,7 @@ import structlog
 
 from sellerclaw_agent.bundle.builder import BundleBuilder
 from sellerclaw_agent.bundle.manifest import GenericManifest
+from sellerclaw_agent.cloud.state_backup import write_applied_config_version
 from sellerclaw_agent.server.secrets_store import get_secrets
 
 _log = structlog.get_logger(__name__)
@@ -741,6 +742,7 @@ class SupervisorContainerManager:
 
         out = (proc.stdout or "") + (proc.stderr or "")
         if proc.returncode == 0:
+            write_applied_config_version(manifest.config_version)
             return "completed", None
         if "already started" in out.lower():
             return "rejected", REJECT_ALREADY_RUNNING
@@ -767,6 +769,7 @@ class SupervisorContainerManager:
 
         out = (proc.stdout or "") + (proc.stderr or "")
         if proc.returncode == 0:
+            write_applied_config_version(manifest.config_version)
             return "completed", None
         return "failed", out.strip()[:500] or f"exit {proc.returncode}"
 
@@ -815,6 +818,10 @@ class SupervisorContainerManager:
             shared_skills=built.shared_skills,
         ):
             _log.info("update_manifest_noop", reason="bundle_unchanged")
+            # Bundle byte-identical, but the cloud may have bumped config_version (a change
+            # that doesn't alter the rendered bundle). Record it so the reported applied
+            # version still advances — otherwise the cloud would re-push forever.
+            write_applied_config_version(manifest.config_version)
             return "completed", None
         try:
             write_bundle_to_disk(
@@ -839,6 +846,7 @@ class SupervisorContainerManager:
             out = ((proc.stderr or "") + (proc.stdout or "")).strip()
             _log.warning("apply_bundle_nonzero", returncode=proc.returncode, output=out[:500])
             return "failed", out[:500] or f"apply-bundle exit {proc.returncode}"
+        write_applied_config_version(manifest.config_version)
         return "completed", None
 
 
