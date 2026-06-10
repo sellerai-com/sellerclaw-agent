@@ -23,6 +23,17 @@ def _v2() -> dict[str, Any]:
     return copy.deepcopy(load_manifest_v2_mapping())
 
 
+def test_parse_config_version_present_and_absent() -> None:
+    data = _v2()
+    data["config_version"] = 42
+    assert bundle_manifest_from_mapping(data).config_version == 42
+    # Absent or malformed → 0 (backward compatible with manifests that predate the field).
+    data.pop("config_version", None)
+    assert bundle_manifest_from_mapping(data).config_version == 0
+    data["config_version"] = "not-a-number"
+    assert bundle_manifest_from_mapping(data).config_version == 0
+
+
 def test_parse_happy_path_from_fixture() -> None:
     manifest = bundle_manifest_from_mapping(_v2())
     assert manifest.user_id == _EXPECTED_USER_ID
