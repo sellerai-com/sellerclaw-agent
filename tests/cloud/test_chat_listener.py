@@ -245,6 +245,71 @@ async def test_user_message_forwarded_on_running_then_recorded(
 
 
 @pytest.mark.asyncio
+async def test_redelivery_bypasses_dedup_and_marks_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A catch-up re-delivery of an already-forwarded id is still forwarded, tagged redelivery."""
+    mid = "m-redel"
+    payload = {
+        "chat_id": "c1",
+        "agent_id": "supervisor",
+        "user_id": "u1",
+        "text": "retry",
+        "message_id": mid,
+        "redelivery": True,
+    }
+    body = _sse_bytes([("user_message", payload)])
+    supervisor = _FakeSupervisor(status="running", error=None)
+    inbound = _InboundRecorder(behavior="ok")
+    dedup = cl._MessageIdDedup()
+    dedup.record_forwarded(mid)  # the earlier (lost) live delivery already recorded it
+
+    await _run_consume(
+        sse_body=body,
+        supervisor=supervisor,
+        inbound=inbound,
+        agent_instance_id=uuid4(),
+        dedup=dedup,
+        monkeypatch=monkeypatch,
+    )
+
+    assert len(inbound.calls) == 1, "re-delivery must be forwarded despite the dedup hit"
+    assert inbound.calls[0]["redelivery"] is True
+    assert inbound.calls[0]["text"] == "retry"
+
+
+@pytest.mark.asyncio
+async def test_non_redelivery_duplicate_is_dropped_by_dedup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live (non-redelivery) duplicate of an already-forwarded id is still suppressed."""
+    mid = "m-dup"
+    payload = {
+        "chat_id": "c1",
+        "agent_id": "supervisor",
+        "user_id": "u1",
+        "text": "dup",
+        "message_id": mid,
+    }
+    body = _sse_bytes([("user_message", payload)])
+    supervisor = _FakeSupervisor(status="running", error=None)
+    inbound = _InboundRecorder(behavior="ok")
+    dedup = cl._MessageIdDedup()
+    dedup.record_forwarded(mid)
+
+    await _run_consume(
+        sse_body=body,
+        supervisor=supervisor,
+        inbound=inbound,
+        agent_instance_id=uuid4(),
+        dedup=dedup,
+        monkeypatch=monkeypatch,
+    )
+
+    assert inbound.calls == [], "a non-redelivery duplicate must be dropped by the dedup"
+
+
+@pytest.mark.asyncio
 async def test_consume_chat_sse_403_agent_suspended_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

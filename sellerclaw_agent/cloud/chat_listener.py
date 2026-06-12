@@ -94,6 +94,11 @@ def _inbound_body_from_sse(payload: dict[str, Any]) -> dict[str, Any]:
     raw = payload.get("raw_content")
     if raw is not None:
         out["raw_content"] = raw
+    # Catch-up re-delivery of a still-PROCESSING message: tells the local handler to
+    # dispatch it as a fresh OpenClaw turn (new MessageSid) and to guard against a
+    # genuinely in-flight duplicate, instead of treating it as a brand-new message.
+    if payload.get("redelivery"):
+        out["redelivery"] = True
     return out
 
 
@@ -123,7 +128,15 @@ async def forward_user_message(
 ) -> None:
     """Forward a ``user_message`` event to local OpenClaw inbound (deduped, gated on readiness)."""
     mid = str(payload.get("message_id") or "")
-    if mid and dedup.already_forwarded(mid):
+    # Catch-up re-delivery bypasses the dedup: the cloud only re-sends a message that is
+    # still PROCESSING (its turn never completed on the cloud), so it MUST be re-processed.
+    # The dedup — recorded the instant a message is handed to the local inbound (HTTP 202),
+    # not when its turn is actually delivered back — would otherwise drop the re-delivery as
+    # "already forwarded" and leave the message stuck PROCESSING forever. Double-processing
+    # of a genuinely in-flight turn is prevented downstream by the inbound handler's
+    # per-message in-flight guard.
+    redelivery = bool(payload.get("redelivery"))
+    if mid and not redelivery and dedup.already_forwarded(mid):
         return
     chat_id = str(payload.get("chat_id") or "") or None
     user_id = str(payload.get("user_id") or "") or None
