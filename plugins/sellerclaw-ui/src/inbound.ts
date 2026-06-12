@@ -37,6 +37,13 @@ interface InboundPayload {
    * guard so a redelivery that races a genuinely-running turn is dropped, not duplicated.
    */
   redelivery?: boolean;
+  /**
+   * User's configured agent effort ("medium" | "high" | "max") captured by the cloud at
+   * send time. The same value is also embedded as a `[request-effort: …]` line at the top
+   * of `text`, so the model sees it either way; this field is the structured copy for the
+   * dispatch context (Effort). Absent/null on catch-up redeliveries and older clouds.
+   */
+  effort?: string | null;
 }
 
 /**
@@ -557,6 +564,9 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
             : (payload.message_id ?? crypto.randomUUID()),
           timestamp: Date.now(),
           commandAuthorized: true,
+          // Structured copy of the per-message effort level (also present as a
+          // `[request-effort: …]` line inside rawBody).
+          extraContext: payload.effort ? { Effort: payload.effort } : undefined,
           // Reasoning stream → "Thinking…" panel. OpenClaw forwards these from ``replyOptions``
           // into the run (``onReasoningStream``/``onReasoningEnd``); without them the agent's
           // reasoning is produced but never reaches the chat.
