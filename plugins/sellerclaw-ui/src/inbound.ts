@@ -29,7 +29,23 @@ interface InboundPayload {
   message_id?: string;
   /** Multimodal parts mirroring SellerClaw persisted raw_content. */
   raw_content?: unknown[];
+  /**
+   * Catch-up re-delivery of a still-PROCESSING message (cloud restarted mid-turn, so the
+   * turn result was lost and the row never left PROCESSING). When set, dispatch as a FRESH
+   * OpenClaw turn (new MessageSid) so any session-level dedup on the original message id
+   * can't suppress the re-run. The cloud message_id is still used to key the in-flight
+   * guard so a redelivery that races a genuinely-running turn is dropped, not duplicated.
+   */
+  redelivery?: boolean;
 }
+
+/**
+ * Cloud message ids currently being dispatched. The cloud re-sends every still-PROCESSING
+ * message on each (re)connect (catch-up). If such a re-delivery lands while the original
+ * turn is still running, dispatching again would produce a duplicate reply — so we drop it.
+ * Keyed by the stable cloud message_id; cleared once the turn finishes (success OR failure).
+ */
+const inFlightInboundMessageIds = new Set<string>();
 
 /**
  * Plugin logger wrappers: when OpenClaw runs without a logger (or with `info`/`error`
@@ -401,9 +417,27 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
       }
 
       const sessionKey = `agent:${payload.agent_id}:sellerclaw-ui:direct:${payload.chat_id}`;
+
+      // Drop a duplicate dispatch of the SAME cloud message while its turn is still in
+      // flight (a catch-up re-delivery racing the original run). Once the turn finishes the
+      // id is freed, so a later re-delivery of a message whose result was lost re-processes.
+      const inboundMessageId = payload.message_id?.trim() ?? "";
+      if (inboundMessageId && inFlightInboundMessageIds.has(inboundMessageId)) {
+        logInfo(
+          api,
+          `sellerclaw-ui: inbound dropped (turn already in flight) message_id=${inboundMessageId} chat_id=${payload.chat_id}`,
+        );
+        res.statusCode = 202;
+        res.end(JSON.stringify({ ok: true, deduped: true }));
+        return true;
+      }
+      if (inboundMessageId) inFlightInboundMessageIds.add(inboundMessageId);
+
       logInfo(
         api,
-        `sellerclaw-ui: inbound accepted chat_id=${payload.chat_id} agent_id=${payload.agent_id} expected_session_key=${sessionKey}`,
+        `sellerclaw-ui: inbound accepted chat_id=${payload.chat_id} agent_id=${payload.agent_id} expected_session_key=${sessionKey}${
+          payload.redelivery ? " redelivery=true" : ""
+        }`,
       );
 
       res.statusCode = 202;
@@ -514,7 +548,13 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           recipientAddress: `sellerclaw-ui:direct:${payload.chat_id}`,
           conversationLabel: payload.chat_id,
           rawBody,
-          messageId: payload.message_id ?? crypto.randomUUID(),
+          // A catch-up re-delivery dispatches as a fresh OpenClaw turn: a new MessageSid so
+          // any session-level dedup on the original id can't suppress the re-run. The cloud
+          // turn is paired to the still-PROCESSING user message by chat, not by this id, so
+          // the re-run correctly completes the stuck message.
+          messageId: payload.redelivery
+            ? crypto.randomUUID()
+            : (payload.message_id ?? crypto.randomUUID()),
           timestamp: Date.now(),
           commandAuthorized: true,
           // Reasoning stream → "Thinking…" panel. OpenClaw forwards these from ``replyOptions``
@@ -630,9 +670,15 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
 
       void dispatchPromise
         .then(() => finishTurn("completed"))
-        .catch((err: unknown) => {
+        .catch(async (err: unknown) => {
           logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
-          void finishTurn("failed");
+          await finishTurn("failed");
+        })
+        .finally(() => {
+          // Free the in-flight slot only after the turn is finalized (turn/end posted or
+          // failed). Until then a catch-up re-delivery of this same message is dropped; once
+          // freed, a later re-delivery (e.g. the cloud was down when turn/end fired) re-runs.
+          if (inboundMessageId) inFlightInboundMessageIds.delete(inboundMessageId);
         });
 
       return true;

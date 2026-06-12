@@ -1160,3 +1160,84 @@ describe("registerInboundRoute", () => {
     );
   });
 });
+
+describe("registerInboundRoute catch-up re-delivery", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dispatchMock.mockResolvedValue(undefined);
+    // finishTurn finalizes the turn via send.ts → global fetch (turn/start + turn/end).
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 })) as unknown as typeof fetch;
+  });
+
+  const body = (over: Record<string, unknown>) => ({
+    ok: true,
+    value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "hi", ...over },
+  });
+
+  const authReq = () =>
+    ({ headers: { authorization: "Bearer secret" } }) as IncomingMessage;
+
+  it("drops a re-delivery while the original turn is still in flight", async () => {
+    // Hang the first dispatch so the message stays in flight when the re-delivery lands.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    dispatchMock.mockReturnValueOnce(gate);
+
+    readBodyMock.mockResolvedValueOnce(body({ message_id: "m1" }));
+    readBodyMock.mockResolvedValueOnce(body({ message_id: "m1", redelivery: true }));
+
+    const { api, registerHttpRoute } = buildApi();
+    registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+    const handler = getHandler(registerHttpRoute);
+
+    const end1 = vi.fn();
+    await handler(authReq(), { statusCode: 0, end: end1 } as unknown as ServerResponse);
+    await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+
+    const end2 = vi.fn();
+    const res2 = { statusCode: 0, end: end2 } as unknown as ServerResponse;
+    await handler(authReq(), res2);
+
+    // The racing re-delivery is acknowledged (202) but NOT dispatched a second time.
+    expect(res2.statusCode).toBe(202);
+    expect(JSON.parse(end2.mock.calls[0]![0] as string)).toEqual({ ok: true, deduped: true });
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+
+    // Let the original turn finish so its dangling promises settle before the test ends.
+    release();
+    await vi.waitFor(() =>
+      expect(globalThis.fetch as ReturnType<typeof vi.fn>).toHaveBeenCalled(),
+    );
+  });
+
+  it("dispatches a re-delivery with a FRESH MessageSid (defeats session-level dedup)", async () => {
+    readBodyMock.mockResolvedValueOnce(body({ message_id: "m2", redelivery: true }));
+
+    const { api, registerHttpRoute } = buildApi();
+    registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+    const handler = getHandler(registerHttpRoute);
+
+    await handler(authReq(), { statusCode: 0, end: vi.fn() } as unknown as ServerResponse);
+    await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+
+    const sid = (dispatchMock.mock.calls[0]![0] as { messageId: string }).messageId;
+    expect(sid).not.toBe("m2");
+    expect(typeof sid).toBe("string");
+    expect(sid.length).toBeGreaterThan(0);
+  });
+
+  it("dispatches a live message with its cloud message_id as MessageSid", async () => {
+    readBodyMock.mockResolvedValueOnce(body({ message_id: "m3" }));
+
+    const { api, registerHttpRoute } = buildApi();
+    registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+    const handler = getHandler(registerHttpRoute);
+
+    await handler(authReq(), { statusCode: 0, end: vi.fn() } as unknown as ServerResponse);
+    await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+
+    expect((dispatchMock.mock.calls[0]![0] as { messageId: string }).messageId).toBe("m3");
+  });
+});
