@@ -115,7 +115,10 @@ describe("registerInboundRoute", () => {
     });
   });
 
-  it("registers HTTP route /channels/sellerclaw-ui/inbound with plugin auth", () => {
+  it("registers HTTP route /api/channels/sellerclaw-ui/inbound with gateway auth", () => {
+    // The /api/channels prefix + auth:"gateway" make OpenClaw authenticate the
+    // request with the gateway token and grant operator.write to the agent run
+    // (required for sessions_spawn); the handler itself does no auth.
     const registerHttpRoute = vi.fn();
     const api = {
       config: {
@@ -138,47 +141,13 @@ describe("registerInboundRoute", () => {
     const opts = registerHttpRoute.mock.calls[0]![0] as {
       path: string;
       auth: string;
+      gatewayRuntimeScopeSurface?: string;
       handler: unknown;
     };
-    expect(opts.path).toBe("/channels/sellerclaw-ui/inbound");
-    expect(opts.auth).toBe("plugin");
+    expect(opts.path).toBe("/api/channels/sellerclaw-ui/inbound");
+    expect(opts.auth).toBe("gateway");
+    expect(opts.gatewayRuntimeScopeSurface).toBeUndefined();
     expect(typeof opts.handler).toBe("function");
-  });
-
-  it("returns 401 when Authorization is missing", async () => {
-    const registerHttpRoute = vi.fn();
-    const api = {
-      config: {
-        channels: {
-          "sellerclaw-ui": {
-            apiBaseUrl: "https://api.example",
-            userId: "user-1",
-            agentApiKey: "sca",
-            internalWebhookSecret: "secret",
-          },
-        },
-      } as Record<string, unknown>,
-      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      registerHttpRoute,
-    };
-    registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
-    const handler = registerHttpRoute.mock.calls[0]![0].handler as (
-      req: IncomingMessage,
-      res: ServerResponse,
-    ) => Promise<boolean>;
-
-    const req = {
-      headers: {},
-    } as IncomingMessage;
-    const res = {
-      statusCode: 0,
-      end: vi.fn(),
-    } as unknown as ServerResponse;
-
-    const done = await handler(req, res);
-    expect(done).toBe(true);
-    expect(res.statusCode).toBe(401);
-    expect(readBodyMock).not.toHaveBeenCalled();
   });
 
   it("returns 400 when chat_id or text is missing", async () => {
@@ -209,7 +178,7 @@ describe("registerInboundRoute", () => {
     ) => Promise<boolean>;
 
     const req = {
-      headers: { authorization: "Bearer secret" },
+      headers: {},
     } as IncomingMessage;
     const res = {
       statusCode: 0,
@@ -255,7 +224,7 @@ describe("registerInboundRoute", () => {
         res: ServerResponse,
       ) => Promise<boolean>;
 
-      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const req = { headers: {} } as IncomingMessage;
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
 
       await handler(req, res);
@@ -308,7 +277,7 @@ describe("registerInboundRoute", () => {
       registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
       const handler = getHandler(registerHttpRoute);
 
-      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const req = { headers: {} } as IncomingMessage;
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
       await handler(req, res);
 
@@ -354,7 +323,7 @@ describe("registerInboundRoute", () => {
       registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
       const handler = getHandler(registerHttpRoute);
 
-      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const req = { headers: {} } as IncomingMessage;
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
       await handler(req, res);
 
@@ -413,7 +382,7 @@ describe("registerInboundRoute", () => {
       registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
       const handler = getHandler(registerHttpRoute);
 
-      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const req = { headers: {} } as IncomingMessage;
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
       await handler(req, res);
 
@@ -444,7 +413,7 @@ describe("registerInboundRoute", () => {
       registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
       const handler = getHandler(registerHttpRoute);
 
-      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const req = { headers: {} } as IncomingMessage;
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
       await handler(req, res);
 
@@ -479,7 +448,7 @@ describe("registerInboundRoute", () => {
       registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
       const handler = getHandler(registerHttpRoute);
 
-      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const req = { headers: {} } as IncomingMessage;
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
       await handler(req, res);
 
@@ -543,7 +512,7 @@ describe("registerInboundRoute", () => {
         req: IncomingMessage,
         res: ServerResponse,
       ) => Promise<boolean>;
-      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const req = { headers: {} } as IncomingMessage;
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
       await handler(req, res);
       const deliver = (
@@ -680,7 +649,7 @@ describe("registerInboundRoute", () => {
       const { api, registerHttpRoute } = buildApi();
       registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
       const handler = getHandler(registerHttpRoute);
-      const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+      const req = { headers: {} } as IncomingMessage;
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
       await handler(req, res);
       await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalled());
@@ -854,7 +823,7 @@ describe("registerInboundRoute", () => {
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
 
-    const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+    const req = { headers: {} } as IncomingMessage;
     const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
 
     await handler(req, res);
@@ -916,7 +885,7 @@ describe("registerInboundRoute", () => {
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
 
-    const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+    const req = { headers: {} } as IncomingMessage;
     const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
 
     await handler(req, res);
@@ -964,7 +933,7 @@ describe("registerInboundRoute", () => {
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
 
-    const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+    const req = { headers: {} } as IncomingMessage;
     const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
 
     await handler(req, res);
@@ -1029,7 +998,7 @@ describe("registerInboundRoute", () => {
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
 
-    const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+    const req = { headers: {} } as IncomingMessage;
     const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
 
     await handler(req, res);
@@ -1075,7 +1044,7 @@ describe("registerInboundRoute", () => {
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
 
-    const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+    const req = { headers: {} } as IncomingMessage;
     const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
 
     await handler(req, res);
@@ -1138,7 +1107,7 @@ describe("registerInboundRoute", () => {
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
 
-    const req = { headers: { authorization: "Bearer secret" } } as IncomingMessage;
+    const req = { headers: {} } as IncomingMessage;
     const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
 
     await handler(req, res);
@@ -1176,8 +1145,7 @@ describe("registerInboundRoute catch-up re-delivery", () => {
     value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "hi", ...over },
   });
 
-  const authReq = () =>
-    ({ headers: { authorization: "Bearer secret" } }) as IncomingMessage;
+  const makeReq = () => ({ headers: {} }) as IncomingMessage;
 
   it("drops a re-delivery while the original turn is still in flight", async () => {
     // Hang the first dispatch so the message stays in flight when the re-delivery lands.
@@ -1193,12 +1161,12 @@ describe("registerInboundRoute catch-up re-delivery", () => {
     const handler = getHandler(registerHttpRoute);
 
     const end1 = vi.fn();
-    await handler(authReq(), { statusCode: 0, end: end1 } as unknown as ServerResponse);
+    await handler(makeReq(), { statusCode: 0, end: end1 } as unknown as ServerResponse);
     await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
 
     const end2 = vi.fn();
     const res2 = { statusCode: 0, end: end2 } as unknown as ServerResponse;
-    await handler(authReq(), res2);
+    await handler(makeReq(), res2);
 
     // The racing re-delivery is acknowledged (202) but NOT dispatched a second time.
     expect(res2.statusCode).toBe(202);
@@ -1219,7 +1187,7 @@ describe("registerInboundRoute catch-up re-delivery", () => {
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
 
-    await handler(authReq(), { statusCode: 0, end: vi.fn() } as unknown as ServerResponse);
+    await handler(makeReq(), { statusCode: 0, end: vi.fn() } as unknown as ServerResponse);
     await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
 
     const sid = (dispatchMock.mock.calls[0]![0] as { messageId: string }).messageId;
@@ -1235,7 +1203,7 @@ describe("registerInboundRoute catch-up re-delivery", () => {
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
 
-    await handler(authReq(), { statusCode: 0, end: vi.fn() } as unknown as ServerResponse);
+    await handler(makeReq(), { statusCode: 0, end: vi.fn() } as unknown as ServerResponse);
     await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
 
     expect((dispatchMock.mock.calls[0]![0] as { messageId: string }).messageId).toBe("m3");

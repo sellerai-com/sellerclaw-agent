@@ -22,12 +22,13 @@ async def test_local_forwarder_uses_shared_http_client() -> None:
         fwd = LocalOpenClawForwarder(
             base_url="http://gw.test",
             hooks_token="hooks-secret",
+            gateway_token="gw-secret",
             http_client=shared,
         )
         await fwd.post_inbound_json({"chat_id": "c1", "agent_id": "a", "user_id": "u1", "text": "x"})
         await fwd.post_inbound_json({"chat_id": "c2", "agent_id": "a", "user_id": "u1", "text": "y"})
     assert len(calls) == 2
-    assert all(c.endswith("/channels/sellerclaw-ui/inbound") for c in calls)
+    assert all(c.endswith("/api/channels/sellerclaw-ui/inbound") for c in calls)
 
 
 @pytest.mark.asyncio
@@ -44,13 +45,17 @@ async def test_local_forwarder_posts_inbound() -> None:
     fwd = LocalOpenClawForwarder(
         base_url="http://gw.test",
         hooks_token="hooks-secret",
+        gateway_token="gw-secret",
         transport=transport,
     )
     await fwd.post_inbound_json(
         {"chat_id": "c1", "agent_id": "supervisor", "user_id": "u1", "text": "hi"},
     )
-    assert captured["url"].endswith("/channels/sellerclaw-ui/inbound")
-    assert captured["auth"] == "Bearer hooks-secret"
+    # Inbound goes through OpenClaw's gateway-authenticated plugin route: the
+    # /api/channels prefix is what makes the gateway grant operator scopes to the
+    # agent run (sessions_spawn needs operator.write), and auth is the gateway token.
+    assert captured["url"].endswith("/api/channels/sellerclaw-ui/inbound")
+    assert captured["auth"] == "Bearer gw-secret"
     assert json.loads(captured["body"])["text"] == "hi"
 
 
@@ -68,12 +73,35 @@ async def test_local_forwarder_posts_abort() -> None:
     fwd = LocalOpenClawForwarder(
         base_url="http://gw.test",
         hooks_token="hooks-secret",
+        gateway_token="gw-secret",
         transport=transport,
     )
     await fwd.post_abort_json({"chat_id": "c1", "agent_id": "supervisor"})
-    assert captured["url"].endswith("/channels/sellerclaw-ui/abort")
-    assert captured["auth"] == "Bearer hooks-secret"
+    assert captured["url"].endswith("/api/channels/sellerclaw-ui/abort")
+    assert captured["auth"] == "Bearer gw-secret"
     assert json.loads(captured["body"]) == {"chat_id": "c1", "agent_id": "supervisor"}
+
+
+@pytest.mark.asyncio
+async def test_local_forwarder_posts_hooks_agent_with_hooks_token() -> None:
+    """/hooks/agent is authenticated by OpenClaw's hooks token, not the gateway token."""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(202)
+
+    transport = httpx.MockTransport(handler)
+    fwd = LocalOpenClawForwarder(
+        base_url="http://gw.test",
+        hooks_token="hooks-secret",
+        gateway_token="gw-secret",
+        transport=transport,
+    )
+    await fwd.post_hooks_agent_json({"event": "ping"})
+    assert captured["url"].endswith("/hooks/agent")
+    assert captured["auth"] == "Bearer hooks-secret"
 
 
 @pytest.mark.asyncio
@@ -82,6 +110,7 @@ async def test_local_forwarder_abort_raises_on_non_2xx() -> None:
     fwd = LocalOpenClawForwarder(
         base_url="http://gw.test",
         hooks_token="hooks-secret",
+        gateway_token="gw-secret",
         transport=transport,
     )
     with pytest.raises(httpx.HTTPStatusError):

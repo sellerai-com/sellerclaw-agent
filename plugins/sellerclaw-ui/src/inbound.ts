@@ -364,29 +364,19 @@ export function readDeliverPayload(raw: unknown): { text: string; mediaUrls: str
 
 export function registerInboundRoute(api: OpenClawPluginApi): void {
   api.registerHttpRoute({
-    path: "/channels/sellerclaw-ui/inbound",
-    auth: "plugin",
+    // `/api/channels` prefix + `auth: "gateway"`: OpenClaw authenticates the request
+    // against the gateway token BEFORE the handler and grants the agent run
+    // `operator.write` (write-default surface) — required for `sessions_spawn`.
+    // A plugin-authed route would run the whole turn with an empty operator scope.
+    path: "/api/channels/sellerclaw-ui/inbound",
+    auth: "gateway",
     handler: async (req, res) => {
-      const authHeader = req.headers.authorization;
-      if (!authHeader?.startsWith("Bearer ")) {
-        res.statusCode = 401;
-        res.end(JSON.stringify({ error: "Missing auth" }));
-        return true;
-      }
-
       let account: ScwUiAccount;
       try {
         account = resolveSellerclawUiAccount(api.config);
       } catch {
         res.statusCode = 503;
         res.end(JSON.stringify({ error: "Channel not configured" }));
-        return true;
-      }
-
-      const token = authHeader.slice(7);
-      if (token !== account.internalWebhookSecret) {
-        res.statusCode = 401;
-        res.end(JSON.stringify({ error: "Invalid token" }));
         return true;
       }
 
@@ -708,32 +698,10 @@ interface AbortPayload {
  */
 export function registerAbortRoute(api: OpenClawPluginApi): void {
   api.registerHttpRoute({
-    path: "/channels/sellerclaw-ui/abort",
-    auth: "plugin",
+    // Gateway-authenticated like the inbound route (see registerInboundRoute).
+    path: "/api/channels/sellerclaw-ui/abort",
+    auth: "gateway",
     handler: async (req, res) => {
-      const authHeader = req.headers.authorization;
-      if (!authHeader?.startsWith("Bearer ")) {
-        res.statusCode = 401;
-        res.end(JSON.stringify({ error: "Missing auth" }));
-        return true;
-      }
-
-      let account: ScwUiAccount;
-      try {
-        account = resolveSellerclawUiAccount(api.config);
-      } catch {
-        res.statusCode = 503;
-        res.end(JSON.stringify({ error: "Channel not configured" }));
-        return true;
-      }
-
-      const token = authHeader.slice(7);
-      if (token !== account.internalWebhookSecret) {
-        res.statusCode = 401;
-        res.end(JSON.stringify({ error: "Invalid token" }));
-        return true;
-      }
-
       const readResult = await readJsonWebhookBodyOrReject({ req, res });
       if (
         !readResult ||

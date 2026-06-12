@@ -46,9 +46,7 @@ function getHandler(registerHttpRoute: ReturnType<typeof vi.fn>): HandlerFn {
   return registerHttpRoute.mock.calls[0]![0].handler as HandlerFn;
 }
 
-function makeReq(
-  headers: Record<string, string> = { authorization: "Bearer secret" },
-): IncomingMessage {
+function makeReq(headers: Record<string, string> = {}): IncomingMessage {
   return { headers } as unknown as IncomingMessage;
 }
 
@@ -67,17 +65,21 @@ describe("registerAbortRoute", () => {
     vi.clearAllMocks();
   });
 
-  it("registers HTTP route /channels/sellerclaw-ui/abort with plugin auth", () => {
+  it("registers HTTP route /api/channels/sellerclaw-ui/abort with gateway auth", () => {
+    // Gateway auth happens before the handler (Bearer gateway token); the
+    // /api/channels prefix is required for OpenClaw to enforce it.
     const { api, registerHttpRoute } = buildApi();
     registerAbortRoute(api);
     expect(registerHttpRoute).toHaveBeenCalledTimes(1);
     const opts = registerHttpRoute.mock.calls[0]![0] as {
       path: string;
       auth: string;
+      gatewayRuntimeScopeSurface?: string;
       handler: unknown;
     };
-    expect(opts.path).toBe("/channels/sellerclaw-ui/abort");
-    expect(opts.auth).toBe("plugin");
+    expect(opts.path).toBe("/api/channels/sellerclaw-ui/abort");
+    expect(opts.auth).toBe("gateway");
+    expect(opts.gatewayRuntimeScopeSurface).toBeUndefined();
     expect(typeof opts.handler).toBe("function");
   });
 
@@ -111,19 +113,6 @@ describe("registerAbortRoute", () => {
     expect(abortRunMock).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(202);
     expect(JSON.parse(res.body)).toEqual({ ok: true, aborted: false });
-  });
-
-  it("returns 401 when the bearer token does not match", async () => {
-    const { api, registerHttpRoute } = buildApi();
-    registerAbortRoute(api);
-    const handler = getHandler(registerHttpRoute);
-
-    const res = makeRes();
-    await handler(makeReq({ authorization: "Bearer wrong" }), res);
-
-    expect(res.statusCode).toBe(401);
-    expect(readBodyMock).not.toHaveBeenCalled();
-    expect(abortRunMock).not.toHaveBeenCalled();
   });
 
   it("returns 400 when chat_id or agent_id is missing", async () => {

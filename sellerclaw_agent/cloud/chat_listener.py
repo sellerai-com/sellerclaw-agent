@@ -260,9 +260,11 @@ async def run_edge_chat_sse_loop(
 
         try:
             async with async_client(timeout=INBOUND_FORWARD_TIMEOUT) as oc_http:
+                secrets = get_secrets(data_dir)
                 forwarder = LocalOpenClawForwarder(
                     base_url=openclaw_gateway_base_url(),
-                    hooks_token=get_secrets(data_dir).hooks_token,
+                    hooks_token=secrets.hooks_token,
+                    gateway_token=secrets.gateway_token,
                     http_client=oc_http,
                 )
 
