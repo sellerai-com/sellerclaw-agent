@@ -25,18 +25,24 @@ def openclaw_gateway_base_url() -> str:
 
 
 class LocalOpenClawForwarder:
-    """Forward ``user_message`` SSE payloads to ``/channels/sellerclaw-ui/inbound``."""
+    """Forward ``user_message`` SSE payloads to ``/api/channels/sellerclaw-ui/inbound``."""
 
     def __init__(
         self,
         *,
         base_url: str,
         hooks_token: str,
+        gateway_token: str,
         transport: httpx.AsyncBaseTransport | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
-        self._token = hooks_token
+        # Inbound/abort go through OpenClaw's gateway-authenticated plugin routes
+        # (``/api/channels/...`` + gateway token): gateway auth is what grants the
+        # agent run ``operator.write`` so ``sessions_spawn`` works. ``/hooks/agent``
+        # keeps its own hooks-token auth.
+        self._gateway_token = gateway_token
+        self._hooks_token = hooks_token
         self._transport = transport
         self._http = http_client
 
@@ -49,9 +55,9 @@ class LocalOpenClawForwarder:
             httpx.TimeoutException: connect/read timeout talking to the gateway.
             httpx.HTTPStatusError: gateway responded with a non-2xx status.
         """
-        url = f"{self._base}/channels/sellerclaw-ui/inbound"
+        url = f"{self._base}/api/channels/sellerclaw-ui/inbound"
         headers = {
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {self._gateway_token}",
             "Content-Type": "application/json",
         }
         if self._http is not None:
@@ -82,9 +88,9 @@ class LocalOpenClawForwarder:
             httpx.TimeoutException: connect/read timeout talking to the gateway.
             httpx.HTTPStatusError: gateway responded with a non-2xx status.
         """
-        url = f"{self._base}/channels/sellerclaw-ui/abort"
+        url = f"{self._base}/api/channels/sellerclaw-ui/abort"
         headers = {
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {self._gateway_token}",
             "Content-Type": "application/json",
         }
         if self._http is not None:
@@ -109,7 +115,7 @@ class LocalOpenClawForwarder:
         """POST ``body`` to OpenClaw ``/hooks/agent`` (cloud-originated hook delivery)."""
         url = f"{self._base}/hooks/agent"
         headers = {
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {self._hooks_token}",
             "Content-Type": "application/json",
         }
         if self._http is not None:

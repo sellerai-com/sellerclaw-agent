@@ -140,6 +140,7 @@ async def _run_consume(
         forwarder = LocalOpenClawForwarder(
             base_url="http://gw.test",
             hooks_token="tok",
+            gateway_token="gw-tok",
             http_client=inbound_http,
         )
         stop = asyncio.Event()
@@ -327,7 +328,7 @@ async def test_consume_chat_sse_403_agent_suspended_raises(
     monkeypatch.setattr(cl.httpx, "AsyncClient", patched_async_client)
     stop = asyncio.Event()
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(202))) as oc_http:
-        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", http_client=oc_http)
+        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", gateway_token="gw-tok", http_client=oc_http)
         with pytest.raises(CloudAgentSuspendedError):
             await cl._consume_chat_sse(
                 agent_token="sca_access",
@@ -354,7 +355,7 @@ async def test_consume_chat_sse_403_forbidden_raises(
     monkeypatch.setattr(cl.httpx, "AsyncClient", patched_async_client)
     stop = asyncio.Event()
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(202))) as oc_http:
-        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", http_client=oc_http)
+        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", gateway_token="gw-tok", http_client=oc_http)
         with pytest.raises(CloudConnectionError, match="chat_sse_forbidden"):
             await cl._consume_chat_sse(
                 agent_token="sca_access",
@@ -406,7 +407,7 @@ async def test_consume_chat_sse_403_session_codes_raise_specific_errors(
     monkeypatch.setattr(cl.httpx, "AsyncClient", patched_async_client)
     stop = asyncio.Event()
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(202))) as oc_http:
-        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", http_client=oc_http)
+        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", gateway_token="gw-tok", http_client=oc_http)
         with pytest.raises(expected_exc):
             await cl._consume_chat_sse(
                 agent_token="sca_access",
@@ -469,7 +470,7 @@ async def test_cancel_event_forwarded_to_abort_endpoint(monkeypatch: pytest.Monk
         dedup=dedup,
         monkeypatch=monkeypatch,
     )
-    assert inbound.paths == ["/channels/sellerclaw-ui/abort"]
+    assert inbound.paths == ["/api/channels/sellerclaw-ui/abort"]
     assert inbound.calls == [{"chat_id": "c1", "agent_id": "supervisor"}]
     # cancel targets the assistant turn, not a user message — it must not touch dedup.
     assert dedup.already_forwarded("m1") is False
@@ -502,4 +503,4 @@ async def test_cancel_event_survives_gateway_unreachable(monkeypatch: pytest.Mon
         agent_instance_id=uuid4(),
         monkeypatch=monkeypatch,
     )
-    assert inbound.paths == ["/channels/sellerclaw-ui/abort"]
+    assert inbound.paths == ["/api/channels/sellerclaw-ui/abort"]

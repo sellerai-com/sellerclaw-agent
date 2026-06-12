@@ -37,6 +37,13 @@ interface InboundPayload {
    * guard so a redelivery that races a genuinely-running turn is dropped, not duplicated.
    */
   redelivery?: boolean;
+  /**
+   * User's configured agent effort ("medium" | "high" | "max") captured by the cloud at
+   * send time. The same value is also embedded as a `[request-effort: …]` line at the top
+   * of `text`, so the model sees it either way; this field is the structured copy for the
+   * dispatch context (Effort). Absent/null on catch-up redeliveries and older clouds.
+   */
+  effort?: string | null;
 }
 
 /**
@@ -357,29 +364,19 @@ export function readDeliverPayload(raw: unknown): { text: string; mediaUrls: str
 
 export function registerInboundRoute(api: OpenClawPluginApi): void {
   api.registerHttpRoute({
-    path: "/channels/sellerclaw-ui/inbound",
-    auth: "plugin",
+    // `/api/channels` prefix + `auth: "gateway"`: OpenClaw authenticates the request
+    // against the gateway token BEFORE the handler and grants the agent run
+    // `operator.write` (write-default surface) — required for `sessions_spawn`.
+    // A plugin-authed route would run the whole turn with an empty operator scope.
+    path: "/api/channels/sellerclaw-ui/inbound",
+    auth: "gateway",
     handler: async (req, res) => {
-      const authHeader = req.headers.authorization;
-      if (!authHeader?.startsWith("Bearer ")) {
-        res.statusCode = 401;
-        res.end(JSON.stringify({ error: "Missing auth" }));
-        return true;
-      }
-
       let account: ScwUiAccount;
       try {
         account = resolveSellerclawUiAccount(api.config);
       } catch {
         res.statusCode = 503;
         res.end(JSON.stringify({ error: "Channel not configured" }));
-        return true;
-      }
-
-      const token = authHeader.slice(7);
-      if (token !== account.internalWebhookSecret) {
-        res.statusCode = 401;
-        res.end(JSON.stringify({ error: "Invalid token" }));
         return true;
       }
 
@@ -557,6 +554,9 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
             : (payload.message_id ?? crypto.randomUUID()),
           timestamp: Date.now(),
           commandAuthorized: true,
+          // Structured copy of the per-message effort level (also present as a
+          // `[request-effort: …]` line inside rawBody).
+          extraContext: payload.effort ? { Effort: payload.effort } : undefined,
           // Reasoning stream → "Thinking…" panel. OpenClaw forwards these from ``replyOptions``
           // into the run (``onReasoningStream``/``onReasoningEnd``); without them the agent's
           // reasoning is produced but never reaches the chat.
@@ -698,32 +698,10 @@ interface AbortPayload {
  */
 export function registerAbortRoute(api: OpenClawPluginApi): void {
   api.registerHttpRoute({
-    path: "/channels/sellerclaw-ui/abort",
-    auth: "plugin",
+    // Gateway-authenticated like the inbound route (see registerInboundRoute).
+    path: "/api/channels/sellerclaw-ui/abort",
+    auth: "gateway",
     handler: async (req, res) => {
-      const authHeader = req.headers.authorization;
-      if (!authHeader?.startsWith("Bearer ")) {
-        res.statusCode = 401;
-        res.end(JSON.stringify({ error: "Missing auth" }));
-        return true;
-      }
-
-      let account: ScwUiAccount;
-      try {
-        account = resolveSellerclawUiAccount(api.config);
-      } catch {
-        res.statusCode = 503;
-        res.end(JSON.stringify({ error: "Channel not configured" }));
-        return true;
-      }
-
-      const token = authHeader.slice(7);
-      if (token !== account.internalWebhookSecret) {
-        res.statusCode = 401;
-        res.end(JSON.stringify({ error: "Invalid token" }));
-        return true;
-      }
-
       const readResult = await readJsonWebhookBodyOrReject({ req, res });
       if (
         !readResult ||

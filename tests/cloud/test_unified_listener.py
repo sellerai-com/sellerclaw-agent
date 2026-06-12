@@ -75,7 +75,7 @@ async def _run_unified_consume(
     monkeypatch.setattr(ul.httpx, "AsyncClient", patched_async_client)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(gateway)) as gw_http:
-        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", http_client=gw_http)
+        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", gateway_token="gw-tok", http_client=gw_http)
         await ul._consume_unified_sse(
             agent_token="sca_access",
             agent_instance_id=uuid4(),
@@ -109,7 +109,7 @@ async def test_unified_routes_user_message_hook_and_cancel(monkeypatch: pytest.M
     # hook_event → hooks POST carrying the raw hook payload
     assert any(call.get("marker") == "hookmark" for call in gateway.calls), "hook_event must reach hooks"
     # cancel → abort POST with chat_id + agent_id (and no text)
-    assert "/channels/sellerclaw-ui/abort" in gateway.paths, "cancel must reach the abort endpoint"
+    assert "/api/channels/sellerclaw-ui/abort" in gateway.paths, "cancel must reach the abort endpoint"
     assert {"chat_id": "c1", "agent_id": "supervisor"} in gateway.calls
 
 
@@ -143,7 +143,7 @@ async def test_unified_consume_403_forbidden_raises(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(ul.httpx, "AsyncClient", patched_async_client)
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(202))) as gw_http:
-        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", http_client=gw_http)
+        forwarder = LocalOpenClawForwarder(base_url="http://gw.test", hooks_token="tok", gateway_token="gw-tok", http_client=gw_http)
         with pytest.raises(CloudConnectionError, match="edge_sse_forbidden"):
             await ul._consume_unified_sse(
                 agent_token="sca_access",

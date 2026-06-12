@@ -11,13 +11,14 @@ services:
         # local source checkout instead of PyPI. ./setup.sh never sets this.
         SELLERCLAW_CLI_SOURCE: "${SELLERCLAW_CLI_SOURCE:-pypi}"
         # OpenClaw base-image source (see runtime/Dockerfile). Both ARGs default
-        # to the upstream release on ghcr.io. Override OPENCLAW_REPO to point at
-        # our pinned-builds package (ghcr.io/sellerai-com/openclaw-pinned), and
-        # OPENCLAW_TAG to a `pinned-<sha10>` tag, to test unreleased upstream
-        # fixes built via runtime/build-openclaw-pinned.sh or the
-        # openclaw-pinned.yml GitHub Actions workflow.
+        # to the upstream release on ghcr.io (defaults pinned in Dockerfile ARGs).
+        # Override OPENCLAW_REPO to point at our pinned-builds package
+        # (ghcr.io/sellerai-com/openclaw-pinned), and OPENCLAW_TAG to a
+        # `pinned-<sha10>` tag, to test unreleased upstream fixes built via
+        # runtime/build-openclaw-pinned.sh or the openclaw-pinned.yml workflow.
+        # Null value = forward env var only if set; otherwise Dockerfile ARG default applies.
         OPENCLAW_REPO: "${OPENCLAW_REPO:-ghcr.io/openclaw/openclaw}"
-        OPENCLAW_TAG: "${OPENCLAW_TAG:-2026.6.5}"
+        OPENCLAW_TAG:
     ports:
       - "127.0.0.1:8001:8001"
       - "${OPENCLAW_PORT_GATEWAY:-7788}:7788"

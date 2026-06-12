@@ -30,7 +30,7 @@
           "internalWebhookSecret": {
             "type": "string",
             "minLength": 1,
-            "description": "Local OpenClaw hooks / inbound secret (sellerclaw-agent hooks_token, not used for cloud API)."
+            "description": "Local sellerclaw-agent hooks_token: auths plugin -> agent-server calls (media upload). Inbound/abort routes use OpenClaw gateway auth instead."
           },
           "primaryChannel": {
             "type": "string",
@@ -73,7 +73,7 @@
       "internalWebhookSecret": {
         "type": "string",
         "minLength": 1,
-        "description": "Local OpenClaw hooks / inbound secret (sellerclaw-agent hooks_token, not used for cloud API)."
+        "description": "Local sellerclaw-agent hooks_token: auths plugin -> agent-server calls (media upload). Inbound/abort routes use OpenClaw gateway auth instead."
       },
       "primaryChannel": {
         "type": "string",
