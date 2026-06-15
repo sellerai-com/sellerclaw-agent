@@ -112,7 +112,8 @@ The server considers the agent **offline** when it has not pinged for longer tha
 | `restart` | `stop` + `start`. If nothing was running, behaves like `start`. |
 | `disconnect` | `stop` + `POST /disconnect` + exits the ping loop. The local FastAPI server keeps running so the user can re-authenticate. |
 | `open_browser` | Starts KasmVNC + `gost` via supervisord, waits for the configured X11 socket, launches Chrome via `OPENCLAW_CHROME_LAUNCHER` (default `/usr/local/bin/openclaw_chrome`). **Rejected** while OpenClaw gateway is `running` (`openclaw_running_browser_command_rejected`). |
-| `close_browser` | Best-effort `pkill` of Chrome/Chromium, then `supervisorctl stop` for KasmVNC and `gost`. Idempotent. |
+| `close_browser` | Best-effort `pkill` of Chrome/Chromium, then `supervisorctl stop` for KasmVNC and `gost`. Also cancels a running browser-view tunnel. Idempotent. |
+| `browser_stream` | (protocol v3) Fetches the active browser-view session (`GET /agent/browser-view/session`), ensures the KasmVNC stack is up (standalone `open_browser` path when OpenClaw is stopped; **rejected** when OpenClaw runs without an open browser), then keeps an outbound websocket tunnel dialed to `wss://…/agent/browser-view/tunnel?session_id=…`. After the cloud sends the text frame `attach`, the agent opens `ws://127.0.0.1:6080/websockify` (Basic auth `user`/`VNC_PASSWORD`, `Origin` header, `binary` subprotocol, client pings disabled) and pipes bytes both ways. Redials while the session exists; stops on close code `4001` or denial 401/404/410. |
 
 The deprecated `update_manifest` command is **not supported**. Servers should use `start` or `restart` instead; the agent replies `failed` if it ever sees one.
 
@@ -190,7 +191,7 @@ Any transport error (timeout, 5xx, DNS) is treated as transient: the agent logs 
 
 ## Protocol version
 
-Every ping carries `protocol_version`. The current agent version is **2** (ping includes optional `browser` telemetry). **1** remains valid: omit `browser` and use the same ping shape as before. Servers may refuse clients whose version they no longer support; the agent in turn can gate behaviour on the server version exposed in future responses.
+Every ping carries `protocol_version`. The current agent version is **3** (understands the `browser_stream` command and the browser-view tunnel dial-back; the cloud gates the remote browser-view feature on `>= 3`). **2** (optional `browser` telemetry) and **1** remain valid: older agents simply never receive `browser_stream`. Servers may refuse clients whose version they no longer support; the agent in turn can gate behaviour on the server version exposed in future responses.
 
 ## Security notes
 

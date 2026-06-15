@@ -247,6 +247,27 @@ class SellerClawConnectionClient:
             raise CloudConnectionError("connect response missing agent_instance_id")
         return ConnectResponse(agent_instance_id=UUID(str(raw_id)))
 
+    def bearer_token(self) -> str:
+        """Current ``sca_`` bearer token (for non-HTTP transports, e.g. websockets)."""
+        return self._resolve_bearer_token()
+
+    async def fetch_browser_view_session_id(self) -> UUID | None:
+        """Active browser-view session for this agent, or None when there is none.
+
+        ``None`` is the stop signal for the tunnel runner: the session expired or
+        the user closed it, so the agent must not redial.
+        """
+        status, data = await self._request_json("GET", "/agent/browser-view/session")
+        if status == 404:
+            return None
+        if status == 401:
+            raise CloudAuthError(self._detail_message(data), status_code=401)
+        if status >= 400:
+            raise CloudConnectionError(self._detail_message(data))
+        if not isinstance(data, dict) or not data.get("session_id"):
+            raise CloudConnectionError("Invalid browser-view session response")
+        return UUID(str(data["session_id"]))
+
     async def fetch_edge_manifest(self) -> dict[str, Any]:
         status, data = await self._request_json("GET", "/agent/connection/edge-manifest")
         if status == 401:

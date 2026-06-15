@@ -47,7 +47,8 @@ from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 
 _log = structlog.get_logger(__name__)
 
-AGENT_PROTOCOL_VERSION = 2
+# v3: understands the browser_stream command and the browser-view tunnel dial-back.
+AGENT_PROTOCOL_VERSION = 3
 
 # Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
 # build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the
