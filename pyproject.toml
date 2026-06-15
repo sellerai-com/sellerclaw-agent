@@ -18,6 +18,7 @@ server = [
     "uvicorn[standard]>=0.35.0",
     "pydantic>=2.11.0",
     "watchfiles>=1.0",
+    "websockets>=14.0",
 ]
 cli = [
     "rich>=13.0",

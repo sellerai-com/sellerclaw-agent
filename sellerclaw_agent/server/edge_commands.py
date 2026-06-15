@@ -13,6 +13,7 @@ import structlog
 
 from sellerclaw_agent import __version__
 from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
+from sellerclaw_agent.cloud.browser_tunnel import get_browser_tunnel_manager
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.supervisor_manager import SupervisorContainerManager, create_supervisor_manager
@@ -137,8 +138,47 @@ async def _execute_remote_command(
     if cmd == "open_browser":
         return await loop.run_in_executor(executor, container_mgr.open_browser)
     if cmd == "close_browser":
+        get_browser_tunnel_manager().stop()
         return await loop.run_in_executor(executor, container_mgr.close_browser)
+    if cmd == "browser_stream":
+        return await _start_browser_stream(
+            loop=loop,
+            executor=executor,
+            client=client,
+            container_mgr=container_mgr,
+        )
     return "failed", f"unknown command_type {cmd_type!r}"
+
+
+async def _start_browser_stream(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    executor: ThreadPoolExecutor,
+    client: SellerClawConnectionClient,
+    container_mgr: SupervisorContainerManager,
+) -> tuple[str, str | None]:
+    """Ensure the browser stack is up, then keep a view tunnel dialed to the cloud.
+
+    The tunnel itself runs as a background task (it outlives the command); the
+    command result only reports whether streaming could start.
+    """
+    try:
+        session_id = await client.fetch_browser_view_session_id()
+    except Exception as exc:  # noqa: BLE001 - surface as command failure
+        return "failed", f"browser-view session fetch failed: {str(exc)[:300]}"
+    if session_id is None:
+        return "rejected", "No active browser-view session on the cloud."
+
+    probe = await loop.run_in_executor(executor, container_mgr.probe_browser_status)
+    if not probe.kasmvnc_running:
+        # Standalone open works only while OpenClaw is stopped; when OpenClaw is
+        # running without a browser this is rejected with a clear reason.
+        outcome, err = await loop.run_in_executor(executor, container_mgr.open_browser)
+        if outcome != "completed":
+            return outcome, err
+
+    get_browser_tunnel_manager().start(session_id=session_id, client=client)
+    return "completed", None
 
 
 async def run_edge_command_executor_loop(
