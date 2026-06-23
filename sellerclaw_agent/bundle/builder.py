@@ -344,6 +344,7 @@ class BundleBuilder:
             heartbeat_every=manifest.agents.heartbeat_every,
             cron_enabled=manifest.cron_enabled,
             web_fetch_enabled=manifest.web_fetch_enabled,
+            memory_enabled=manifest.memory_enabled,
         )
         version = build_gateway_version(
             openclaw_config=openclaw_config,

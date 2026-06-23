@@ -14,8 +14,10 @@ from sellerclaw_agent.bundle.config_generator import (
     OPENCLAW_BUNDLE_REDACT_SENSITIVE,
     OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
     OPENCLAW_LOCAL_AGENT_BASE_URL,
+    OPENCLAW_PLUGIN_PATH_MEM0,
     OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI,
     OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH,
+    MEM0_PLUGIN_ID,
     SELLERCLAW_WEB_SEARCH_PLUGIN_ID,
     ModelDefaults,
     generate_openclaw_config,
@@ -368,6 +370,40 @@ def test_generate_openclaw_config_web_search_disabled_has_no_plugin_or_provider(
     assert SELLERCLAW_WEB_SEARCH_PLUGIN_ID not in payload["plugins"]["entries"]
     assert payload["tools"]["web"]["search"] == {"enabled": False}
     assert payload["plugins"]["load"]["paths"] == [OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI]
+
+
+def test_generate_openclaw_config_memory_enabled_wires_mem0_platform_plugin(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    raw = _generate(
+        _supervisor_only(make_assembled_agent),
+        sellerclaw_api_url="http://api/",
+        sellerclaw_agent_api_base_url="http://api/agent",
+        memory_enabled=True,
+    )
+    payload = json.loads(raw)
+    # Memory slot + entry point at the cloud Mem0-compatible adapter in PLATFORM mode.
+    assert payload["plugins"]["slots"]["memory"] == MEM0_PLUGIN_ID
+    assert MEM0_PLUGIN_ID in payload["plugins"]["allow"]
+    assert OPENCLAW_PLUGIN_PATH_MEM0 in payload["plugins"]["load"]["paths"]
+    entry = payload["plugins"]["entries"][MEM0_PLUGIN_ID]
+    assert entry["config"]["mode"] == "platform"
+    # baseUrl = agent API base + /mem0; apiKey = the agent's own token (cloud bills the user).
+    assert entry["config"]["baseUrl"] == "http://api/agent/mem0"
+    assert entry["config"]["apiKey"] == _AGENT_API_KEY
+    assert entry["config"]["userId"] == str(_USER_ID)
+    assert entry["config"]["skills"]["recall"]["enabled"] is True
+
+
+def test_generate_openclaw_config_memory_disabled_has_no_mem0_plugin_or_slot(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    raw = _generate(_supervisor_only(make_assembled_agent))
+    payload = json.loads(raw)
+    assert "slots" not in payload["plugins"]
+    assert MEM0_PLUGIN_ID not in payload["plugins"]["allow"]
+    assert MEM0_PLUGIN_ID not in payload["plugins"]["entries"]
+    assert OPENCLAW_PLUGIN_PATH_MEM0 not in payload["plugins"]["load"]["paths"]
 
 
 def test_generate_openclaw_config_browser_disabled(

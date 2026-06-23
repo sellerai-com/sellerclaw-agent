@@ -110,6 +110,20 @@ RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /o
 COPY sellerclaw-agent/plugins/sellerclaw-ui /opt/openclaw-plugins/sellerclaw-ui
 COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/sellerclaw-web-search
 
+# Long-term memory: the official mem0 OpenClaw plugin, used in PLATFORM mode pointed at the cloud's
+# Mem0-compatible adapter (config_generator enables it only when the manifest's memory block is on).
+# Vendor the package AT the plugin load path (its openclaw.plugin.json must sit at the dir root, like
+# the plugins above) and install deps in-image so the transitive native better-sqlite3 binding matches
+# TARGETARCH — even though platform mode never touches the local SQLite store. Must stay root-owned
+# (OpenClaw rejects config-origin plugins with non-root ownership).
+RUN mkdir -p /opt/openclaw-plugins/openclaw-mem0 \
+    && cd /opt/openclaw-plugins/openclaw-mem0 \
+    && npm pack @mem0/openclaw-mem0 \
+    && tar --strip-components=1 -xzf mem0-openclaw-mem0-*.tgz \
+    && rm -f mem0-openclaw-mem0-*.tgz \
+    && npm install --omit=dev --no-audit --no-fund \
+    && chown -R root:root /opt/openclaw-plugins/openclaw-mem0
+
 
 # Remove unused bundled extensions from the base image to speed up cold start.
 # OpenClaw scans all directories in the bundled extensions dir at startup, even when

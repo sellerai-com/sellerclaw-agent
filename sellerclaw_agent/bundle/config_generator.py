@@ -52,6 +52,10 @@ OPENCLAW_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:8001"
 SELLERCLAW_WEB_SEARCH_PLUGIN_ID = "sellerclaw-web-search"
 OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI = "/opt/openclaw-plugins/sellerclaw-ui"
 OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH = "/opt/openclaw-plugins/sellerclaw-web-search"
+# Long-term memory: the official mem0 plugin in platform mode, pointed at the cloud's
+# Mem0-compatible adapter (`{agent_api_base}/mem0`). Bundled into the image at this path.
+MEM0_PLUGIN_ID = "openclaw-mem0"
+OPENCLAW_PLUGIN_PATH_MEM0 = "/opt/openclaw-plugins/openclaw-mem0"
 
 # Bundled OpenClaw plugin that backs the PDF tool's fallback (extract + page-render)
 # pipeline. Without it the PDF tool fails with `PDF extraction disabled or unavailable:
@@ -129,6 +133,7 @@ def generate_openclaw_config(
     heartbeat_every: str = "0m",
     cron_enabled: bool = True,
     web_fetch_enabled: bool = True,
+    memory_enabled: bool = False,
 ) -> str:
     """Build OpenClaw JSON config from assembled agents and flat parameters.
 
@@ -221,6 +226,32 @@ def generate_openclaw_config(
     plugin_load_paths: list[str] = [OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI]
     if web_search_enabled:
         plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH)
+    if memory_enabled:
+        plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_MEM0)
+
+    # Long-term memory: mem0 plugin in PLATFORM mode pointed at the cloud Mem0-compatible adapter.
+    # The agent presents its own agent API key (the cloud resolves it to the user and bills
+    # extraction/embeddings to that user); no DB credentials ever live on the box.
+    memory_plugin_entry: dict[str, object] | None = None
+    if memory_enabled:
+        if not effective_agent_api_base_url:
+            raise ValueError("sellerclaw_agent_api_base_url is required when memory_enabled is set")
+        if not (agent_api_key or "").strip():
+            raise ValueError("agent_api_key is required when memory_enabled is set")
+        memory_plugin_entry = {
+            "enabled": True,
+            "config": {
+                "mode": "platform",
+                "apiKey": agent_api_key.strip(),
+                "baseUrl": f"{effective_agent_api_base_url}/mem0",
+                "userId": str(user_id),
+                "skills": {
+                    "triage": {"enabled": True},
+                    "recall": {"enabled": True},
+                    "dream": {"enabled": True},
+                },
+            },
+        }
 
     web_search_plugin_entry: dict[str, object] | None = None
     web_search_plugin_id: str | None = None
@@ -393,6 +424,7 @@ def generate_openclaw_config(
         ),
         "plugins": {
             "enabled": True,
+            **({"slots": {"memory": MEM0_PLUGIN_ID}} if memory_enabled else {}),
             "allow": [
                 "sellerclaw-ui",
                 "browser",
@@ -402,6 +434,7 @@ def generate_openclaw_config(
                     if web_search_enabled and web_search_plugin_id is not None
                     else []
                 ),
+                *([MEM0_PLUGIN_ID] if memory_enabled else []),
             ],
             "load": {"paths": plugin_load_paths},
             "entries": {
@@ -414,6 +447,7 @@ def generate_openclaw_config(
                     and web_search_plugin_entry is not None
                     else {}
                 ),
+                **({MEM0_PLUGIN_ID: memory_plugin_entry} if memory_enabled and memory_plugin_entry is not None else {}),
             },
         },
         "browser": {
