@@ -1,4 +1,23 @@
-# SellerClaw Agent
+<div align="center">
+
+<img src="assets/banner.svg" alt="SellerClaw Agent" width="820">
+
+<br/>
+<br/>
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-C5E756?style=flat-square&labelColor=0C0E11)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-C5E756?style=flat-square&labelColor=0C0E11&logo=python&logoColor=C5E756)](pyproject.toml)
+[![Docker](https://img.shields.io/badge/Docker-ready-C5E756?style=flat-square&labelColor=0C0E11&logo=docker&logoColor=C5E756)](docker-compose.yml)
+[![Build Image](https://img.shields.io/github/actions/workflow/status/sellerai-com/sellerclaw-agent/build-image.yml?style=flat-square&labelColor=0C0E11&color=C5E756&logo=github&logoColor=white&label=build)](https://github.com/sellerai-com/sellerclaw-agent/actions/workflows/build-image.yml)
+[![Powered by OpenClaw](https://img.shields.io/badge/powered%20by-OpenClaw-C5E756?style=flat-square&labelColor=0C0E11)](https://github.com/openclaw/openclaw)
+
+**Run the OpenClaw agent that powers SellerClaw on your own hardware — same web admin, your compute, outbound-only pairing.**
+
+[Quick start](#quick-start) · [Why self-host](#why-sellerclaw-agent) · [Architecture](#architecture-overview) · [Docs](#documentation) · [Roadmap](ROADMAP.md)
+
+</div>
+
+---
 
 SellerClaw Agent is the self-hosted runtime for **[SellerClaw](https://sellerclaw.ai)** — the e-commerce platform built around OpenClaw.
 
@@ -70,6 +89,7 @@ It makes the OpenClaw runtime usable as a piece of the broader SellerClaw produc
 - a long-lived cloud pairing — agent-scoped tokens, automatic reconnection, command pull (start / stop / restart / disconnect) and result reporting
 - Docker-isolated execution — OpenClaw, the local control plane, and the KasmVNC browser run in one container, supervised together
 - one-command CLI onboarding — install, sign in, and start the runtime in a single step
+- a bundled cloud tool layer — the public [`sellerclaw-cli`](https://github.com/sellerai-com/sellerclaw-cli) ships inside the runtime image, pre-authenticated with the agent token, so OpenClaw drives the SellerClaw cloud (stores, orders, listings, ads, suppliers, media) through it
 - a local admin UI for inspection, manifest editing, and troubleshooting
 
 In practice, SellerClaw Agent is the operational and packaging layer that makes the OpenClaw runtime a first-class self-hosted option for the SellerClaw product.
@@ -97,6 +117,8 @@ At a high level, a self-hosted SellerClaw setup looks like this:
 - **SellerClaw Agent** runs on the user's machine, pairs with the cloud over outbound HTTPS, holds the rendered OpenClaw configuration, and supervises the runtime
 - **OpenClaw** runs inside the same Docker container as the agent, alongside a KasmVNC browser, and does the actual automation work
 
+Inside that container, OpenClaw reaches the SellerClaw cloud through a bundled copy of [`sellerclaw-cli`](https://github.com/sellerai-com/sellerclaw-cli) — the same public command-line / MCP client anyone can install, here baked into the image and signed in automatically with the agent token. So a self-hosted setup has two distinct channels: the **control-plane pairing** (cloud dispatches commands, the agent reports results) and the **CLI tool calls** OpenClaw makes to read and change stores, orders, listings, ads, suppliers, and media.
+
 End users never interact with the local agent directly. They work in the web admin panel at `sellerclaw.ai`, which routes commands and results through the cloud connection. The local FastAPI server and admin UI exist for installation, sign-in, and host-side troubleshooting.
 
 See the [cloud connection protocol](docs/connection-protocol.md) and the [agent manifest contract](docs/contracts/agent-manifest.md) for the wire details.
@@ -106,6 +128,7 @@ See the [cloud connection protocol](docs/connection-protocol.md) and the [agent 
 | Category | Technology |
 |---|---|
 | CLI | Python 3.12+, `rich`, `questionary`, `httpx` |
+| Agent ↔ cloud tooling | [`sellerclaw-cli`](https://github.com/sellerai-com/sellerclaw-cli), bundled in the runtime image |
 | Local control plane | FastAPI, uvicorn, Pydantic v2 |
 | Admin UI | Vue 3, Vite, TypeScript, axios |
 | Agent runtime | OpenClaw, Node.js 20, KasmVNC, Playwright |
@@ -177,6 +200,13 @@ When contributing, please:
 ## Security
 
 If you believe you have found a vulnerability, please do **not** open a public GitHub issue. See [SECURITY.md](SECURITY.md) for the private reporting process.
+
+## Related Projects
+
+SellerClaw is split across a small family of repositories:
+
+- **[sellerclaw-cli](https://github.com/sellerai-com/sellerclaw-cli)** — the public command-line client and MCP server for the SellerClaw cloud. The runtime image bundles it as the tool OpenClaw uses to reach the SellerClaw server; you can install the very same CLI yourself to drive your stores, orders, listings, ads, and suppliers from a terminal, scripts, or Claude.
+- **SellerClaw Cloud** — the hosted web admin panel and backend APIs at [sellerclaw.ai](https://sellerclaw.ai), where you configure stores and suppliers, launch workflows, and review results.
 
 ## About SellerAI
 
