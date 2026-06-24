@@ -89,7 +89,7 @@ The MVP intentionally uses a raw JSON editor rather than a structured form. A ri
 
 ## Production bundle
 
-The production image is the combined OpenClaw runtime + agent (`runtime/Dockerfile`, target `staging`): a `node:20-alpine` stage runs `npm run build` for `admin-ui/`, and the resulting `dist/` is copied into the image at `/app/admin-ui/dist`. The agent reads `AGENT_ADMIN_UI_DIST` (defaulting to that path) and, when the directory exists, mounts it as `StaticFiles` on `/admin`. The SPA is therefore served same-origin from `http://<host>:8001/admin/` and no CORS is required.
+The production image is the combined OpenClaw runtime + agent (`runtime/Dockerfile`, target `staging`): a `node:24-alpine` stage runs `npm run build` for `admin-ui/`, and the resulting `dist/` is copied into the image at `/app/admin-ui/dist`. The agent reads `AGENT_ADMIN_UI_DIST` (defaulting to that path) and, when the directory exists, mounts it as `StaticFiles` on `/admin`. The SPA is therefore served same-origin from `http://<host>:8001/admin/` and no CORS is required.
 
 During development the built bundle is absent from the image unless you explicitly `docker compose build server`, so the `/admin` mount on the server is disabled and the dev container on 5174 is the only way to access the UI.
 

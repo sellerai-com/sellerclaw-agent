@@ -183,7 +183,7 @@ CMD ["supervisord", "-n", "-c", "/etc/supervisor/conf.d/openclaw.conf"]
 
 
 # ---- Admin UI (served by agent FastAPI from /admin) ----
-FROM node:20-alpine AS ui-build
+FROM node:24-alpine AS ui-build
 WORKDIR /ui
 COPY sellerclaw-agent/admin-ui/package.json sellerclaw-agent/admin-ui/package-lock.json* ./
 RUN npm install
