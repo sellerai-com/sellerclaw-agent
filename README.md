@@ -15,6 +15,10 @@
 
 [Quick start](#quick-start) · [Why self-host](#why-sellerclaw-agent) · [Architecture](#architecture-overview) · [Docs](#documentation) · [Roadmap](ROADMAP.md)
 
+<br/>
+
+<a href="https://www.producthunt.com/products/sellerclaw?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-sellerclaw" target="_blank" rel="noopener noreferrer"><img src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1155751&theme=dark&period=daily" alt="SellerClaw - A team of AI agents that runs your stores across channels | Product Hunt" width="250" height="54"></a>
+
 </div>
 
 ---
