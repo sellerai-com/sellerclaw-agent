@@ -157,7 +157,7 @@ By default the edge `sellerclaw` command (and the host CLI) are installed from P
 
 ```bash
 cp dev.env.example dev.env
-# edit dev.env: SELLERCLAW_CLI_LOCAL_PATH=/abs/path/to/sellerclaw/packages/sellerclaw-cli
+# edit dev.env: SELLERCLAW_CLI_LOCAL_PATH=/abs/path/to/sellerclaw-cli
 make up-dev          # builds the edge image with sellerclaw-cli from your checkout
 make install         # also links it (editable) into the host venv
 ```

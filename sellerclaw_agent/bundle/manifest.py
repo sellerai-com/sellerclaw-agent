@@ -171,6 +171,8 @@ class GenericManifest:
     channels: ChannelsManifest
     cron_enabled: bool = True
     web_fetch_enabled: bool = True
+    # Long-term memory (OpenClaw mem0 plugin, platform mode → cloud Mem0-compatible adapter).
+    memory_enabled: bool = False
     # Monotonic version this manifest represents (cloud-assigned). Stamped into openclaw.json
     # meta.configVersion and reported back in pings so the cloud can detect undelivered changes.
     config_version: int = 0
@@ -756,6 +758,7 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> GenericManifest:
         channels=_parse_channels(data.get("channels")),
         cron_enabled=_parse_enabled_toggle(data, "cron", default=True),
         web_fetch_enabled=_parse_enabled_toggle(data, "web_fetch", default=True),
+        memory_enabled=_parse_enabled_toggle(data, "memory", default=False),
         config_version=_parse_config_version(data.get("config_version")),
         raw={str(k): v for k, v in data.items()},
     )

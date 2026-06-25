@@ -17,9 +17,9 @@ def _config_file(home: Path) -> Path:
     [
         pytest.param(
             "sca_abcdef",
-            "https://api.sellerclaw.com",
+            "https://api.sellerclaw.ai",
             'token = "sca_abcdef"',
-            'api_url = "https://api.sellerclaw.com"',
+            'api_url = "https://api.sellerclaw.ai"',
             id="plain-values",
         ),
         pytest.param(

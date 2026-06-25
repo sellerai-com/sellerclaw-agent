@@ -1,0 +1,33 @@
+<svg width="900" height="260" viewBox="0 0 900 260" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SellerClaw Agent">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="900" y2="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0C0E11"/>
+      <stop offset="1" stop-color="#070809"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.32" r="0.55">
+      <stop offset="0" stop-color="#C5E756" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#C5E756" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="1" y="1" width="898" height="258" rx="26" fill="url(#bg)" stroke="#1B1F25" stroke-width="1.5"/>
+  <ellipse cx="450" cy="80" rx="320" ry="150" fill="url(#glow)"/>
+
+  <!-- claw mark -->
+  <g transform="translate(402,28) scale(1.95)">
+    <path d="M33.2705 19.8232C36.9037 19.8233 40.388 21.2669 42.957 23.8359C45.5261 26.405 46.9696 29.8893 46.9697 33.5225C46.9697 37.1558 45.5262 40.6408 42.957 43.21C40.388 45.7789 36.9037 47.2226 33.2705 47.2227H0L0.0273438 47.1104L21.5273 19.8232H33.2705Z" fill="#FFFFFF"/>
+    <path d="M16.2256 31.5654C12.5923 31.5654 9.10817 30.1218 6.53906 27.5527C3.96996 24.9836 2.5264 21.4995 2.52637 17.8662C2.52637 14.2329 3.96991 10.7479 6.53906 8.17871C9.10814 5.60981 12.5925 4.16705 16.2256 4.167L49.4961 4.16699L49.4697 4.27637L27.9678 31.5654L16.2256 31.5654Z" fill="#C5E756"/>
+    <path d="M33.2529 19.8232C34.4704 19.8233 35.671 19.9856 36.8262 20.2979L27.9492 31.5654H16.207C14.9892 31.5654 13.7883 31.4023 12.6328 31.0898L21.5098 19.8232H33.2529Z" fill="#555848"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="450" y="176" text-anchor="middle" font-family="'Plus Jakarta Sans','Inter','Segoe UI',Helvetica,Arial,sans-serif" font-size="56" font-weight="700" letter-spacing="-1.5">
+    <tspan fill="#FFFFFF">SellerClaw</tspan><tspan fill="#C5E756" dx="20">Agent</tspan>
+  </text>
+
+  <!-- tagline -->
+  <text x="450" y="212" text-anchor="middle" font-family="'Plus Jakarta Sans','Inter','Segoe UI',Helvetica,Arial,sans-serif" font-size="18.5" font-weight="500" letter-spacing="0.2" fill="#9BA3AE">Self-hosted OpenClaw runtime — your hardware, the full SellerClaw product</text>
+
+  <!-- accent underline -->
+  <rect x="424" y="232" width="52" height="3" rx="1.5" fill="#C5E756"/>
+</svg>
