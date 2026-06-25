@@ -55,6 +55,23 @@ def _resolve_allowed_origins() -> tuple[str, ...]:
     return tuple(unique)
 
 
+# Long-term memory tools contributed by the openclaw-mem0 plugin (platform mode → the cloud
+# Mem0-compatible adapter). Granted to EVERY agent: the plugin injects the triage protocol
+# ("after responding, persist durable facts via memory_add") and rewrites recall queries, but the
+# read/write tools themselves are still gated by ``tools.allow`` — without them the agent is told
+# to call ``memory_add`` yet has no such tool, so it acknowledges ("Saved!") without persisting.
+# Recall injection is a plugin hook and works regardless of this list; only the explicit tool calls
+# need the grant. Plugin tools are not part of a builtin ``group:`` so they are listed by name.
+_MEMORY_TOOLS = [
+    "memory_search",
+    "memory_add",
+    "memory_get",
+    "memory_list",
+    "memory_update",
+    "memory_delete",
+]
+
+
 def derive_agent_tools(
     *,
     is_entry_point: bool,
@@ -73,6 +90,8 @@ def derive_agent_tools(
       long-lived processes itself. ``cron`` only here, and only when enabled.
       ``whatsapp_login`` (in-chat QR pairing tool) only here, and only when WhatsApp is on.
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
+    - Long-term memory tools (``_MEMORY_TOOLS``) are granted to every agent so the injected
+      mem0 triage protocol can actually persist/look up facts inline (see the constant's note).
     - ``browser`` is present per agent only when ``browser_enabled``. The builtin
       ``image_generate`` / ``video_generate`` tools are **never** allowed here: media generation
       goes through sellerclaw-cli (cloud endpoints) and the builtins are denied in config
@@ -114,6 +133,9 @@ def derive_agent_tools(
             "cron",
             "gateway",
         ]
+    # Every agent gets the long-term memory tools (entry point and subagents alike) so the mem0
+    # triage protocol can persist/recall facts. Appended last → predictable, deterministic order.
+    allow.extend(_MEMORY_TOOLS)
     if not browser_enabled:
         allow = [tool for tool in allow if tool != "browser"]
     return allow, deny

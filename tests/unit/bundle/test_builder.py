@@ -17,6 +17,17 @@ pytestmark = pytest.mark.unit
 _GW = "gw"
 _HOOKS = "hooks"
 
+# Long-term memory tools granted to every agent (mem0 plugin). Hardcoded here — NOT imported from
+# builder — so a typo or reordering in the implementation is caught by the exact-equality assertion.
+_MEMORY_TOOLS_EXPECTED = [
+    "memory_search",
+    "memory_add",
+    "memory_get",
+    "memory_list",
+    "memory_update",
+    "memory_delete",
+]
+
 
 def _config_from_llm(mutate_llm: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
     """Build the OpenClaw config from the v2 fixture, optionally mutating its ``llm`` block."""
@@ -396,7 +407,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             True, True, True, True,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
-                "message", "browser", "exec", "pdf", "cron",
+                "message", "browser", "exec", "pdf", "cron", *_MEMORY_TOOLS_EXPECTED,
             ],
             [],
             id="entry-point-with-subagents",
@@ -405,7 +416,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             True, False, True, True,
             [
                 "group:fs", "group:web", "web_search", "message", "browser", "exec", "pdf",
-                "cron", "process",
+                "cron", "process", *_MEMORY_TOOLS_EXPECTED,
             ],
             [],
             id="entry-point-no-subagents",
@@ -414,20 +425,26 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             True, True, True, False,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
-                "message", "browser", "exec", "pdf",
+                "message", "browser", "exec", "pdf", *_MEMORY_TOOLS_EXPECTED,
             ],
             [],
             id="entry-point-cron-disabled",
         ),
         pytest.param(
             False, False, True, True,
-            ["group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf"],
+            [
+                "group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf",
+                *_MEMORY_TOOLS_EXPECTED,
+            ],
             ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
             id="subagent-never-gets-cron",
         ),
         pytest.param(
             False, False, False, True,
-            ["group:fs", "exec", "process", "web_fetch", "web_search", "pdf"],
+            [
+                "group:fs", "exec", "process", "web_fetch", "web_search", "pdf",
+                *_MEMORY_TOOLS_EXPECTED,
+            ],
             ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
             id="subagent-browser-disabled",
         ),
@@ -487,6 +504,32 @@ def test_derive_agent_tools_never_grants_whatsapp_login_to_subagent() -> None:
         whatsapp_enabled=True,
     )
     assert "whatsapp_login" not in allow
+
+
+@pytest.mark.parametrize(
+    ("is_entry_point", "has_subagents"),
+    [
+        pytest.param(True, True, id="entry-point"),
+        pytest.param(False, False, id="subagent"),
+    ],
+)
+def test_derive_agent_tools_grants_memory_tools_to_every_agent(
+    is_entry_point: bool, has_subagents: bool
+) -> None:
+    """Both the supervisor and subagents get the mem0 read/write tools, never in ``deny``.
+
+    Without these the injected triage protocol tells the agent to call ``memory_add`` but no such
+    tool exists, so durable facts are acknowledged ("Saved!") yet never persisted.
+    """
+    allow, deny = derive_agent_tools(
+        is_entry_point=is_entry_point,
+        has_subagents=has_subagents,
+        browser_enabled=True,
+        cron_enabled=True,
+    )
+    for tool in ("memory_add", "memory_search", "memory_update", "memory_delete"):
+        assert tool in allow
+        assert tool not in deny
 
 
 def _cfg_from_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
