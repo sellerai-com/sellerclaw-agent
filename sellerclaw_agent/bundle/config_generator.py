@@ -240,6 +240,11 @@ def generate_openclaw_config(
             raise ValueError("agent_api_key is required when memory_enabled is set")
         memory_plugin_entry = {
             "enabled": True,
+            # The plugin is loaded from a path (non-bundled), so OpenClaw blocks its conversation-
+            # access hooks unless we opt in explicitly. Without this the ``agent_end`` hook — which
+            # auto-captures the conversation into long-term memory — is silently skipped, so nothing
+            # is ever remembered.
+            "hooks": {"allowConversationAccess": True},
             "config": {
                 "mode": "platform",
                 "apiKey": agent_api_key.strip(),
@@ -248,7 +253,12 @@ def generate_openclaw_config(
                 "skills": {
                     "triage": {"enabled": True},
                     "recall": {"enabled": True},
-                    "dream": {"enabled": True},
+                    # Dream = the plugin's periodic in-conversation memory consolidation. We disable
+                    # it: it only runs behind a coarse gate (minHours=24 / minSessions=5), adds
+                    # latency/cost to user turns, and still depends on the agent calling write tools.
+                    # Capture is handled deterministically cloud-side instead (chat-archival job)
+                    # plus the inline memory_add instruction in the supervisor's AGENTS.md.
+                    "dream": {"enabled": False},
                 },
             },
         }

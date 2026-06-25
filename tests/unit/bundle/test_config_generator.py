@@ -393,6 +393,11 @@ def test_generate_openclaw_config_memory_enabled_wires_mem0_platform_plugin(
     assert entry["config"]["apiKey"] == _AGENT_API_KEY
     assert entry["config"]["userId"] == str(_USER_ID)
     assert entry["config"]["skills"]["recall"]["enabled"] is True
+    # Dream (periodic in-conversation consolidation) is off — capture is done cloud-side instead.
+    assert entry["config"]["skills"]["dream"]["enabled"] is False
+    # Path-loaded (non-bundled) plugin: opt into conversation-access hooks so the agent_end
+    # auto-capture hook isn't silently blocked (otherwise nothing is ever written to memory).
+    assert entry["hooks"]["allowConversationAccess"] is True
 
 
 def test_generate_openclaw_config_memory_disabled_has_no_mem0_plugin_or_slot(
