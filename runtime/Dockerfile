@@ -116,9 +116,11 @@ COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/seller
 # the plugins above) and install deps in-image so the transitive native better-sqlite3 binding matches
 # TARGETARCH — even though platform mode never touches the local SQLite store. Must stay root-owned
 # (OpenClaw rejects config-origin plugins with non-root ownership).
+# Pin exact version so image rebuilds are reproducible (check: npm view @mem0/openclaw-mem0 version).
+ARG MEM0_OPENCLAW_PLUGIN_VERSION=1.0.13
 RUN mkdir -p /opt/openclaw-plugins/openclaw-mem0 \
     && cd /opt/openclaw-plugins/openclaw-mem0 \
-    && npm pack @mem0/openclaw-mem0 \
+    && npm pack "@mem0/openclaw-mem0@${MEM0_OPENCLAW_PLUGIN_VERSION}" \
     && tar --strip-components=1 -xzf mem0-openclaw-mem0-*.tgz \
     && rm -f mem0-openclaw-mem0-*.tgz \
     && npm install --omit=dev --no-audit --no-fund \
