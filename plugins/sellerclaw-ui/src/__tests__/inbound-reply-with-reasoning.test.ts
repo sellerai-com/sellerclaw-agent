@@ -79,4 +79,58 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
     expect(callArg.replyOptions.onReasoningEnd).toBe(onReasoningEnd);
     expect(callArg.replyOptions.onModelSelected).toBe(onModelSelected);
   });
+
+  it("forwards the dispatcher's per-delivery info (kind/index) as the second deliver arg", async () => {
+    resolveRouteMock.mockReturnValue({
+      route: { sessionKey: "sk", agentId: "supervisor", accountId: "default" },
+      buildEnvelope: () => ({ storePath: "/store", body: "envelope-body" }),
+    });
+    createPipelineMock.mockReturnValue({ onModelSelected: vi.fn() });
+    runPreparedMock.mockImplementation(async (p: { runDispatch: () => Promise<void> }) => {
+      await p.runDispatch();
+    });
+
+    const dispatchReplyMock = vi.fn().mockResolvedValue(undefined);
+    const runtime = {
+      channel: {
+        reply: {
+          finalizeInboundContext: vi.fn((c: unknown) => ({ ctx: c })),
+          dispatchReplyWithBufferedBlockDispatcher: dispatchReplyMock,
+        },
+        session: { recordInboundSession: vi.fn() },
+      },
+    };
+
+    const channelDeliver = vi.fn().mockResolvedValue(undefined);
+
+    await dispatchInboundDirectDmWithReasoning({
+      cfg: { session: { store: "store" } },
+      runtime,
+      channel: "sellerclaw-ui",
+      channelLabel: "SellerClaw UI",
+      accountId: "default",
+      peer: { kind: "direct", id: "c1" },
+      senderId: "u1",
+      senderAddress: "sellerclaw-ui:u1",
+      recipientAddress: "sellerclaw-ui:direct:c1",
+      conversationLabel: "c1",
+      rawBody: "hi",
+      messageId: "m1",
+      timestamp: 123,
+      commandAuthorized: true,
+      deliver: channelDeliver,
+    });
+
+    // The engine invokes the dispatcher's deliver as ``deliver(payload, info)``; the wrapper
+    // must relay ``info`` (the block/final label) to the channel's deliver, not drop it.
+    const innerDeliver = (
+      dispatchReplyMock.mock.calls[0]![0] as {
+        dispatcherOptions: { deliver: (p: unknown, info?: unknown) => Promise<void> };
+      }
+    ).dispatcherOptions.deliver;
+    const info = { kind: "final", assistantMessageIndex: 2 };
+    await innerDeliver({ text: "done" }, info);
+
+    expect(channelDeliver).toHaveBeenCalledWith({ text: "done" }, info);
+  });
 });

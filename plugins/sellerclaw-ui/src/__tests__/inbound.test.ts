@@ -771,6 +771,43 @@ describe("registerInboundRoute", () => {
       expect(joined).toContain("перешли датскую границу");
       expect(joined).not.toContain("перешли\n\nдатскую");
     });
+
+    // The engine streams each reply block (info.kind === "block") and then re-delivers the
+    // whole reply once more as a consolidated final (info.kind === "final"). The bridge reads
+    // that label to drop the redundant final instead of string-matching it (which broke on
+    // multi-block replies, where the final never equals any single streamed block).
+    type DeliverWithInfo = (
+      p: Record<string, unknown>,
+      info?: { kind?: string; assistantMessageIndex?: number },
+    ) => Promise<void>;
+
+    it("suppresses the consolidated final re-delivery of an already-streamed multi-block reply", async () => {
+      const deliver = (await dispatchOnce()) as unknown as DeliverWithInfo;
+      await deliver({ text: "Part one." }, { kind: "block", assistantMessageIndex: 0 });
+      await deliver({ text: "Part two." }, { kind: "block", assistantMessageIndex: 0 });
+      await deliver({ text: "Part one. Part two." }, { kind: "final", assistantMessageIndex: 0 });
+      // Only the two streamed blocks are posted; the final is dropped.
+      expect(deltaTexts()).toEqual(["Part one.", " Part two."]);
+    });
+
+    it("posts a final-only reply that was never streamed as blocks", async () => {
+      const deliver = (await dispatchOnce()) as unknown as DeliverWithInfo;
+      await deliver({ text: "Quick answer." }, { kind: "final", assistantMessageIndex: 0 });
+      expect(deltaTexts()).toEqual(["Quick answer."]);
+    });
+
+    it("dedupes finals per assistantMessageIndex across sub-messages in one dispatch", async () => {
+      const deliver = (await dispatchOnce()) as unknown as DeliverWithInfo;
+      // Sub-message 0: a short status (single block, then its final).
+      await deliver({ text: "Working on it." }, { kind: "block", assistantMessageIndex: 0 });
+      await deliver({ text: "Working on it." }, { kind: "final", assistantMessageIndex: 0 });
+      // Sub-message 1: the answer (two blocks, then its final).
+      await deliver({ text: "Answer one." }, { kind: "block", assistantMessageIndex: 1 });
+      await deliver({ text: "Answer two." }, { kind: "block", assistantMessageIndex: 1 });
+      await deliver({ text: "Answer one. Answer two." }, { kind: "final", assistantMessageIndex: 1 });
+      // Both finals suppressed; each sub-message's content appears exactly once.
+      expect(deltaTexts()).toEqual(["Working on it.", " Answer one.", " Answer two."]);
+    });
   });
 
   describe("readDeliverPayload", () => {
