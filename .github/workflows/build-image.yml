@@ -56,6 +56,11 @@ jobs:
       - name: Checkout (into sellerclaw-agent/)
         uses: actions/checkout@v5
         with:
+          # Always build the source of the tag matching the resolved version, even on a manual
+          # workflow_dispatch. Otherwise a dispatch could stamp a fresh version onto a stale
+          # source tree (how 0.53.0 shipped CLI 0.23.0). v<version> == the triggering tag on a
+          # tag push, so this is a no-op there and a hard guarantee on manual builds.
+          ref: v${{ needs.resolve.outputs.version }}
           path: sellerclaw-agent
 
       - name: Set up Docker Buildx

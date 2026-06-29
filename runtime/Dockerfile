@@ -93,7 +93,17 @@ RUN wget -qO- "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2
 # SELLERCLAW_TOKEN is hydrated by openclaw_start from the device-flow token file.
 COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
 COPY sellerclaw-agent/runtime/edge-requirements.txt /tmp/edge-requirements.txt
+# Install the pinned edge CLIs, then FAIL the build unless the `sellerclaw` actually on PATH
+# matches the pinned version. Guards against a stale layer cache or a partial install silently
+# shipping an old CLI — e.g. the published 0.53.0 image that baked sellerclaw-cli 0.23.0 instead
+# of the pinned 0.34.0. Keeps "agent image vN ships exactly its pinned CLI" an enforced invariant.
 RUN UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/edge-requirements.txt \
+    && pinned_cli="$(grep '^sellerclaw-cli' /tmp/edge-requirements.txt | sed 's/.*==//' | tr -d '[:space:]')" \
+    && installed_cli="$(sellerclaw --version | tr -d '[:space:]')" \
+    && if [ "$pinned_cli" != "$installed_cli" ]; then \
+         echo "FATAL: sellerclaw-cli pinned ${pinned_cli} but installed ${installed_cli}" >&2; \
+         exit 1; \
+       fi \
     && rm -f /tmp/edge-requirements.txt
 
 # Writable runtime directories for the node user.
