@@ -472,14 +472,15 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         // bounded.
         let prevTail = "";
         const TAIL_KEEP_CHARS = 512;
-        // Trimmed text-only delta payloads we've already streamed this turn —
-        // OpenClaw's block dispatcher can re-deliver the same text on the
-        // consolidated final payload, and we don't want to send it as a
-        // stream-delta twice. This set gates the *text-only* path; the media
-        // path always uses the deliver text as caption (see below) — the
-        // buffered delta gets orphaned anyway when the media POST closes the
-        // pending user turn before `stream-end` lands.
-        const emittedTexts = new Set<string>();
+        // The engine streams each reply block (``info.kind === "block"``) and then RE-DELIVERS
+        // the whole reply once more as a consolidated final (``info.kind === "final"``). For a
+        // sub-message we already streamed block-by-block, that final is a duplicate — suppress
+        // it. A sub-message that arrives ONLY as a final (no preceding blocks — e.g. a short or
+        // instant reply) is still posted. Tracked per ``assistantMessageIndex`` so several
+        // sub-messages in one dispatch dedupe independently. (Replaces the old text-match dedup,
+        // which failed on multi-block replies because the consolidated final never equals any
+        // single streamed block.)
+        const streamedMessageIndexes = new Set<number>();
         // Source paths/URLs already delivered as media this turn (same reason).
         const sentMedia = new Set<string>();
         // Monotonic counter for thought stream parts (per turn). Frontend dedupes by seq.
@@ -561,7 +562,10 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           // into the run (``onReasoningStream``/``onReasoningEnd``); without them the agent's
           // reasoning is produced but never reaches the chat.
           replyOptions: { onReasoningStream, onReasoningEnd },
-          deliver: async (replyPayload: unknown) => {
+          deliver: async (
+            replyPayload: unknown,
+            dispatchInfo?: { kind?: string; assistantMessageIndex?: number },
+          ) => {
             const { text, mediaUrls } = readDeliverPayload(replyPayload);
 
             // Reasoning blocks travel on a separate transient channel and are NOT
@@ -622,25 +626,32 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
             }
             const filteredText = stripRuntimeToolActivityLines(text);
             const trimmedText = filteredText.trim();
-            if (trimmedText && !emittedTexts.has(trimmedText)) {
-              emittedTexts.add(trimmedText);
-              const joiner = pickDeltaJoin(prevTail, filteredText);
-              const outText = joiner + filteredText;
-              prevTail = outText.slice(-TAIL_KEEP_CHARS);
-              try {
-                await ensurePartsTurn();
-                await postTurnPart(
-                  account,
-                  sessionKey,
-                  partsMessageId,
-                  { part_id: crypto.randomUUID(), kind: "text", text: outText },
-                  payload.chat_id,
-                );
-              } catch (err) {
-                logError(
-                  api,
-                  `sellerclaw-ui: text part failed session_key=${sessionKey}: ${String(err)}`,
-                );
+            if (trimmedText) {
+              const kind = dispatchInfo?.kind;
+              const msgIndex = dispatchInfo?.assistantMessageIndex ?? 0;
+              // Suppress the consolidated final re-delivery of a sub-message we already
+              // streamed block-by-block; everything else (blocks, and final-only replies that
+              // were never streamed) is posted.
+              if (!(kind === "final" && streamedMessageIndexes.has(msgIndex))) {
+                const joiner = pickDeltaJoin(prevTail, filteredText);
+                const outText = joiner + filteredText;
+                prevTail = outText.slice(-TAIL_KEEP_CHARS);
+                try {
+                  await ensurePartsTurn();
+                  await postTurnPart(
+                    account,
+                    sessionKey,
+                    partsMessageId,
+                    { part_id: crypto.randomUUID(), kind: "text", text: outText },
+                    payload.chat_id,
+                  );
+                  if (kind === "block") streamedMessageIndexes.add(msgIndex);
+                } catch (err) {
+                  logError(
+                    api,
+                    `sellerclaw-ui: text part failed session_key=${sessionKey}: ${String(err)}`,
+                  );
+                }
               }
             }
           },

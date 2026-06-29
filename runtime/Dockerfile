@@ -85,17 +85,6 @@ RUN wget -qO- "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2
     | tar -xz -C /usr/local/bin gost \
     && chmod +x /usr/local/bin/gost
 
-# Edge-side Python CLIs (e.g. sellerclaw-cli) installed system-wide so OpenClaw
-# agents can invoke them from exec-tool with zero configuration. Version pins
-# live in runtime/edge-requirements.txt — keep this layer thin.
-#
-# Auth for sellerclaw-cli: SELLERCLAW_API_URL comes from docker-compose/fly env;
-# SELLERCLAW_TOKEN is hydrated by openclaw_start from the device-flow token file.
-COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
-COPY sellerclaw-agent/runtime/edge-requirements.txt /tmp/edge-requirements.txt
-RUN UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/edge-requirements.txt \
-    && rm -f /tmp/edge-requirements.txt
-
 # Writable runtime directories for the node user.
 # /home/node/.config must be node-owned: the agent server (uvicorn, runs as node)
 # mirrors the sca_ agent token into ~/.config/sellerclaw/config.toml at startup via
@@ -220,6 +209,28 @@ RUN cd /tmp/proj \
         -o /tmp/requirements.txt \
     && UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/requirements.txt \
     && rm -rf /tmp/proj /tmp/requirements.txt
+
+# Edge-side Python CLIs (e.g. sellerclaw-cli) the OpenClaw agent invokes via exec-tool;
+# version pins live in runtime/edge-requirements.txt (kept in lockstep with the cloud
+# SELLERCLAW_CLI_VERSION). Installed AFTER the server-deps step above so the pinned CLI is the
+# LAST writer and survives into the shipped image: the server-deps resolve from uv.lock, and a
+# stray sellerclaw-cli pin there silently clobbered this edge pin in an earlier layer (how the
+# 0.53.0/0.54.0 images shipped CLI 0.23.0). The build then FAILS unless the `sellerclaw` on PATH
+# equals the pin, so a downgrade in the shipped stage is loud at build time, not silent at runtime.
+# (uv is already on PATH from the server-deps step; this runs before the local-wheel override
+# below, so a contributor's SELLERCLAW_CLI_SOURCE=local wheel still wins.)
+#
+# Auth for sellerclaw-cli at runtime: SELLERCLAW_API_URL comes from docker-compose/fly env;
+# SELLERCLAW_TOKEN is hydrated by openclaw_start from the device-flow token file.
+COPY sellerclaw-agent/runtime/edge-requirements.txt /tmp/edge-requirements.txt
+RUN UV_BREAK_SYSTEM_PACKAGES=1 uv pip install --system --no-cache -r /tmp/edge-requirements.txt \
+    && pinned_cli="$(grep '^sellerclaw-cli' /tmp/edge-requirements.txt | sed 's/.*==//' | tr -d '[:space:]')" \
+    && installed_cli="$(sellerclaw --version | tr -d '[:space:]')" \
+    && if [ "$pinned_cli" != "$installed_cli" ]; then \
+         echo "FATAL: sellerclaw-cli pinned ${pinned_cli} but installed ${installed_cli}" >&2; \
+         exit 1; \
+       fi \
+    && rm -f /tmp/edge-requirements.txt
 
 # Developer-only sellerclaw-cli override.
 #

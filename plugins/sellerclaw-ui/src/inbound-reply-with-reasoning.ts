@@ -78,10 +78,16 @@ export async function dispatchInboundDirectDmWithReasoning(params: DispatchParam
         cfg: params.cfg,
         dispatcherOptions: {
           ...replyPipeline,
-          deliver: async (payload: unknown) => {
+          // SECOND DIVERGENCE from upstream: forward the dispatcher's per-delivery info
+          // (``{ kind: "block" | "final" | "tool", assistantMessageIndex }``) as the second
+          // argument. The engine streams each reply block (``kind: "block"``) and then
+          // re-delivers the whole reply once more as a consolidated final (``kind: "final"``);
+          // without this label the bridge can't tell them apart and double-posts multi-block
+          // replies. See ``inbound.ts`` deliver for how the label is consumed.
+          deliver: async (payload: unknown, dispatchInfo?: unknown) => {
             const normalized =
               payload && typeof payload === "object" ? normalizeOutboundReplyPayload(payload) : {};
-            return await params.deliver(normalized);
+            return await params.deliver(normalized, dispatchInfo);
           },
           onError: params.onDispatchError,
         },

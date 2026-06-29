@@ -8,7 +8,6 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.0",
     "pyyaml>=6.0.3",
-    "sellerclaw-cli>=0.7.0",
     "structlog>=24.0.0",
 ]
 
