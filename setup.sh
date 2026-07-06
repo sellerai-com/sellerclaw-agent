@@ -395,7 +395,7 @@ fi
 # ---------------------------------------------------------------------------
 # Resolve OpenClaw runtime version. Honors the OPENCLAW_TAG env override (from
 # the env file or the caller's shell); otherwise parses the default pinned in
-# docker-compose.yml so we never drift from what `docker compose up` resolves.
+# runtime/Dockerfile so we never drift from what `docker compose build` resolves.
 # ---------------------------------------------------------------------------
 
 resolve_openclaw_tag() {
@@ -403,10 +403,13 @@ resolve_openclaw_tag() {
     printf '%s' "$OPENCLAW_TAG"
     return 0
   fi
-  if [[ -r "$SCRIPT_DIR/docker-compose.yml" ]]; then
-    grep -oE 'OPENCLAW_TAG:-[^}]+' "$SCRIPT_DIR/docker-compose.yml" \
+  # The default tag is pinned in runtime/Dockerfile (ARG OPENCLAW_TAG=...);
+  # docker-compose.yml only forwards OPENCLAW_TAG when explicitly set. `|| true`
+  # keeps a no-match grep from aborting the script under `set -euo pipefail`.
+  if [[ -r "$SCRIPT_DIR/runtime/Dockerfile" ]]; then
+    grep -oE '^ARG OPENCLAW_TAG=.+' "$SCRIPT_DIR/runtime/Dockerfile" \
       | head -n1 \
-      | sed 's/OPENCLAW_TAG:-//'
+      | sed 's/^ARG OPENCLAW_TAG=//' || true
   fi
 }
 
