@@ -504,4 +504,6 @@ fi
 # Hand off to the CLI.
 # ---------------------------------------------------------------------------
 
+# `uv run` syncs the venv to uv.lock before launching, so the CLI's runtime
+# deps (rich/questionary, now core dependencies) are always present.
 exec uv run --quiet sellerclaw-agent "${CLI_ARGS[@]:-setup}"
