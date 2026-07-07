@@ -504,4 +504,7 @@ fi
 # Hand off to the CLI.
 # ---------------------------------------------------------------------------
 
-exec uv run --quiet sellerclaw-agent "${CLI_ARGS[@]:-setup}"
+# Ensure the venv matches uv.lock before launch (`uv run` alone can leave a
+# stale venv missing deps when the lock changed since the last sync).
+uv sync --quiet
+exec uv run --no-sync --quiet sellerclaw-agent "${CLI_ARGS[@]:-setup}"
