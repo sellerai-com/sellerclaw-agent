@@ -33,7 +33,7 @@ SECRETS_ENV_FILE := $(wildcard secrets.env)
 COMPOSE_SECRETS := $(if $(SECRETS_ENV_FILE),--env-file secrets.env,)
 
 install:
-	$(UV) sync --extra server --extra cli
+	$(UV) sync --extra server
 ifeq ($(SELLERCLAW_CLI_SOURCE),local)
 	@echo "==> dev.env: linking host venv's sellerclaw-cli (editable) from $(SELLERCLAW_CLI_LOCAL_PATH)"
 	$(UV) pip install -e "$(SELLERCLAW_CLI_LOCAL_PATH)"
@@ -67,7 +67,7 @@ dev-cli-local:
 	$(UV) pip install -e "$(SELLERCLAW_CLI_LOCAL_PATH)"
 
 dev-cli-pypi:
-	$(UV) sync --extra server --extra cli
+	$(UV) sync --extra server
 
 up: stage-cli-wheel
 	$(DOCKER_COMPOSE) --env-file .env.production $(COMPOSE_SECRETS) up server --build

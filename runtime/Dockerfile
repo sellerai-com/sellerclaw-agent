@@ -202,7 +202,9 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
 COPY sellerclaw-agent/pyproject.toml sellerclaw-agent/uv.lock /tmp/proj/
 # Debian bookworm Python is PEP 668 "externally managed"; allow system install in this image only.
 # Resolve the server-runtime dependency set from uv.lock (single source of truth: pyproject.toml),
-# then install it system-wide. No editable project, no dev/CLI extras — only what the API server needs.
+# then install it system-wide. No editable project, no dev deps, only the `server` extra. This still
+# pulls the core deps (incl. rich/questionary, needed by the CLI entry point) — a few MB the API
+# server itself does not import; kept for a single, simple dependency set over a leaner image.
 RUN cd /tmp/proj \
     && UV_BREAK_SYSTEM_PACKAGES=1 uv export \
         --frozen --no-dev --no-emit-project --extra server --no-hashes \
