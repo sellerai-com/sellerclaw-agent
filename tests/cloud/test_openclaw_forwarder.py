@@ -105,6 +105,45 @@ async def test_local_forwarder_posts_hooks_agent_with_hooks_token() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_forwarder_posts_scheduled_run_with_gateway_token() -> None:
+    """A scheduled run goes through the gateway-authed plugin route like inbound."""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization", "")
+        captured["body"] = request.content.decode("utf-8")
+        return httpx.Response(202)
+
+    transport = httpx.MockTransport(handler)
+    fwd = LocalOpenClawForwarder(
+        base_url="http://gw.test",
+        hooks_token="hooks-secret",
+        gateway_token="gw-secret",
+        transport=transport,
+    )
+    await fwd.post_scheduled_run_json(
+        {"run_id": "run-1", "agent_id": "supervisor", "user_id": "u1", "instruction": "do it"},
+    )
+    assert captured["url"].endswith("/api/channels/sellerclaw-ui/scheduled-run")
+    assert captured["auth"] == "Bearer gw-secret"
+    assert json.loads(captured["body"])["run_id"] == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_local_forwarder_scheduled_run_raises_on_non_2xx() -> None:
+    transport = httpx.MockTransport(lambda _request: httpx.Response(500))
+    fwd = LocalOpenClawForwarder(
+        base_url="http://gw.test",
+        hooks_token="hooks-secret",
+        gateway_token="gw-secret",
+        transport=transport,
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await fwd.post_scheduled_run_json({"run_id": "run-1", "instruction": "x"})
+
+
+@pytest.mark.asyncio
 async def test_local_forwarder_abort_raises_on_non_2xx() -> None:
     transport = httpx.MockTransport(lambda _request: httpx.Response(500))
     fwd = LocalOpenClawForwarder(

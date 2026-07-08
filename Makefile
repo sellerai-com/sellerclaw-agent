@@ -82,20 +82,20 @@ down:
 	$(DOCKER_COMPOSE) down --remove-orphans
 
 test:
-	$(UV) run python -m pytest tests
+	$(UV) run --extra server python -m pytest tests
 
 test_unit:
-	$(UV) run python -m pytest tests -m unit
+	$(UV) run --extra server python -m pytest tests -m unit
 
 test_unit_dirs:
-	$(UV) run python -m pytest tests/unit
+	$(UV) run --extra server python -m pytest tests/unit
 
 test_cloud:
-	$(UV) run python -m pytest tests/cloud
+	$(UV) run --extra server python -m pytest tests/cloud
 
 lint:
-	$(UV) run ruff check $(LINT_PATHS)
-	$(UV) run pyright
+	$(UV) run --extra server ruff check $(LINT_PATHS)
+	$(UV) run --extra server pyright
 
 openclaw-skills:
 	$(DOCKER_COMPOSE) exec server bash -lc 'node openclaw.mjs skills list'

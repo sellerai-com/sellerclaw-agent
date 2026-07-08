@@ -102,6 +102,34 @@ def _inbound_body_from_sse(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _scheduled_run_body_from_sse(payload: dict[str, Any]) -> dict[str, Any]:
+    """Strip server-only fields; keep the sellerclaw-ui scheduled-run contract."""
+    out: dict[str, Any] = {
+        "run_id": str(payload["run_id"]),
+        "agent_id": str(payload.get("agent_id") or "supervisor"),
+        "user_id": str(payload["user_id"]),
+        "instruction": str(payload["instruction"]),
+    }
+    session_key = payload.get("session_key")
+    if session_key is not None and str(session_key).strip():
+        out["session_key"] = str(session_key)
+    return out
+
+
+def _feasibility_body_from_sse(payload: dict[str, Any]) -> dict[str, Any]:
+    """Strip server-only fields; keep the sellerclaw-ui feasibility-check contract."""
+    out: dict[str, Any] = {
+        "task_id": str(payload["task_id"]),
+        "agent_id": str(payload.get("agent_id") or "supervisor"),
+        "user_id": str(payload["user_id"]),
+        "instruction": str(payload["instruction"]),
+    }
+    session_key = payload.get("session_key")
+    if session_key is not None and str(session_key).strip():
+        out["session_key"] = str(session_key)
+    return out
+
+
 async def forward_cancel(payload: dict[str, Any], *, forwarder: LocalOpenClawForwarder) -> None:
     """Forward a ``cancel`` event: abort the in-flight OpenClaw run for this chat (best-effort)."""
     cancel_chat_id = str(payload.get("chat_id") or "") or None
@@ -179,6 +207,79 @@ async def forward_user_message(
         _log.exception("chat_forward_failed", message_id=mid or "?", chat_id=chat_id, user_id=user_id)
 
 
+async def forward_scheduled_run(
+    payload: dict[str, Any],
+    *,
+    forwarder: LocalOpenClawForwarder,
+    openclaw_gate: OpenClawGate,
+) -> None:
+    """Forward a ``scheduled_run`` event to the local OpenClaw scheduled-run channel (gated).
+
+    A scheduled run is not a chat: the plugin runs it in an isolated session and reports the outcome
+    straight back to the cloud. Dropped silently when OpenClaw is not running or the gateway is
+    unreachable — the cloud already recorded a DISPATCHED run, and a missed one is harmless (the next
+    scheduled slot runs normally once the agent is back).
+    """
+    run_id = str(payload.get("run_id") or "")
+    if not run_id or not str(payload.get("instruction") or "").strip():
+        _log.warning("scheduled_run_missing_fields", run_id=run_id or None)
+        return
+    running, oc_status, oc_err = await openclaw_gate()
+    if not running:
+        _log.info(
+            "scheduled_run_dropped",
+            reason="openclaw_not_running",
+            openclaw_status=oc_status,
+            openclaw_error=oc_err,
+            run_id=run_id,
+        )
+        return
+    try:
+        await forwarder.post_scheduled_run_json(_scheduled_run_body_from_sse(payload))
+    except httpx.ConnectError as exc:
+        _log.info("scheduled_run_dropped", reason="gateway_unreachable", run_id=run_id, error=str(exc))
+    except httpx.TimeoutException as exc:
+        _log.info("scheduled_run_dropped", reason="gateway_timeout", run_id=run_id, error=str(exc))
+    except Exception:
+        _log.exception("scheduled_run_forward_failed", run_id=run_id)
+
+
+async def forward_feasibility_check(
+    payload: dict[str, Any],
+    *,
+    forwarder: LocalOpenClawForwarder,
+    openclaw_gate: OpenClawGate,
+) -> None:
+    """Forward a ``feasibility_check`` event to the local OpenClaw feasibility-check channel (gated).
+
+    A one-shot assessment (not a chat): the plugin runs it in an isolated session and reports the
+    verdict back to the cloud. Dropped silently when OpenClaw is not running or the gateway is
+    unreachable — the task's static feasibility floor already stands.
+    """
+    task_id = str(payload.get("task_id") or "")
+    if not task_id or not str(payload.get("instruction") or "").strip():
+        _log.warning("feasibility_check_missing_fields", task_id=task_id or None)
+        return
+    running, oc_status, oc_err = await openclaw_gate()
+    if not running:
+        _log.info(
+            "feasibility_check_dropped",
+            reason="openclaw_not_running",
+            openclaw_status=oc_status,
+            openclaw_error=oc_err,
+            task_id=task_id,
+        )
+        return
+    try:
+        await forwarder.post_feasibility_check_json(_feasibility_body_from_sse(payload))
+    except httpx.ConnectError as exc:
+        _log.info("feasibility_check_dropped", reason="gateway_unreachable", task_id=task_id, error=str(exc))
+    except httpx.TimeoutException as exc:
+        _log.info("feasibility_check_dropped", reason="gateway_timeout", task_id=task_id, error=str(exc))
+    except Exception:
+        _log.exception("feasibility_check_forward_failed", task_id=task_id)
+
+
 async def _consume_chat_sse(
     *,
     agent_token: str,
@@ -218,6 +319,16 @@ async def _consume_chat_sse(
                 if event_name == "user_message":
                     await forward_user_message(
                         payload, forwarder=forwarder, dedup=dedup, openclaw_gate=_openclaw_gate
+                    )
+                    continue
+                if event_name == "scheduled_run":
+                    await forward_scheduled_run(
+                        payload, forwarder=forwarder, openclaw_gate=_openclaw_gate
+                    )
+                    continue
+                if event_name == "feasibility_check":
+                    await forward_feasibility_check(
+                        payload, forwarder=forwarder, openclaw_gate=_openclaw_gate
                     )
 
 
