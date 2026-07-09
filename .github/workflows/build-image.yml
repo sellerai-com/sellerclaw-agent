@@ -26,6 +26,7 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       image: ${{ steps.meta.outputs.image }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
       - name: Extract version and image name
         id: meta
@@ -42,10 +43,21 @@ jobs:
             exit 1
           fi
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          echo "Building version: ${version}"
+          # Git tags aren't tied to a branch, so the channel lives in the version string
+          # (same model openclaw uses). A SemVer pre-release segment — a hyphen, e.g.
+          # v0.58.0-rc.1 cut from `dev` — is a pre-release; a clean vX.Y.Z from `main` is the
+          # real release. Pre-releases are marked "Pre-release" on GitHub and roll the `:beta`
+          # image tag instead of overwriting `:latest`.
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          echo "Building version: ${version} (prerelease=${prerelease})"
           echo "Image: ${image}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build server image
@@ -83,9 +95,12 @@ jobs:
           push: true
           build-args: |
             SELLERCLAW_AGENT_VERSION=${{ needs.resolve.outputs.version }}
+          # Always tag the exact version. The rolling tag depends on the channel: a stable
+          # release moves `:latest`; a pre-release moves `:beta` and never touches `:latest`,
+          # so a dev beta can't overwrite the image production pulls.
           tags: |
             ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
-            ${{ needs.resolve.outputs.image }}:latest
+            ${{ needs.resolve.outputs.prerelease == 'true' && format('{0}:beta', needs.resolve.outputs.image) || format('{0}:latest', needs.resolve.outputs.image) }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -100,6 +115,11 @@ jobs:
           image="${{ needs.resolve.outputs.image }}"
           version="${{ needs.resolve.outputs.version }}"
           digest="${{ steps.build.outputs.digest }}"
+          if [[ "${{ needs.resolve.outputs.prerelease }}" == "true" ]]; then
+            rolling="beta"
+          else
+            rolling="latest"
+          fi
           package_name="${image##*/}"
           owner="${GITHUB_REPOSITORY%%/*}"
           package_url="https://github.com/${owner}/${GITHUB_REPOSITORY#*/}/pkgs/container/${package_name}"
@@ -107,7 +127,7 @@ jobs:
             echo "## GHCR image"
             echo ""
             echo "- Image: \`${image}:${version}\`"
-            echo "- Also tagged: \`${image}:latest\`"
+            echo "- Also tagged: \`${image}:${rolling}\`"
             echo "- Digest: \`${digest}\`"
             echo "- Pull: \`docker pull ${image}:${version}\`"
             echo "- Registry: ${package_url}"
@@ -130,6 +150,7 @@ jobs:
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.resolve.outputs.version }}
           IMAGE: ${{ needs.resolve.outputs.image }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
@@ -137,6 +158,15 @@ jobs:
           owner="${GITHUB_REPOSITORY%%/*}"
           repo_name="${GITHUB_REPOSITORY#*/}"
           package_url="https://github.com/${owner}/${repo_name}/pkgs/container/${package_name}"
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            rolling="beta"
+            channel_note="**Pre-release** (cut from \`dev\`) — this does NOT move \`${IMAGE}:latest\`."
+            release_flags=(--prerelease=true --latest=false)
+          else
+            rolling="latest"
+            channel_note="Stable release — marked \"Latest\"."
+            release_flags=(--prerelease=false --latest=true)
+          fi
           prev_tag="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
           if [[ -n "$prev_tag" ]]; then
             changes="$(git log --pretty=format:'- %s (%h)' "${prev_tag}..${TAG}")"
@@ -149,13 +179,15 @@ jobs:
           {
             echo "## Docker image"
             echo ""
+            echo "${channel_note}"
+            echo ""
             echo "Published to GHCR: [\`${IMAGE}:${VERSION}\`](${package_url})"
             echo ""
             echo "\`\`\`bash"
             echo "docker pull ${IMAGE}:${VERSION}"
             echo "\`\`\`"
             echo ""
-            echo "Also available as \`${IMAGE}:latest\`."
+            echo "Also available as \`${IMAGE}:${rolling}\`."
             echo ""
             echo "## Changes"
             echo ""
@@ -167,9 +199,9 @@ jobs:
           } > "$notes_file"
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release edit "${TAG}" --title "${TAG}" --notes-file "$notes_file"
+            gh release edit "${TAG}" --title "${TAG}" --notes-file "$notes_file" "${release_flags[@]}"
           else
-            gh release create "${TAG}" --title "${TAG}" --notes-file "$notes_file"
+            gh release create "${TAG}" --title "${TAG}" --notes-file "$notes_file" "${release_flags[@]}"
           fi
 
           {

@@ -1,6 +1,6 @@
 .PHONY: install setup up up-stage up-dev down test test_unit test_unit_dirs test_cloud lint \
 	openclaw-skills openclaw-plugins openclaw-measure-gateway-memory openclaw-measure-gateway-memory-cold \
-	release stage-cli-wheel dev-cli-local dev-cli-pypi
+	release release-latest release-beta stage-cli-wheel dev-cli-local dev-cli-pypi
 
 UV ?= uv
 LINT_PATHS = sellerclaw_agent tests
@@ -113,13 +113,18 @@ openclaw-measure-gateway-memory:
 		python -m openclaw_diagnostics cgroup-limits || true; \
 		python -m openclaw_diagnostics monitor-memory --pid "$$pid" --interval $(OPENCLAW_MEASURE_INTERVAL) --max-samples $(OPENCLAW_MEASURE_SAMPLES)'
 
-# Release: create and push a new git tag (default: bump minor, e.g. v0.7.0 -> v0.8.0).
+# Release: create and push a new git tag. PREFER the `release-latest` / `release-beta` wrappers
+# below — they compute the number for you so the pre-release format can't be wrong. `release` is the
+# low-level target they delegate to; call it directly only for an explicit one-off.
 # Usage:
 #   make release                # bump minor:  v0.7.0 -> v0.8.0
 #   make release PART=patch     # bump patch:  v0.7.0 -> v0.7.1
 #   make release PART=major     # bump major:  v0.7.0 -> v1.0.0
 #   make release VERSION=1.2.3  # explicit version (without leading v)
+#   make release VERSION=1.2.3-beta.1  # explicit pre-release (usually use `make release-beta`)
 # Add ALLOW_DIRTY=1 to skip the clean-working-tree check.
+# Channel is decided by the version shape in build-image.yml: a SemVer pre-release segment
+# (a hyphen, e.g. 1.2.3-beta.1) is a pre-release; a clean X.Y.Z from main is the real release.
 PART ?= minor
 REMOTE ?= origin
 
@@ -157,6 +162,42 @@ release:
 	git tag -a "$$tag" -m "Release $$tag"; \
 	git push $(REMOTE) "$$tag"; \
 	echo "Pushed $$tag. The 'Build Image' workflow will publish the GHCR image and GitHub release."
+
+# Preferred entry points — you never type a version string, so you can't get the format wrong.
+# The number is computed from existing tags:
+#   make release-beta     # from dev  -> X.Y.Z-beta.N (pre-release): "Pre-release" on GitHub,
+#                         #   moves the :beta image tag, never touches :latest
+#   make release-latest   # from main -> X.Y.Z        (stable):      "Latest" on GitHub, moves :latest
+#
+# Both share one "base" = the last STABLE tag bumped by PART (minor by default; PART=patch|major).
+# release-beta cuts pre-releases for that base (-beta.1, -beta.2, …); release-latest finalizes it to
+# the clean X.Y.Z. Typical flow: `make release-beta` on dev (repeat) → `make release-latest` on main.
+# Delegates to `release`, which does all the tag pushing.
+release-latest release-beta:
+	@set -eu; \
+	git fetch --tags --quiet $(REMOTE); \
+	last_stable=$$(git tag --list 'v*' --sort=v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | tail -n1); \
+	if [ -z "$$last_stable" ]; then last_stable="v0.0.0"; fi; \
+	b=$${last_stable#v}; \
+	major=$$(echo "$$b" | cut -d. -f1); \
+	minor=$$(echo "$$b" | cut -d. -f2); \
+	patch=$$(echo "$$b" | cut -d. -f3); \
+	case "$(PART)" in \
+	  major) base="$$((major+1)).0.0" ;; \
+	  minor) base="$$major.$$((minor+1)).0" ;; \
+	  patch) base="$$major.$$minor.$$((patch+1))" ;; \
+	  *) echo "Unknown PART=$(PART) (use major|minor|patch)" >&2; exit 1 ;; \
+	esac; \
+	if [ "$@" = "release-beta" ]; then \
+	  n=$$(git tag --list "v$${base}-beta.*" | grep -oE '[0-9]+$$' | sort -n | tail -n1); \
+	  if [ -z "$$n" ]; then n=0; fi; \
+	  new="$${base}-beta.$$((n+1))"; \
+	  echo "release-beta: base $$base (from last stable $$last_stable) -> pre-release $$new"; \
+	  $(MAKE) --no-print-directory release VERSION="$$new"; \
+	else \
+	  echo "release-latest: finalizing base $$base (from last stable $$last_stable) -> stable $$base"; \
+	  $(MAKE) --no-print-directory release VERSION="$$base"; \
+	fi
 
 openclaw-measure-gateway-memory-cold:
 	@echo "[measure] restarting server, then sampling (interval=$(OPENCLAW_MEASURE_INTERVAL)s samples=$(OPENCLAW_MEASURE_SAMPLES))"
