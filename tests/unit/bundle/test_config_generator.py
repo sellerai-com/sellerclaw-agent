@@ -642,6 +642,20 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
     )
 
 
+def test_generate_openclaw_config_subagent_run_timeout_in_defaults(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Two distinct timeouts: a per-turn cap and a total-run cap for delegated subagents.
+
+    ``timeoutSeconds`` bounds a single agent turn; ``subagents.runTimeoutSeconds`` bounds a
+    spawned subagent's whole delegated run (one hour), so a stuck delegation cannot run forever.
+    See https://docs.openclaw.ai/tools/subagents.
+    """
+    defaults = json.loads(_generate(_supervisor_only(make_assembled_agent)))["agents"]["defaults"]
+    assert defaults["timeoutSeconds"] == 600
+    assert defaults["subagents"] == {"runTimeoutSeconds": 3600}
+
+
 def test_generate_openclaw_config_web_search_enabled_requires_auth_token(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
