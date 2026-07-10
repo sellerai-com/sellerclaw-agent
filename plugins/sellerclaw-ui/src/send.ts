@@ -154,6 +154,61 @@ export async function uploadLocalMedia(
   };
 }
 
+/**
+ * Report the outcome of one scheduled-task run back to the cloud.
+ *
+ * Posted to the AGENT-authenticated webhook ``/agent/scheduled-tasks/run`` (same ``agentApiKey``
+ * bearer the cloud validates for cron/errors). The cloud folds this into the run's journal
+ * idempotently by ``runId`` — a scheduled run is NOT a chat, so this bypasses the whole
+ * ``postTurnStart/Part/End`` pipeline. Field names are camelCase to match the cloud webhook schema.
+ */
+export async function postScheduledTaskRun(
+  account: ScwUiAccount,
+  outcome: { runId: string; status: "ok" | "error"; summary?: string; error?: string },
+): Promise<void> {
+  const url = `${account.apiBaseUrl.replace(/\/$/, "")}/agent/scheduled-tasks/run`;
+  await postOpenclawWebhook(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${account.agentApiKey}`,
+    },
+    body: JSON.stringify({
+      runId: outcome.runId,
+      status: outcome.status,
+      ...(outcome.summary ? { summary: outcome.summary } : {}),
+      ...(outcome.error ? { error: outcome.error } : {}),
+    }),
+  });
+}
+
+/**
+ * Report an agent feasibility verdict for a recurring task back to the cloud.
+ *
+ * Posted to the AGENT-authenticated webhook ``/agent/scheduled-tasks/feasibility``; the cloud folds
+ * it into the task's feasibility (overwrites the static floor). Field names are camelCase to match
+ * the cloud webhook schema.
+ */
+export async function postScheduledTaskFeasibility(
+  account: ScwUiAccount,
+  verdict: { taskId: string; feasible: boolean; missing: string[]; approach?: string },
+): Promise<void> {
+  const url = `${account.apiBaseUrl.replace(/\/$/, '')}/agent/scheduled-tasks/feasibility`
+  await postOpenclawWebhook(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${account.agentApiKey}`,
+    },
+    body: JSON.stringify({
+      taskId: verdict.taskId,
+      feasible: verdict.feasible,
+      missing: verdict.missing,
+      ...(verdict.approach ? { approach: verdict.approach } : {}),
+    }),
+  })
+}
+
 export async function postWebhookMessage(
   account: ScwUiAccount,
   sessionKey: string,

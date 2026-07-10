@@ -336,7 +336,19 @@ def generate_openclaw_config(
 
     agents_defaults: dict[str, object] = {
         "skipBootstrap": True,
+        # Per-turn cap: max seconds for a single agent turn (one model iteration) before it is
+        # aborted. Applies to every agent, including each individual turn of a spawned subagent.
+        # It does NOT bound a subagent's total delegated run — that is `subagents.runTimeoutSeconds`
+        # below. See https://docs.openclaw.ai/gateway/config-agents (`agents.defaults.timeoutSeconds`).
         "timeoutSeconds": 600,
+        # Total-run cap for a spawned subagent session: max seconds a delegated subagent may run
+        # across all its turns before OpenClaw aborts the run. This is the default when the entry
+        # point calls `sessions_spawn` without an explicit `runTimeoutSeconds`. Without this key
+        # OpenClaw applies no total-run limit (falls back to 0 = unbounded), so a stuck delegated
+        # task could run indefinitely; we cap it at one hour. See
+        # https://docs.openclaw.ai/tools/subagents and
+        # https://docs.openclaw.ai/gateway/config-agents (`agents.defaults.subagents.runTimeoutSeconds`).
+        "subagents": {"runTimeoutSeconds": 3600},
         "bootstrapMaxChars": OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
         "model": model_defaults.model,
         "thinkingDefault": thinking_default,

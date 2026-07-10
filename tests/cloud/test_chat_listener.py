@@ -504,3 +504,52 @@ async def test_cancel_event_survives_gateway_unreachable(monkeypatch: pytest.Mon
         monkeypatch=monkeypatch,
     )
     assert inbound.paths == ["/api/channels/sellerclaw-ui/abort"]
+
+
+@pytest.mark.asyncio
+async def test_scheduled_run_forwarded_to_scheduled_run_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``scheduled_run`` frame is handed to the plugin's scheduled-run route (not inbound/chat)."""
+    payload = {
+        "run_id": "run-abc",
+        "agent_id": "supervisor",
+        "user_id": "u1",
+        "instruction": "Summarize yesterday's orders and email me.",
+        "session_key": "agent:supervisor:sellerclaw-ui:scheduled-task:run-abc",
+    }
+    supervisor = _FakeSupervisor(status="running")
+    inbound = _InboundRecorder(behavior="ok")
+    await _run_consume(
+        sse_body=_sse_bytes([("scheduled_run", payload)]),
+        supervisor=supervisor,
+        inbound=inbound,
+        agent_instance_id=uuid4(),
+        monkeypatch=monkeypatch,
+    )
+    assert inbound.paths == ["/api/channels/sellerclaw-ui/scheduled-run"]
+    assert inbound.calls[0]["run_id"] == "run-abc"
+    assert inbound.calls[0]["instruction"].startswith("Summarize")
+
+
+@pytest.mark.asyncio
+async def test_scheduled_run_not_forwarded_when_openclaw_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stopped agent never runs a scheduled task — the frame is dropped, not queued."""
+    payload = {
+        "run_id": "run-x",
+        "agent_id": "supervisor",
+        "user_id": "u1",
+        "instruction": "do it",
+    }
+    supervisor = _FakeSupervisor(status="stopped")
+    inbound = _InboundRecorder(behavior="ok")
+    await _run_consume(
+        sse_body=_sse_bytes([("scheduled_run", payload)]),
+        supervisor=supervisor,
+        inbound=inbound,
+        agent_instance_id=uuid4(),
+        monkeypatch=monkeypatch,
+    )
+    assert inbound.calls == []

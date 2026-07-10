@@ -111,6 +111,76 @@ class LocalOpenClawForwarder:
             )
             raise
 
+    async def post_scheduled_run_json(self, body: dict[str, Any]) -> None:
+        """POST ``body`` to the OpenClaw sellerclaw-ui scheduled-run channel.
+
+        Hands one recurring-task occurrence to the plugin, which runs it in an isolated session
+        and reports the outcome straight to the cloud (not a chat). Gateway-authenticated like the
+        inbound route so the run gets ``operator.write``.
+
+        Raises:
+            httpx.ConnectError: the local gateway is not listening.
+            httpx.TimeoutException: connect/read timeout talking to the gateway.
+            httpx.HTTPStatusError: gateway responded with a non-2xx status.
+        """
+        url = f"{self._base}/api/channels/sellerclaw-ui/scheduled-run"
+        headers = {
+            "Authorization": f"Bearer {self._gateway_token}",
+            "Content-Type": "application/json",
+        }
+        if self._http is not None:
+            response = await self._http.post(url, headers=headers, json=body)
+        else:
+            async with async_client(
+                timeout=INBOUND_FORWARD_TIMEOUT,
+                transport=self._transport,
+            ) as client:
+                response = await client.post(url, headers=headers, json=body)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _log.warning(
+                "openclaw_scheduled_run_forward_failed status=%s body=%s",
+                exc.response.status_code,
+                (exc.response.text or "")[:500],
+            )
+            raise
+
+    async def post_feasibility_check_json(self, body: dict[str, Any]) -> None:
+        """POST ``body`` to the OpenClaw sellerclaw-ui feasibility-check channel.
+
+        Asks the plugin to assess whether the agent can fully do a task; it runs the assessment in
+        an isolated session and reports a structured verdict to the cloud. Gateway-authenticated
+        like the inbound route.
+
+        Raises:
+            httpx.ConnectError: the local gateway is not listening.
+            httpx.TimeoutException: connect/read timeout talking to the gateway.
+            httpx.HTTPStatusError: gateway responded with a non-2xx status.
+        """
+        url = f"{self._base}/api/channels/sellerclaw-ui/feasibility-check"
+        headers = {
+            "Authorization": f"Bearer {self._gateway_token}",
+            "Content-Type": "application/json",
+        }
+        if self._http is not None:
+            response = await self._http.post(url, headers=headers, json=body)
+        else:
+            async with async_client(
+                timeout=INBOUND_FORWARD_TIMEOUT,
+                transport=self._transport,
+            ) as client:
+                response = await client.post(url, headers=headers, json=body)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _log.warning(
+                "openclaw_feasibility_check_forward_failed status=%s body=%s",
+                exc.response.status_code,
+                (exc.response.text or "")[:500],
+            )
+            raise
+
     async def post_hooks_agent_json(self, body: dict[str, Any]) -> None:
         """POST ``body`` to OpenClaw ``/hooks/agent`` (cloud-originated hook delivery)."""
         url = f"{self._base}/hooks/agent"

@@ -28,7 +28,13 @@ from sellerclaw_agent.async_backoff import (
 )
 from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
-from sellerclaw_agent.cloud.chat_listener import _MessageIdDedup, forward_cancel, forward_user_message
+from sellerclaw_agent.cloud.chat_listener import (
+    _MessageIdDedup,
+    forward_cancel,
+    forward_feasibility_check,
+    forward_scheduled_run,
+    forward_user_message,
+)
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.edge_sse_common import OpenClawGate, make_openclaw_gate, raise_for_edge_sse_status
@@ -125,6 +131,14 @@ async def _consume_unified_sse(
                 if event_name == "user_message":
                     await forward_user_message(
                         payload, forwarder=forwarder, dedup=dedup, openclaw_gate=openclaw_gate
+                    )
+                elif event_name == "scheduled_run":
+                    await forward_scheduled_run(
+                        payload, forwarder=forwarder, openclaw_gate=openclaw_gate
+                    )
+                elif event_name == "feasibility_check":
+                    await forward_feasibility_check(
+                        payload, forwarder=forwarder, openclaw_gate=openclaw_gate
                     )
                 elif event_name == "cancel":
                     await forward_cancel(payload, forwarder=forwarder)

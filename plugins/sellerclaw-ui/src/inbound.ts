@@ -10,6 +10,8 @@ import {
 
 import { resolveSellerclawUiAccount } from "./channel.js";
 import {
+  postScheduledTaskFeasibility,
+  postScheduledTaskRun,
   postThought,
   postTurnEnd,
   postTurnPart,
@@ -690,6 +692,351 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           // failed). Until then a catch-up re-delivery of this same message is dropped; once
           // freed, a later re-delivery (e.g. the cloud was down when turn/end fired) re-runs.
           if (inboundMessageId) inFlightInboundMessageIds.delete(inboundMessageId);
+        });
+
+      return true;
+    },
+  });
+}
+
+interface ScheduledRunPayload {
+  run_id: string;
+  agent_id: string;
+  user_id: string;
+  instruction: string;
+  /** Isolated session key chosen by the cloud; informational — isolation here is by run_id. */
+  session_key?: string;
+}
+
+/**
+ * Scheduled-task run route: the cloud hands one recurring-task occurrence here — NOT a chat.
+ *
+ * Unlike the inbound chat route this never streams turn parts and never persists a chat message.
+ * It runs the instruction in an isolated per-run session, accumulates the agent's final reply as a
+ * summary, and — deterministically when the run finishes (success OR failure) — POSTs the structured
+ * outcome to the cloud's ``/agent/scheduled-tasks/run`` webhook, echoing ``run_id`` so the cloud
+ * folds it into the run journal idempotently. Gateway-authenticated like the inbound route so the
+ * run is granted ``operator.write`` (tools) rather than an empty operator scope.
+ */
+export function registerScheduledRunRoute(api: OpenClawPluginApi): void {
+  const SUMMARY_MAX = 60_000;
+  api.registerHttpRoute({
+    path: "/api/channels/sellerclaw-ui/scheduled-run",
+    auth: "gateway",
+    handler: async (req, res) => {
+      let account: ScwUiAccount;
+      try {
+        account = resolveSellerclawUiAccount(api.config);
+      } catch {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ error: "Channel not configured" }));
+        return true;
+      }
+
+      const readResult = await readJsonWebhookBodyOrReject({ req, res });
+      if (
+        !readResult ||
+        typeof readResult !== "object" ||
+        !("ok" in readResult) ||
+        !(readResult as { ok: boolean }).ok
+      ) {
+        return true;
+      }
+      const body = (readResult as { ok: true; value: unknown }).value;
+      if (!body || typeof body !== "object") {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: "Invalid JSON body" }));
+        return true;
+      }
+
+      const payload = body as unknown as ScheduledRunPayload;
+      const runId = payload.run_id?.trim() ?? "";
+      const instruction = payload.instruction?.trim() ?? "";
+      if (!runId || !instruction) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: "run_id and instruction required" }));
+        return true;
+      }
+
+      let runtime: ReturnType<typeof getRuntime>;
+      try {
+        runtime = getRuntime();
+      } catch (err) {
+        logError(api, `sellerclaw-ui: getRuntime failed: ${String(err)}`);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: "Plugin runtime not available" }));
+        return true;
+      }
+
+      logInfo(api, `sellerclaw-ui: scheduled-run accepted run_id=${runId} user_id=${payload.user_id}`);
+      res.statusCode = 202;
+      res.end(JSON.stringify({ ok: true }));
+
+      // Isolated per-run conversation so a scheduled run never touches a user chat session.
+      const conversationId = `scheduled-task:${runId}`;
+
+      // Accumulate the agent's final reply as the run summary. The engine streams each block and
+      // then re-delivers the consolidated ``final`` — prefer the final per assistant-message index.
+      const textByIndex = new Map<number, string>();
+      const deliver = async (
+        replyPayload: unknown,
+        dispatchInfo?: { kind?: string; assistantMessageIndex?: number },
+      ): Promise<void> => {
+        if (
+          typeof replyPayload === "object" &&
+          replyPayload !== null &&
+          isReasoningReplyPayload(replyPayload as Record<string, unknown>)
+        ) {
+          return; // reasoning ("thinking") is not part of the outcome summary
+        }
+        const { text } = readDeliverPayload(replyPayload);
+        const clean = stripRuntimeToolActivityLines(text).trim();
+        if (!clean) return;
+        const idx = dispatchInfo?.assistantMessageIndex ?? 0;
+        if (dispatchInfo?.kind === "final" || !textByIndex.has(idx)) {
+          textByIndex.set(idx, clean);
+        } else {
+          textByIndex.set(idx, `${textByIndex.get(idx) ?? ""}\n\n${clean}`);
+        }
+      };
+
+      const summarize = (): string =>
+        [...textByIndex.keys()]
+          .sort((a, b) => a - b)
+          .map((k) => textByIndex.get(k) ?? "")
+          .filter(Boolean)
+          .join("\n\n")
+          .slice(0, SUMMARY_MAX);
+
+      const report = async (status: "ok" | "error", error?: string): Promise<void> => {
+        try {
+          const summary = summarize();
+          await postScheduledTaskRun(account, {
+            runId,
+            status,
+            ...(summary ? { summary } : {}),
+            ...(error ? { error: error.slice(0, SUMMARY_MAX) } : {}),
+          });
+        } catch (err) {
+          logError(
+            api,
+            `sellerclaw-ui: scheduled-run report failed run_id=${runId}: ${String(err)}`,
+          );
+        }
+      };
+
+      void dispatchInboundDirectDmWithReasoning({
+        cfg: api.config,
+        runtime,
+        channel: "sellerclaw-ui",
+        channelLabel: "SellerClaw UI",
+        accountId: "default",
+        peer: { kind: "direct", id: conversationId },
+        senderId: payload.user_id,
+        senderAddress: `sellerclaw-ui:${payload.user_id}`,
+        recipientAddress: `sellerclaw-ui:direct:${conversationId}`,
+        conversationLabel: conversationId,
+        rawBody: instruction,
+        messageId: crypto.randomUUID(),
+        timestamp: Date.now(),
+        commandAuthorized: true,
+        deliver,
+        onRecordError: (err: unknown) =>
+          logError(api, `sellerclaw-ui: scheduled-run session record error: ${String(err)}`),
+        onDispatchError: (err: unknown, info: { kind: string }) =>
+          logError(api, `sellerclaw-ui: scheduled-run ${info.kind} reply error: ${String(err)}`),
+      })
+        .then(() => report("ok"))
+        .catch(async (err: unknown) => {
+          logError(
+            api,
+            `sellerclaw-ui: scheduled-run dispatch failed run_id=${runId}: ${String(err)}`,
+          );
+          await report("error", String(err));
+        });
+
+      return true;
+    },
+  });
+}
+
+interface FeasibilityCheckPayload {
+  task_id: string;
+  agent_id: string;
+  user_id: string;
+  instruction: string;
+  session_key?: string;
+}
+
+/**
+ * Parse the machine-readable ``VERDICT:`` line the feasibility assessment ends with.
+ *
+ * Returns ``null`` when no verdict line is present, so a parse-miss leaves the task's static
+ * feasibility floor untouched (never downgrade a working task on a formatting slip). The rest of
+ * the reply becomes the reusable ``approach``. Exported for unit testing.
+ */
+export function parseFeasibilityVerdict(
+  text: string,
+): { feasible: boolean; missing: string[]; approach: string } | null {
+  const m = text.match(/VERDICT:\s*feasible\s*=\s*(yes|no)\b[^\n]*?missing\s*=\s*([^\n]*)/i);
+  if (!m) return null;
+  const feasible = (m[1] ?? "").toLowerCase() === "yes";
+  const missingRaw = (m[2] ?? "").trim();
+  const missing =
+    !missingRaw || missingRaw.toLowerCase() === "none"
+      ? []
+      : missingRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+  const approach = text.replace(/^\s*VERDICT:.*$/im, "").trim();
+  return { feasible, missing, approach };
+}
+
+/**
+ * Feasibility-check route: the cloud asks whether the agent can fully do a task (NOT a chat).
+ *
+ * Runs the assessment in an isolated per-task session, accumulates the agent's reply, parses the
+ * trailing ``VERDICT:`` line, and POSTs the structured verdict to
+ * ``/agent/scheduled-tasks/feasibility`` (echoing ``task_id``). A reply without a parseable verdict
+ * is left alone — the cloud keeps the static floor. Gateway-authenticated like the inbound route.
+ */
+export function registerFeasibilityCheckRoute(api: OpenClawPluginApi): void {
+  const APPROACH_MAX = 32_000;
+  api.registerHttpRoute({
+    path: "/api/channels/sellerclaw-ui/feasibility-check",
+    auth: "gateway",
+    handler: async (req, res) => {
+      let account: ScwUiAccount;
+      try {
+        account = resolveSellerclawUiAccount(api.config);
+      } catch {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ error: "Channel not configured" }));
+        return true;
+      }
+
+      const readResult = await readJsonWebhookBodyOrReject({ req, res });
+      if (
+        !readResult ||
+        typeof readResult !== "object" ||
+        !("ok" in readResult) ||
+        !(readResult as { ok: boolean }).ok
+      ) {
+        return true;
+      }
+      const body = (readResult as { ok: true; value: unknown }).value;
+      if (!body || typeof body !== "object") {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: "Invalid JSON body" }));
+        return true;
+      }
+
+      const payload = body as unknown as FeasibilityCheckPayload;
+      const taskId = payload.task_id?.trim() ?? "";
+      const instruction = payload.instruction?.trim() ?? "";
+      if (!taskId || !instruction) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: "task_id and instruction required" }));
+        return true;
+      }
+
+      let runtime: ReturnType<typeof getRuntime>;
+      try {
+        runtime = getRuntime();
+      } catch (err) {
+        logError(api, `sellerclaw-ui: getRuntime failed: ${String(err)}`);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: "Plugin runtime not available" }));
+        return true;
+      }
+
+      logInfo(api, `sellerclaw-ui: feasibility-check accepted task_id=${taskId}`);
+      res.statusCode = 202;
+      res.end(JSON.stringify({ ok: true }));
+
+      const conversationId = `feasibility-check:${taskId}`;
+
+      const textByIndex = new Map<number, string>();
+      const deliver = async (
+        replyPayload: unknown,
+        dispatchInfo?: { kind?: string; assistantMessageIndex?: number },
+      ): Promise<void> => {
+        if (
+          typeof replyPayload === "object" &&
+          replyPayload !== null &&
+          isReasoningReplyPayload(replyPayload as Record<string, unknown>)
+        ) {
+          return;
+        }
+        const { text } = readDeliverPayload(replyPayload);
+        const clean = stripRuntimeToolActivityLines(text).trim();
+        if (!clean) return;
+        const idx = dispatchInfo?.assistantMessageIndex ?? 0;
+        if (dispatchInfo?.kind === "final" || !textByIndex.has(idx)) {
+          textByIndex.set(idx, clean);
+        } else {
+          textByIndex.set(idx, `${textByIndex.get(idx) ?? ""}\n\n${clean}`);
+        }
+      };
+
+      const fullReply = (): string =>
+        [...textByIndex.keys()]
+          .sort((a, b) => a - b)
+          .map((k) => textByIndex.get(k) ?? "")
+          .filter(Boolean)
+          .join("\n\n");
+
+      void dispatchInboundDirectDmWithReasoning({
+        cfg: api.config,
+        runtime,
+        channel: "sellerclaw-ui",
+        channelLabel: "SellerClaw UI",
+        accountId: "default",
+        peer: { kind: "direct", id: conversationId },
+        senderId: payload.user_id,
+        senderAddress: `sellerclaw-ui:${payload.user_id}`,
+        recipientAddress: `sellerclaw-ui:direct:${conversationId}`,
+        conversationLabel: conversationId,
+        rawBody: instruction,
+        messageId: crypto.randomUUID(),
+        timestamp: Date.now(),
+        commandAuthorized: true,
+        deliver,
+        onRecordError: (err: unknown) =>
+          logError(api, `sellerclaw-ui: feasibility-check session record error: ${String(err)}`),
+        onDispatchError: (err: unknown, info: { kind: string }) =>
+          logError(api, `sellerclaw-ui: feasibility-check ${info.kind} reply error: ${String(err)}`),
+      })
+        .then(async () => {
+          const verdict = parseFeasibilityVerdict(fullReply());
+          if (!verdict) {
+            logInfo(
+              api,
+              `sellerclaw-ui: feasibility-check no verdict parsed task_id=${taskId} (keeping static floor)`,
+            );
+            return;
+          }
+          try {
+            await postScheduledTaskFeasibility(account, {
+              taskId,
+              feasible: verdict.feasible,
+              missing: verdict.missing,
+              ...(verdict.approach ? { approach: verdict.approach.slice(0, APPROACH_MAX) } : {}),
+            });
+          } catch (err) {
+            logError(
+              api,
+              `sellerclaw-ui: feasibility-check report failed task_id=${taskId}: ${String(err)}`,
+            );
+          }
+        })
+        .catch((err: unknown) => {
+          // Can't assess (dispatch failed) — leave the static feasibility floor in place.
+          logError(
+            api,
+            `sellerclaw-ui: feasibility-check dispatch failed task_id=${taskId}: ${String(err)}`,
+          );
         });
 
       return true;

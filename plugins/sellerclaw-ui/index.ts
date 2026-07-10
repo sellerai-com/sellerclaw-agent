@@ -2,7 +2,12 @@ import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { sellerclawUiChannelPlugin, setPluginConfig } from "./src/channel.js";
-import { registerAbortRoute, registerInboundRoute } from "./src/inbound.js";
+import {
+  registerAbortRoute,
+  registerFeasibilityCheckRoute,
+  registerInboundRoute,
+  registerScheduledRunRoute,
+} from "./src/inbound.js";
 import { setRuntime } from "./src/runtime-store.js";
 
 export default defineChannelPluginEntry({
@@ -15,5 +20,7 @@ export default defineChannelPluginEntry({
     setPluginConfig(api.config);
     registerInboundRoute(api);
     registerAbortRoute(api);
+    registerScheduledRunRoute(api);
+    registerFeasibilityCheckRoute(api);
   },
 });
