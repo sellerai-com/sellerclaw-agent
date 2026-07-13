@@ -21,7 +21,6 @@ import {
   type ScwUiAccount,
 } from "./send.js";
 import { getRuntime } from "./runtime-store.js";
-import { stripRuntimeToolActivityLines } from "./tool-activity-filter.js";
 
 interface InboundPayload {
   chat_id: string;
@@ -626,17 +625,15 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
                 );
               }
             }
-            const filteredText = stripRuntimeToolActivityLines(text);
-            const trimmedText = filteredText.trim();
-            if (trimmedText) {
+            if (text.trim()) {
               const kind = dispatchInfo?.kind;
               const msgIndex = dispatchInfo?.assistantMessageIndex ?? 0;
               // Suppress the consolidated final re-delivery of a sub-message we already
               // streamed block-by-block; everything else (blocks, and final-only replies that
               // were never streamed) is posted.
               if (!(kind === "final" && streamedMessageIndexes.has(msgIndex))) {
-                const joiner = pickDeltaJoin(prevTail, filteredText);
-                const outText = joiner + filteredText;
+                const joiner = pickDeltaJoin(prevTail, text);
+                const outText = joiner + text;
                 prevTail = outText.slice(-TAIL_KEEP_CHARS);
                 try {
                   await ensurePartsTurn();
@@ -778,6 +775,7 @@ export function registerScheduledRunRoute(api: OpenClawPluginApi): void {
       // Accumulate the agent's final reply as the run summary. The engine streams each block and
       // then re-delivers the consolidated ``final`` — prefer the final per assistant-message index.
       const textByIndex = new Map<number, string>();
+      let deliveries = 0;
       const deliver = async (
         replyPayload: unknown,
         dispatchInfo?: { kind?: string; assistantMessageIndex?: number },
@@ -789,8 +787,9 @@ export function registerScheduledRunRoute(api: OpenClawPluginApi): void {
         ) {
           return; // reasoning ("thinking") is not part of the outcome summary
         }
+        deliveries++;
         const { text } = readDeliverPayload(replyPayload);
-        const clean = stripRuntimeToolActivityLines(text).trim();
+        const clean = text.trim();
         if (!clean) return;
         const idx = dispatchInfo?.assistantMessageIndex ?? 0;
         if (dispatchInfo?.kind === "final" || !textByIndex.has(idx)) {
@@ -811,6 +810,13 @@ export function registerScheduledRunRoute(api: OpenClawPluginApi): void {
       const report = async (status: "ok" | "error", error?: string): Promise<void> => {
         try {
           const summary = summarize();
+          if (!summary) {
+            // A run the owner cannot read is a defect, not a quiet success — make it greppable.
+            logInfo(
+              api,
+              `sellerclaw-ui: scheduled-run produced no summary run_id=${runId} status=${status} deliveries=${deliveries}`,
+            );
+          }
           await postScheduledTaskRun(account, {
             runId,
             status,
@@ -970,7 +976,7 @@ export function registerFeasibilityCheckRoute(api: OpenClawPluginApi): void {
           return;
         }
         const { text } = readDeliverPayload(replyPayload);
-        const clean = stripRuntimeToolActivityLines(text).trim();
+        const clean = text.trim();
         if (!clean) return;
         const idx = dispatchInfo?.assistantMessageIndex ?? 0;
         if (dispatchInfo?.kind === "final" || !textByIndex.has(idx)) {

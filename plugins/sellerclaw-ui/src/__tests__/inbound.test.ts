@@ -716,26 +716,22 @@ describe("registerInboundRoute", () => {
       expect(deltaTexts()).toEqual(["First real chunk", " More text"]);
     });
 
-    it("drops runtime tool activity footers before posting text parts", async () => {
+    // The runtime appends its tool/subagent footers into the same text chunks as real prose, so
+    // any filter is a guess that also eats genuine lines (a bullet starting with 🛠️, a paragraph
+    // headed "Reasoning:"). We forward the agent's text verbatim instead: losing the answer is
+    // worse than showing a footer.
+    it("forwards runtime tool activity lines verbatim instead of guessing what to strip", async () => {
       const deliver = await dispatchOnce();
       await deliver({
         text: [
           "Сейчас посмотрю ваши заказы.",
-          "🤖 Subagents",
-          "🧾 Session History: session agent:marketing:subagent:87abb016-1111-2222-3333-444444444444, limit 20",
           "🛠️ sellerclaw agent-orders list failed",
           "Вот что удалось найти.",
         ].join("\n"),
       });
       expect(deltaTexts()).toEqual([
-        "Сейчас посмотрю ваши заказы.\nВот что удалось найти.",
+        "Сейчас посмотрю ваши заказы.\n🛠️ sellerclaw agent-orders list failed\nВот что удалось найти.",
       ]);
-    });
-
-    it("does not post a text part when deliver payload is only runtime activity", async () => {
-      const deliver = await dispatchOnce();
-      await deliver({ text: "🤖 Subagents\n🛠️ sellerclaw agent-orders list failed" });
-      expect(deltaTexts()).toEqual([]);
     });
 
     // Regression for the "Weserübung" transcript the user reported: many
