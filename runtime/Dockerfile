@@ -155,6 +155,10 @@ COPY sellerclaw-agent/runtime/commands/fetch_config_bundle         /usr/local/bi
 COPY sellerclaw-agent/runtime/commands/gost_start                  /usr/local/bin/gost_start
 COPY sellerclaw-agent/runtime/commands/openclaw_chrome             /usr/local/bin/openclaw_chrome
 COPY sellerclaw-agent/runtime/commands/kasmvnc_start               /usr/local/bin/kasmvnc_start
+# Safe archive extraction. Agents must use this instead of `unzip` (see the file_storage skill):
+# it refuses symlinks, path escapes and decompression bombs while unpacking, not just from the
+# zip's (forgeable) table of contents.
+COPY sellerclaw-agent/runtime/commands/sellerclaw_unzip            /usr/local/bin/sellerclaw_unzip
 COPY sellerclaw-agent/runtime/nginx/openclaw-proxy.conf            /etc/nginx/openclaw-proxy.conf
 COPY sellerclaw-agent/runtime/healthchecks/openclaw_tcp_check      /usr/local/bin/openclaw_tcp_check
 COPY sellerclaw-agent/runtime/supervisord.conf                     /etc/supervisor/conf.d/openclaw.conf
@@ -166,6 +170,7 @@ RUN chmod +x \
     /usr/local/bin/gost_start \
     /usr/local/bin/openclaw_chrome \
     /usr/local/bin/kasmvnc_start \
+    /usr/local/bin/sellerclaw_unzip \
     /usr/local/bin/openclaw_tcp_check
 
 EXPOSE 7788 6080 6081 8001

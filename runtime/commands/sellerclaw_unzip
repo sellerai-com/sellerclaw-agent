@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Unpack a .zip safely. Use this instead of `unzip`.
+
+The cloud vets an archive before storing it, but that check reads the zip's table of contents —
+and a table of contents can lie. This is the other half: it enforces the same rules while the
+data is actually being decompressed, on the machine that has to live with the result.
+
+What it refuses:
+  * a member that would land outside the destination (``..``, absolute paths)
+  * symlinks and device entries — `unzip` follows a symlink and writes through it, which is how
+    an archive escapes the folder it was told to unpack into without a single ``..`` in any name
+  * password-protected members (nothing here can read them anyway)
+  * a member whose real, decompressed size runs past the cap — checked while reading, not from
+    the declared size, so a lying header buys the archive nothing
+  * an archive that unpacks past the total cap, or holds more files than the cap allows
+
+Nothing is written until every member has passed: the extraction goes to a temporary directory
+next to the destination and is moved into place at the end, so a rejected archive never leaves
+half a payload behind.
+
+Usage:
+  sellerclaw_unzip <archive.zip> [destination-dir]
+
+Prints one extracted path per line. Exits non-zero with a one-line reason if the archive is
+rejected; nothing is written in that case.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import stat
+import sys
+import tempfile
+import zipfile
+from pathlib import Path, PurePosixPath
+
+MAX_MEMBERS = 500
+MAX_MEMBER_BYTES = 100 * 1024 * 1024
+MAX_TOTAL_BYTES = 200 * 1024 * 1024
+READ_CHUNK = 1024 * 1024
+
+ENCRYPTED_FLAG = 0x1
+UNIX_CREATE_SYSTEM = 3
+
+
+class RejectedArchive(Exception):
+    """The archive is not safe to unpack; nothing has been written."""
+
+
+def _fail(message: str) -> None:
+    print(f"sellerclaw_unzip: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _check_member(member: zipfile.ZipInfo, destination: Path) -> Path:
+    """Validate one member and return where it may be written."""
+    name = member.filename.replace("\\", "/")
+    relative = PurePosixPath(name)
+    if relative.is_absolute() or any(part == ".." for part in relative.parts):
+        raise RejectedArchive(f"unsafe path '{member.filename}'")
+
+    if member.create_system == UNIX_CREATE_SYSTEM:
+        file_type = stat.S_IFMT(member.external_attr >> 16)
+        if file_type not in (0, stat.S_IFREG, stat.S_IFDIR):
+            raise RejectedArchive(
+                f"'{member.filename}' is a symlink or special file, not a regular file"
+            )
+
+    if member.flag_bits & ENCRYPTED_FLAG:
+        raise RejectedArchive(f"'{member.filename}' is password-protected")
+
+    target = (destination / name).resolve()
+    # Belt and braces: after resolving, the path must still be inside the destination.
+    if not str(target).startswith(str(destination.resolve()) + os.sep):
+        raise RejectedArchive(f"'{member.filename}' would be written outside the destination")
+    return target
+
+
+def _extract_member(
+    archive: zipfile.ZipFile,
+    member: zipfile.ZipInfo,
+    target: Path,
+    *,
+    remaining_total: int,
+) -> int:
+    """Write one member, capping the bytes actually read rather than trusting the header.
+
+    Two things are caught here that a table-of-contents check cannot catch. A member that really
+    does explode past the cap is stopped mid-read. And a member whose declared size was forged is
+    caught by the archive's own checksum: the reader stops at the declared length, the CRC no
+    longer matches, and zipfile says so — which for us means the archive is not what it claims,
+    so it goes out the same door as a bomb.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    cap = min(MAX_MEMBER_BYTES, remaining_total)
+    try:
+        with archive.open(member) as source, target.open("wb") as sink:
+            while True:
+                chunk = source.read(READ_CHUNK)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > cap:
+                    raise RejectedArchive(
+                        f"'{member.filename}' unpacks to more than the archive is allowed to "
+                        "hold (decompression bomb)"
+                    )
+                sink.write(chunk)
+    except zipfile.BadZipFile as exc:
+        raise RejectedArchive(
+            f"'{member.filename}' does not match what the archive declares about it "
+            f"(corrupted or forged: {exc})"
+        ) from exc
+    return written
+
+
+def extract(archive_path: Path, destination: Path) -> list[Path]:
+    """Unpack ``archive_path`` into ``destination``; raise ``RejectedArchive`` if it is unsafe."""
+    try:
+        archive = zipfile.ZipFile(archive_path)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise RejectedArchive(f"not a valid .zip archive ({exc})") from exc
+
+    with archive:
+        members = archive.infolist()
+        if len(members) > MAX_MEMBERS:
+            raise RejectedArchive(f"holds {len(members)} files; at most {MAX_MEMBERS} are allowed")
+
+        destination.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=".unzip-", dir=destination.parent))
+        try:
+            written_total = 0
+            extracted: list[Path] = []
+            for member in members:
+                target = _check_member(member, staging)
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                written_total += _extract_member(
+                    archive,
+                    member,
+                    target,
+                    remaining_total=MAX_TOTAL_BYTES - written_total,
+                )
+                if written_total > MAX_TOTAL_BYTES:
+                    raise RejectedArchive(
+                        f"unpacks to more than {MAX_TOTAL_BYTES // (1024 * 1024)} MB"
+                    )
+                extracted.append(target)
+
+            final: list[Path] = []
+            for path in extracted:
+                relative = path.relative_to(staging)
+                moved = destination / relative
+                moved.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(moved))
+                final.append(moved)
+            return final
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def main(argv: list[str]) -> None:
+    if not argv or argv[0] in {"-h", "--help"}:
+        print(__doc__)
+        raise SystemExit(0 if argv else 2)
+
+    archive_path = Path(argv[0]).expanduser()
+    if not archive_path.is_file():
+        _fail(f"no such file: {archive_path}")
+
+    destination = (
+        Path(argv[1]).expanduser()
+        if len(argv) > 1
+        else archive_path.parent / archive_path.stem
+    )
+
+    try:
+        extracted = extract(archive_path, destination)
+    except RejectedArchive as exc:
+        _fail(f"archive rejected: {exc}")
+    else:
+        for path in extracted:
+            print(path)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
