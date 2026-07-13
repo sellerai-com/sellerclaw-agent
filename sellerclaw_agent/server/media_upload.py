@@ -80,7 +80,10 @@ ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+# Must equal the cloud's FILE_STORAGE_MAX_SIZE_BYTES (sellerclaw: src/files/domain/constants.py).
+# A lower cap here rejects artifacts the cloud would have stored, and the agent only learns about
+# it after generating the file — so the user gets a caption with no attachment.
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 
 _UPLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
 
