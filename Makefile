@@ -1,6 +1,6 @@
-.PHONY: install setup up up-stage up-dev down test test_unit test_unit_dirs test_cloud lint \
+.PHONY: install setup up up-stage up-dev down test test_unit test_unit_dirs test_cloud lint check \
 	openclaw-skills openclaw-plugins openclaw-measure-gateway-memory openclaw-measure-gateway-memory-cold \
-	release release-latest release-beta stage-cli-wheel dev-cli-local dev-cli-pypi
+	release release-preflight release-latest release-beta stage-cli-wheel dev-cli-local dev-cli-pypi
 
 UV ?= uv
 LINT_PATHS = sellerclaw_agent tests
@@ -97,6 +97,8 @@ lint:
 	$(UV) run --extra server ruff check $(LINT_PATHS)
 	$(UV) run --extra server pyright
 
+check: lint test_unit
+
 openclaw-skills:
 	$(DOCKER_COMPOSE) exec server bash -lc 'node openclaw.mjs skills list'
 
@@ -123,12 +125,31 @@ openclaw-measure-gateway-memory:
 #   make release VERSION=1.2.3  # explicit version (without leading v)
 #   make release VERSION=1.2.3-beta.1  # explicit pre-release (usually use `make release-beta`)
 # Add ALLOW_DIRTY=1 to skip the clean-working-tree check.
+# Every release path runs lint + unit tests first (`make check`) — see release-preflight below;
+# add SKIP_CHECKS=1 to bypass that gate (emergencies only).
 # Channel is decided by the version shape in build-image.yml: a SemVer pre-release segment
 # (a hyphen, e.g. 1.2.3-beta.1) is a pre-release; a clean X.Y.Z from main is the real release.
 PART ?= minor
 REMOTE ?= origin
 
-release:
+# Gate every release on lint + unit tests (~20s), run against the exact tree about to be tagged.
+# build-image.yml runs NO tests — it just builds and pushes the image — so this is the only thing
+# standing between a broken commit and a published GHCR image. It is a *prerequisite* of `release`,
+# so it runs before anything is tagged or pushed and a failure leaves no tag behind. (Prerequisite,
+# not an in-recipe `$(MAKE)` call: make executes recipe lines that mention $(MAKE) even under `-n`,
+# which would turn a dry-run `make -n release` into a real one.)
+# Escape hatch: SKIP_CHECKS=1 (emergencies only — you are shipping untested code).
+release-preflight:
+	@set -e; \
+	if [ -n "$${SKIP_CHECKS:-}" ]; then \
+	  echo "release-preflight: SKIP_CHECKS=1 — skipping lint + unit tests. Shipping unverified."; \
+	else \
+	  echo "release-preflight: lint + unit tests must pass before tagging..."; \
+	  $(MAKE) --no-print-directory check; \
+	  echo "release-preflight: OK."; \
+	fi
+
+release: release-preflight
 	@set -eu; \
 	if [ -z "$${ALLOW_DIRTY:-}" ] && [ -n "$$(git status --porcelain)" ]; then \
 	  echo "Working tree is dirty. Commit/stash changes or rerun with ALLOW_DIRTY=1." >&2; \

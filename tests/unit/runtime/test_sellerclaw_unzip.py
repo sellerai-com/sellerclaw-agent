@@ -4,6 +4,7 @@ on the machine that has to live with the result."""
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import io
 import stat
@@ -12,6 +13,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+pytestmark = pytest.mark.unit
 
 _COMMAND = Path(__file__).resolve().parents[3] / "runtime" / "commands" / "sellerclaw_unzip"
 

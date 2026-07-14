@@ -1,0 +1,45 @@
+name: CI — lint, type-check & tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint + type-check + tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # hatch-vcs derives the package version from git tags, so a shallow clone
+          # (the checkout default) leaves `uv sync` unable to build the project itself.
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv sync --extra server --python ${{ matrix.python-version }}
+
+      - name: Ruff
+        run: uv run --extra server ruff check sellerclaw_agent tests
+
+      - name: Pyright
+        run: uv run --extra server pyright
+
+      - name: Unit tests
+        run: uv run --extra server python -m pytest tests -m unit
