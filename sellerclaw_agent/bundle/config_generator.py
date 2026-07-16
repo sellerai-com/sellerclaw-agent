@@ -226,15 +226,19 @@ def generate_openclaw_config(
     plugin_load_paths: list[str] = [OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI]
     if web_search_enabled:
         plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH)
-    # mem0 is deliberately NOT added to plugins.load.paths. Unlike our first-party
-    # sellerclaw-ui / web-search plugins, mem0 is published on npm and declares an
-    # ``install.npmSpec`` — so a load-path plugin (which OpenClaw does not persist in
-    # its plugin registry) makes the gateway's startup doctor treat the memory slot as
-    # "missing configured plugin" and re-download @mem0/openclaw-mem0 from npm on every
-    # cold start (managed machines have no volume, so the registry is wiped each boot).
-    # Instead the runtime registers the image-vendored copy into the registry once per
-    # boot via ``openclaw plugins install`` (see ``register_vendored_memory_plugin`` in
-    # runtime/commands/openclaw_start), which is offline and keeps the pinned version.
+    # mem0 MUST stay in plugins.load.paths. It is referenced by plugins.slots.memory, and
+    # OpenClaw resolves slot/allow/entries against load.paths + the installed registry: drop
+    # the load path and config validation hard-fails with "plugins.slots.memory: plugin not
+    # found: openclaw-mem0", so the gateway refuses to boot. (That validation also runs before
+    # every CLI command, so a runtime `openclaw plugins install` cannot bootstrap itself out of
+    # the invalid state — it is blocked by the very config it would repair.)
+    #
+    # Being on a load path satisfies validation but does NOT make the plugin "installed" in
+    # OpenClaw's plugin registry, which is what the startup doctor checks — hence the doctor
+    # re-downloads @mem0/openclaw-mem0 from npm on every cold start of a volumeless machine.
+    # Fixing that means ALSO getting it into the registry, without removing this load path.
+    if memory_enabled:
+        plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_MEM0)
 
     # Long-term memory: mem0 plugin in PLATFORM mode pointed at the cloud Mem0-compatible adapter.
     # The agent presents its own agent API key (the cloud resolves it to the user and bills
@@ -247,10 +251,10 @@ def generate_openclaw_config(
             raise ValueError("agent_api_key is required when memory_enabled is set")
         memory_plugin_entry = {
             "enabled": True,
-            # mem0 is a non-bundled plugin (managed-installed from the image at startup, not one of
-            # OpenClaw's built-in extensions), so OpenClaw blocks its conversation-access hooks
-            # unless we opt in explicitly. Without this the ``agent_end`` hook — which auto-captures
-            # the conversation into long-term memory — is silently skipped, so nothing is remembered.
+            # The plugin is loaded from a path (non-bundled), so OpenClaw blocks its conversation-
+            # access hooks unless we opt in explicitly. Without this the ``agent_end`` hook — which
+            # auto-captures the conversation into long-term memory — is silently skipped, so nothing
+            # is ever remembered.
             "hooks": {"allowConversationAccess": True},
             "config": {
                 "mode": "platform",

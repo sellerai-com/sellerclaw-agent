@@ -101,14 +101,14 @@ COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/seller
 
 # Long-term memory: the official mem0 OpenClaw plugin, used in PLATFORM mode pointed at the cloud's
 # Mem0-compatible adapter (config_generator enables it only when the manifest's memory block is on).
-# Vendor the package here (its openclaw.plugin.json must sit at the dir root) and install deps in-image
-# so the transitive native better-sqlite3 binding matches TARGETARCH — even though platform mode never
-# touches the local SQLite store. Must stay root-owned (OpenClaw rejects config-origin plugins with
-# non-root ownership).
-# This directory is NOT referenced via plugins.load.paths. Instead openclaw_start registers it into
-# OpenClaw's plugin registry at boot (`openclaw plugins install <dir>`, offline) so the gateway's
-# startup doctor treats the memory slot as installed and does not re-download it from npm every cold
-# start (managed machines are volumeless, so the registry is wiped each boot).
+# Vendor the package AT the plugin load path (its openclaw.plugin.json must sit at the dir root, like
+# the plugins above) and install deps in-image so the transitive native better-sqlite3 binding matches
+# TARGETARCH — even though platform mode never touches the local SQLite store. Must stay root-owned
+# (OpenClaw rejects config-origin plugins with non-root ownership).
+# NOTE: the load path is what makes plugins.slots.memory resolve — dropping it hard-fails config
+# validation ("plugin not found: openclaw-mem0") and the gateway won't boot. It does NOT register
+# the plugin in OpenClaw's plugin registry, which is a separate concern the startup doctor checks —
+# see the registry pre-build step further down.
 # Pin exact version so image rebuilds are reproducible (check: npm view @mem0/openclaw-mem0 version).
 ARG MEM0_OPENCLAW_PLUGIN_VERSION=1.0.13
 RUN mkdir -p /opt/openclaw-plugins/openclaw-mem0 \
@@ -146,6 +146,29 @@ RUN cd /app/dist/extensions && \
             *) rm -rf "$dir" ;; \
         esac; \
     done
+
+# Pre-build OpenClaw's persisted plugin registry with the vendored mem0 plugin already installed.
+#
+# Managed machines run volumeless, so /home/node/.openclaw — which holds the registry
+# (state/openclaw.sqlite) — ships entirely from this image; nothing restores it at boot. Without a
+# pre-built registry every cold start reports "Persisted plugin registry is missing or stale" and
+# the startup doctor re-downloads @mem0/openclaw-mem0 from npm (the package declares an
+# install.npmSpec) before the gateway can serve chat. That fetch is a dominant chunk of cold-start
+# time and silently drifts the runtime off the version pinned above.
+#
+# Being on plugins.load.paths satisfies config validation but does NOT register the plugin — the
+# registry is what the doctor checks — hence this separate install. It is fully offline (local
+# directory source; verified with `docker run --network none`) and must run AFTER the extension
+# prune above so the registry snapshot matches the final image. mem0 stays on load.paths too, which
+# only costs a benign "duplicate plugin id … global plugin will be overridden by config plugin"
+# warning and keeps config validation working even if this registry ever goes stale.
+#
+# The installer also writes a stub openclaw.json (it records the memory slot for itself) and an
+# audit log; drop both — the real per-user config is copied in at boot (see copy_runtime_config in
+# openclaw_start), and only state/openclaw.sqlite + extensions/ need to ship.
+RUN runuser -u node -- env HOME=/home/node openclaw plugins install /opt/openclaw-plugins/openclaw-mem0 \
+    && rm -f /home/node/.openclaw/openclaw.json \
+    && rm -rf /home/node/.openclaw/logs
 
 # KasmVNC server-wide configuration (HTTP mode, no SSL, port 6080).
 COPY sellerclaw-agent/runtime/kasmvnc/kasmvnc.yaml /etc/kasmvnc/kasmvnc.yaml

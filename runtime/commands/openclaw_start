@@ -182,40 +182,6 @@ except Exception:
     fi
 }
 
-register_vendored_memory_plugin() {
-    # Register the image-vendored mem0 plugin into OpenClaw's plugin registry BEFORE the
-    # gateway boots, so the gateway's startup doctor treats the memory slot as satisfied and
-    # does NOT re-download @mem0/openclaw-mem0 from npm on every cold start.
-    #
-    # Why this is needed: managed machines have no persistent volume, so ${STATE_DIR}
-    # (which holds OpenClaw's plugin registry) is wiped on every boot. mem0 is published on
-    # npm and declares an install.npmSpec, and it is intentionally NOT in plugins.load.paths
-    # (load-path plugins are not persisted in the registry) — so without this step the doctor
-    # finds the configured memory slot "missing" from the empty registry and reinstalls it over
-    # the network each start. That npm fetch (+ transitive native deps) is a dominant chunk of a
-    # slow cold start.
-    #
-    # The install is OFFLINE (from the local vendored directory) and NON-FATAL: if it fails, the
-    # gateway doctor's own npm reinstall remains the fallback, so long-term memory still works —
-    # just with the slower cold start we're trying to avoid. It also keeps the exact in-image
-    # pinned version instead of whatever the doctor would pull from npm.
-    local plugin_dir="/opt/openclaw-plugins/openclaw-mem0"
-    # Only relevant when this agent's config actually uses mem0 (slots/allow/entries reference it).
-    if [ ! -r "${CONFIG_PATH}" ] || ! grep -q '"openclaw-mem0"' "${CONFIG_PATH}"; then
-        return 0
-    fi
-    if [ ! -f "${plugin_dir}/openclaw.plugin.json" ]; then
-        log "mem0 is configured but not vendored at ${plugin_dir}; doctor will install it from npm"
-        return 0
-    fi
-    log "Registering vendored mem0 plugin from ${plugin_dir} (offline; skips per-boot doctor npm reinstall)"
-    if node openclaw.mjs plugins install "${plugin_dir}"; then
-        log "mem0 plugin registered in the local plugin registry"
-    else
-        log "WARNING: offline mem0 install failed; gateway doctor will reinstall it from npm (slower cold start)"
-    fi
-}
-
 start_gateway() {
     local proxy_config="/etc/nginx/openclaw-proxy.conf"
     local nginx_bin=""
@@ -589,7 +555,6 @@ main() {
         gateway)
             cleanup_stale_session_locks
             sync_all_workspaces
-            register_vendored_memory_plugin
             start_gateway
             ;;
         sync-workspaces)
