@@ -385,7 +385,11 @@ def test_generate_openclaw_config_memory_enabled_wires_mem0_platform_plugin(
     # Memory slot + entry point at the cloud Mem0-compatible adapter in PLATFORM mode.
     assert payload["plugins"]["slots"]["memory"] == MEM0_PLUGIN_ID
     assert MEM0_PLUGIN_ID in payload["plugins"]["allow"]
-    assert OPENCLAW_PLUGIN_PATH_MEM0 in payload["plugins"]["load"]["paths"]
+    # mem0 is registered into the plugin registry at startup (openclaw plugins install from the
+    # image-vendored dir), NOT via plugins.load.paths — a load-path mem0 makes the gateway doctor
+    # re-download it from npm on every cold start. It stays in slots/allow/entries so the doctor's
+    # npm reinstall remains a fallback if the offline registration ever fails.
+    assert OPENCLAW_PLUGIN_PATH_MEM0 not in payload["plugins"]["load"]["paths"]
     entry = payload["plugins"]["entries"][MEM0_PLUGIN_ID]
     assert entry["config"]["mode"] == "platform"
     # baseUrl = agent API base + /mem0; apiKey = the agent's own token (cloud bills the user).
@@ -395,7 +399,7 @@ def test_generate_openclaw_config_memory_enabled_wires_mem0_platform_plugin(
     assert entry["config"]["skills"]["recall"]["enabled"] is True
     # Dream (periodic in-conversation consolidation) is off — capture is done cloud-side instead.
     assert entry["config"]["skills"]["dream"]["enabled"] is False
-    # Path-loaded (non-bundled) plugin: opt into conversation-access hooks so the agent_end
+    # Non-bundled (managed-installed) plugin: opt into conversation-access hooks so the agent_end
     # auto-capture hook isn't silently blocked (otherwise nothing is ever written to memory).
     assert entry["hooks"]["allowConversationAccess"] is True
 

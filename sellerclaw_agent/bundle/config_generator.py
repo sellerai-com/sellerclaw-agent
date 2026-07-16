@@ -226,8 +226,15 @@ def generate_openclaw_config(
     plugin_load_paths: list[str] = [OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI]
     if web_search_enabled:
         plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH)
-    if memory_enabled:
-        plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_MEM0)
+    # mem0 is deliberately NOT added to plugins.load.paths. Unlike our first-party
+    # sellerclaw-ui / web-search plugins, mem0 is published on npm and declares an
+    # ``install.npmSpec`` — so a load-path plugin (which OpenClaw does not persist in
+    # its plugin registry) makes the gateway's startup doctor treat the memory slot as
+    # "missing configured plugin" and re-download @mem0/openclaw-mem0 from npm on every
+    # cold start (managed machines have no volume, so the registry is wiped each boot).
+    # Instead the runtime registers the image-vendored copy into the registry once per
+    # boot via ``openclaw plugins install`` (see ``register_vendored_memory_plugin`` in
+    # runtime/commands/openclaw_start), which is offline and keeps the pinned version.
 
     # Long-term memory: mem0 plugin in PLATFORM mode pointed at the cloud Mem0-compatible adapter.
     # The agent presents its own agent API key (the cloud resolves it to the user and bills
@@ -240,10 +247,10 @@ def generate_openclaw_config(
             raise ValueError("agent_api_key is required when memory_enabled is set")
         memory_plugin_entry = {
             "enabled": True,
-            # The plugin is loaded from a path (non-bundled), so OpenClaw blocks its conversation-
-            # access hooks unless we opt in explicitly. Without this the ``agent_end`` hook — which
-            # auto-captures the conversation into long-term memory — is silently skipped, so nothing
-            # is ever remembered.
+            # mem0 is a non-bundled plugin (managed-installed from the image at startup, not one of
+            # OpenClaw's built-in extensions), so OpenClaw blocks its conversation-access hooks
+            # unless we opt in explicitly. Without this the ``agent_end`` hook — which auto-captures
+            # the conversation into long-term memory — is silently skipped, so nothing is remembered.
             "hooks": {"allowConversationAccess": True},
             "config": {
                 "mode": "platform",

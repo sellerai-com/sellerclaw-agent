@@ -101,10 +101,14 @@ COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/seller
 
 # Long-term memory: the official mem0 OpenClaw plugin, used in PLATFORM mode pointed at the cloud's
 # Mem0-compatible adapter (config_generator enables it only when the manifest's memory block is on).
-# Vendor the package AT the plugin load path (its openclaw.plugin.json must sit at the dir root, like
-# the plugins above) and install deps in-image so the transitive native better-sqlite3 binding matches
-# TARGETARCH — even though platform mode never touches the local SQLite store. Must stay root-owned
-# (OpenClaw rejects config-origin plugins with non-root ownership).
+# Vendor the package here (its openclaw.plugin.json must sit at the dir root) and install deps in-image
+# so the transitive native better-sqlite3 binding matches TARGETARCH — even though platform mode never
+# touches the local SQLite store. Must stay root-owned (OpenClaw rejects config-origin plugins with
+# non-root ownership).
+# This directory is NOT referenced via plugins.load.paths. Instead openclaw_start registers it into
+# OpenClaw's plugin registry at boot (`openclaw plugins install <dir>`, offline) so the gateway's
+# startup doctor treats the memory slot as installed and does not re-download it from npm every cold
+# start (managed machines are volumeless, so the registry is wiped each boot).
 # Pin exact version so image rebuilds are reproducible (check: npm view @mem0/openclaw-mem0 version).
 ARG MEM0_OPENCLAW_PLUGIN_VERSION=1.0.13
 RUN mkdir -p /opt/openclaw-plugins/openclaw-mem0 \
