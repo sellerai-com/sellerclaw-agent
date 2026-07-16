@@ -15,6 +15,7 @@ import {
   postThought,
   postTurnEnd,
   postTurnPart,
+  postTurnPreview,
   postTurnStart,
   resolveMediaKind,
   resolveOutboundMediaUrl,
@@ -284,7 +285,9 @@ async function materializeAttachmentsForAgent(
  *   - blockquotes (`> `)
  *   - bullet/ordered lists (`- `, `* `, `+ `, `1. `, `1) `)
  *   - thematic breaks (`---`, `***`, `___`)
- *   - GFM table rows (`|`)
+ *   - GFM table rows (`|`) — opening a table after prose. A row following another
+ *     row is handled earlier, by ``TABLE_LINE_RE``: inside a table a blank line is
+ *     a terminator, not a separator.
  */
 const MARKDOWN_BLOCK_START_RE =
   /^(?:#{1,6}\s|```|>(?:\s|$)|---|\*\*\*|___|\||[-*+]\s|\d+[.)]\s)/;
@@ -293,15 +296,37 @@ const MARKDOWN_BLOCK_START_RE =
 const ATX_HEADING_RE = /^#{1,6}\s/;
 
 /**
+ * A GFM table line — a row or the `| --- | --- |` delimiter — recognised by the leading
+ * pipe. Deliberately not matched on a pipe anywhere in the line: prose says "A | B" often
+ * enough, and starting a line with `|` is what actually makes it part of a table.
+ */
+const TABLE_LINE_RE = /^\s*\|/;
+
+/**
  * Picks a joiner string to insert between two consecutive streaming deltas.
+ *
+ * This shapes the LIVE PREVIEW only — the throwaway render of a reply while the
+ * model is still writing it, plus the copy an interrupted turn falls back on. The
+ * reply we persist is the model's own final text, which needs no joining. Keep the
+ * distinction: guesswork is fine for something the final text replaces seconds
+ * later, and was never fine for the message itself (a cut inside a table used to
+ * leave the report's rows rendered as plain text — that is what moved the persisted
+ * road off this function).
  *
  * The OpenClaw block-streaming chunker cuts the assistant reply at internal
  * boundaries and drops the whitespace it cut on. We can't see what was
  * dropped, so we use heuristics on the visible content at the boundary:
  *
+ *   * Table row on BOTH sides of the boundary → exactly one `\n`. We are inside
+ *     a table, where a blank line does not separate rows, it ends the table —
+ *     leaving every remaining row rendered as literal `| … |` text. This is the
+ *     one rule that counts the whitespace already present at the boundary,
+ *     because it is the one place a spare newline is not harmless.
  *   * Markdown block-starter at the head of the next delta → `\n\n`. Without
  *     this the heading / list / fence would be absorbed into the previous
- *     paragraph (or worse, a fence would never close).
+ *     paragraph (or worse, a fence would never close). Reached for a table only
+ *     when the previous delta was NOT a table line — i.e. a table opening after
+ *     prose, which does want the break.
  *   * Closing code fence at the tail of the previous delta → `\n\n`. The
  *     fence has to live on a line of its own.
  *   * Previous delta's last line is itself an ATX heading (e.g. `## Title`
@@ -315,11 +340,13 @@ const ATX_HEADING_RE = /^#{1,6}\s/;
  *     failure mode.
  *
  * Note we deliberately do NOT escalate when the previous delta's last line
- * starts with a list / quote / table marker. Those structures can span an
- * arbitrary amount of content, and the chunker much more often cuts inside
- * a long list item than right after one. Defaulting to a space there keeps
- * mid-item continuations intact at the price of an occasional missed visual
- * paragraph break.
+ * starts with a list / quote marker. Those structures can span an arbitrary
+ * amount of content, and the chunker much more often cuts inside a long list
+ * item than right after one. Defaulting to a space there keeps mid-item
+ * continuations intact at the price of an occasional missed visual paragraph
+ * break. The same reasoning covers a table row followed by prose: it is either
+ * a table ending or a row cut mid-cell, we cannot tell, and gluing prose into
+ * the last cell is the milder of the two ways to be wrong.
  *
  * Exported for unit-testing without spinning up the HTTP route.
  */
@@ -328,10 +355,17 @@ export function pickDeltaJoin(prevTail: string, nextHead: string): string {
   const tail = prevTail.replace(/\s+$/, "");
   const head = nextHead.replace(/^\s+/, "");
   if (tail === "" || head === "") return "";
-  if (MARKDOWN_BLOCK_START_RE.test(head)) return "\n\n";
-  if (/```$/.test(tail)) return "\n\n";
   const lastNl = tail.lastIndexOf("\n");
   const tailLastLine = lastNl === -1 ? tail : tail.slice(lastNl + 1);
+  if (TABLE_LINE_RE.test(head) && TABLE_LINE_RE.test(tailLastLine)) {
+    // The caller prepends this joiner to the RAW delta, so whitespace the chunker did keep
+    // still counts. One newline continues the table; two would end it.
+    const boundary =
+      prevTail.slice(tail.length) + nextHead.slice(0, nextHead.length - head.length);
+    return boundary.includes("\n") ? "" : "\n";
+  }
+  if (MARKDOWN_BLOCK_START_RE.test(head)) return "\n\n";
+  if (/```$/.test(tail)) return "\n\n";
   if (ATX_HEADING_RE.test(tailLastLine)) return "\n\n";
   return " ";
 }
@@ -466,22 +500,17 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
           .filter((part) => part && part.length > 0)
           .join("\n");
 
-        // Tail of the previously delivered delta. `pickDeltaJoin` needs
+        // Tail of the previously delivered preview delta. `pickDeltaJoin` needs
         // enough suffix to recognise both a closing code fence and the full
         // last line (for the ATX-heading check). 512 chars comfortably covers
         // any realistic heading / fence while keeping per-session memory
         // bounded.
         let prevTail = "";
         const TAIL_KEEP_CHARS = 512;
-        // The engine streams each reply block (``info.kind === "block"``) and then RE-DELIVERS
-        // the whole reply once more as a consolidated final (``info.kind === "final"``). For a
-        // sub-message we already streamed block-by-block, that final is a duplicate — suppress
-        // it. A sub-message that arrives ONLY as a final (no preceding blocks — e.g. a short or
-        // instant reply) is still posted. Tracked per ``assistantMessageIndex`` so several
-        // sub-messages in one dispatch dedupe independently. (Replaces the old text-match dedup,
-        // which failed on multi-block replies because the consolidated final never equals any
-        // single streamed block.)
-        const streamedMessageIndexes = new Set<number>();
+        // Whether this turn has already committed a sub-message, so the next one is separated
+        // from it by a blank line. Finals are whole sub-messages, so unlike preview deltas there
+        // is nothing to guess about the boundary between them.
+        let committedAnyText = false;
         // Source paths/URLs already delivered as media this turn (same reason).
         const sentMedia = new Set<string>();
         // Monotonic counter for thought stream parts (per turn). Frontend dedupes by seq.
@@ -626,15 +655,39 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
               }
             }
             if (text.trim()) {
-              const kind = dispatchInfo?.kind;
-              const msgIndex = dispatchInfo?.assistantMessageIndex ?? 0;
-              // Suppress the consolidated final re-delivery of a sub-message we already
-              // streamed block-by-block; everything else (blocks, and final-only replies that
-              // were never streamed) is posted.
-              if (!(kind === "final" && streamedMessageIndexes.has(msgIndex))) {
-                const joiner = pickDeltaJoin(prevTail, text);
-                const outText = joiner + text;
+              // The engine streams a long reply block-by-block (``kind === "block"``) and then
+              // delivers the same sub-message once more, whole, as the model wrote it
+              // (``kind === "final"``). The two are not interchangeable: a block arrives with the
+              // whitespace the chunker cut on already dropped, so blocks re-glued are only
+              // approximately formatted, while the final carries the model's exact wording.
+              //
+              // So blocks feed the live preview — shown, then thrown away — and the final is what
+              // we persist. A short reply that never streamed still arrives as a final, so it
+              // takes the same road and needs no special case.
+              if (dispatchInfo?.kind === "block") {
+                const outText = pickDeltaJoin(prevTail, text) + text;
                 prevTail = outText.slice(-TAIL_KEEP_CHARS);
+                try {
+                  await ensurePartsTurn();
+                  await postTurnPreview(account, sessionKey, partsMessageId, payload.chat_id, {
+                    part_id: crypto.randomUUID(),
+                    text: outText,
+                  });
+                } catch (err) {
+                  // A dropped preview delta costs a moment of live rendering, never the reply:
+                  // the final still lands, and an interrupted turn keeps whatever preview the
+                  // cloud did receive.
+                  logError(
+                    api,
+                    `sellerclaw-ui: preview delta failed session_key=${sessionKey}: ${String(err)}`,
+                  );
+                }
+              } else {
+                // Separate consecutive sub-messages (e.g. a "working on it…" status, then the
+                // answer) — each final is a complete message, so the boundary is known, not
+                // guessed.
+                const outText = committedAnyText ? `\n\n${text}` : text;
+                prevTail = "";
                 try {
                   await ensurePartsTurn();
                   await postTurnPart(
@@ -644,7 +697,7 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
                     { part_id: crypto.randomUUID(), kind: "text", text: outText },
                     payload.chat_id,
                   );
-                  if (kind === "block") streamedMessageIndexes.add(msgIndex);
+                  committedAnyText = true;
                 } catch (err) {
                   logError(
                     api,
