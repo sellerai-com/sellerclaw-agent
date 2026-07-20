@@ -241,10 +241,14 @@ async def run_edge_ping_loop(
         if time.monotonic() - last_backup_at >= _PERIODIC_STATE_BACKUP_SECONDS:
             state_dir = Path(os.environ.get("OPENCLAW_STATE_DIR", "/home/node/.openclaw"))
 
+            # The browser profile is included here too: the allowlist keeps it to a few
+            # hundred KB (cookies + local storage, no cache), and a machine lost abruptly
+            # never reaches the backup-after-stop path — which used to be the only place
+            # browser sign-ins were captured.
             def _light_backup(sd: Path = state_dir) -> bytes:
                 from sellerclaw_agent.cloud.state_backup import build_state_backup_archive
 
-                return build_state_backup_archive(sd, include_chrome=False)
+                return build_state_backup_archive(sd, include_browser_profile=True)
 
             try:
                 archive = await loop.run_in_executor(supervisor_executor, _light_backup)
