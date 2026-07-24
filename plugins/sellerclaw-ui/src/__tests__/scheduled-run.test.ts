@@ -170,6 +170,33 @@ describe("registerScheduledRunRoute", () => {
     await vi.waitFor(() => expect(reportMock).toHaveBeenCalledTimes(1));
     expect(reportMock.mock.calls[0]![1]).toMatchObject({ status: "ok", summary: "All good." });
   });
+
+  // The old runtime-activity filter silently ate whole reports whose every line happened to look
+  // like tool chatter (a bullet opening with 🛠️, a "Reasoning:" heading). An unreadable run is
+  // worse than a noisy one, so the report now travels verbatim.
+  it("keeps report lines that look like runtime tool activity", async () => {
+    readBodyMock.mockResolvedValue({
+      ok: true,
+      value: { run_id: "run-noisy", agent_id: "supervisor", user_id: "u1", instruction: "do it" },
+    });
+    const report = [
+      "🛠️ Repriced 3 listings",
+      "🤖 Subagents",
+      "Analysis: margins held at 22%.",
+    ].join("\n");
+    dispatchMock.mockImplementation(
+      async (params: { deliver: (p: unknown, d?: unknown) => Promise<void> }) => {
+        await params.deliver({ text: report }, { kind: "final", assistantMessageIndex: 0 });
+      },
+    );
+
+    const { handler } = buildHandler();
+    await handler(REQ, res());
+
+    await vi.waitFor(() => expect(reportMock).toHaveBeenCalledTimes(1));
+    expect(reportMock.mock.calls[0]![1]).toMatchObject({ status: "ok", summary: report });
+  });
+
 });
 
 describe("postScheduledTaskRun", () => {

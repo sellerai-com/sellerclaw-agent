@@ -59,9 +59,51 @@ jobs:
           echo "image=${image}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
 
+  # Gate the image on a green suite, run against the SAME tag the image is built from. Without this
+  # a red test run and a published image can coexist: the tag push builds and ships regardless, and
+  # a developer's local `make release` gate can pass on a tree whose CI checkout is broken (an
+  # ignored-but-required test fixture, a file never committed — green on the dev box, red in a clean
+  # clone). Nothing downstream runs unless this is green.
+  verify:
+    name: Lint + type-check + tests (Python ${{ matrix.python-version }})
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The tag being released — not the default branch. Same guarantee the build job makes.
+          ref: v${{ needs.resolve.outputs.version }}
+          # hatch-vcs derives the package version from git tags, so a shallow clone leaves
+          # `uv sync` unable to build the project itself.
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv sync --extra server --python ${{ matrix.python-version }}
+
+      - name: Ruff
+        run: uv run --extra server ruff check sellerclaw_agent tests
+
+      - name: Pyright
+        run: uv run --extra server pyright
+
+      - name: Unit tests
+        run: uv run --extra server python -m pytest tests -m unit
+
   build:
     name: Build server image
-    needs: [resolve]
+    needs: [resolve, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

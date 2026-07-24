@@ -368,6 +368,27 @@ export async function postTurnPart(
   });
 }
 
+/**
+ * Stream one live-preview delta of a reply the model is still writing.
+ *
+ * Not content: the cloud publishes it to the chat's SSE stream and buffers it only so an
+ * interrupted turn still keeps what the user watched appear. The model's own final wording
+ * arrives later via ``postTurnPart`` and takes its place — see ``deliver`` in inbound.ts.
+ */
+export async function postTurnPreview(
+  account: ScwUiAccount,
+  sessionKey: string,
+  messageId: string,
+  chatId: string | null,
+  payload: { part_id: string; text: string },
+): Promise<void> {
+  await postTurnRequest(account, `${TURN_PATH}/${messageId}/preview`, {
+    session_key: sessionKey,
+    ...(chatId ? { chat_id: chatId } : {}),
+    ...payload,
+  });
+}
+
 export async function postTurnEnd(
   account: ScwUiAccount,
   sessionKey: string,

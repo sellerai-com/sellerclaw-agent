@@ -198,27 +198,64 @@ class TestValidateLocalPath:
         assert path in media_upload.ALLOWED_PATH_PREFIXES
 
 
-class TestValidateExtension:
+class TestExtensionPolicy:
+    """The proxy no longer keeps its own list of allowed file types.
+
+    It used to, and the copy went stale: the cloud gained video formats, this list did not, and
+    agent-generated videos silently never reached a chat. The cloud checks the extension, the
+    magic bytes, the malware signature and the contents of an archive — a second, weaker copy
+    here can only ever disagree with it.
+    """
+
+    def test_no_local_whitelist_exists(self) -> None:
+        assert not hasattr(media_upload, "ALLOWED_EXTENSIONS")
+        assert not hasattr(media_upload, "_validate_extension")
+
     @pytest.mark.parametrize(
-        ("filename", "expected"),
+        "filename",
         [
-            pytest.param("shot.png", ".png", id="png"),
-            pytest.param("report.CSV", ".csv", id="case-insensitive"),
-            pytest.param("doc.md", ".md", id="markdown"),
-            # Cloud-accepted artifacts the proxy must not reject (regression for the
-            # 415 that dropped agent-generated diagrams/reports from chat).
-            pytest.param("diagram.html", ".html", id="html"),
-            pytest.param("report.pdf", ".pdf", id="pdf"),
-            pytest.param("sheet.xlsx", ".xlsx", id="xlsx"),
+            pytest.param("clip.mp4", id="video-the-old-list-dropped"),
+            pytest.param("evidence.zip", id="archive"),
+            pytest.param("diagram.html", id="html"),
         ],
     )
-    def test_allowed(self, filename: str, expected: str) -> None:
-        assert media_upload._validate_extension(filename) == expected
+    def test_the_cloud_decides_what_may_be_uploaded(
+        self,
+        app_client: TestClient,
+        data_dir: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_bearer: None,
+        filename: str,
+    ) -> None:
+        """Anything the cloud accepts reaches it — the proxy does not second-guess the format."""
+        _seed_manifest(data_dir, hooks_token="secret")
+        monkeypatch.setattr(media_upload, "ALLOWED_PATH_PREFIXES", (str(tmp_path) + "/",))
+        local = tmp_path / filename
+        local.write_bytes(b"payload")
+        uploaded: dict[str, object] = {}
 
-    def test_rejects_disallowed(self) -> None:
-        with pytest.raises(HTTPException) as exc:
-            media_upload._validate_extension("bad.exe")
-        assert exc.value.status_code == 415
+        async def _fake_proxy(**kwargs: object) -> dict[str, object]:
+            uploaded.update(kwargs)
+            return {
+                "file_id": "f-1",
+                "filename": filename,
+                "content_type": "application/octet-stream",
+                "size_bytes": 7,
+                "download_url": "https://api.example/agent/files/f-1/" + filename,
+                "expires_at": "2026-10-10T00:00:00Z",
+            }
+
+        monkeypatch.setattr(media_upload, "_proxy_to_cloud", _fake_proxy)
+
+        res = app_client.post(
+            "/internal/openclaw/media/upload-local",
+            headers={"Authorization": "Bearer secret"},
+            json={"local_path": str(local)},
+        )
+
+        assert res.status_code == 200
+        assert uploaded["filename"] == filename
 
 
 class TestReadBounded:
@@ -338,27 +375,44 @@ class TestUploadLocalEndpoint:
         assert res.status_code == 503
         assert res.json()["detail"] == "agent_not_authenticated"
 
-    def test_returns_415_for_bad_extension(
+    def test_a_refusal_from_the_cloud_reaches_the_caller_with_its_reason(
         self,
         app_client: TestClient,
         data_dir: Path,
-        tmp_path: Path,
+        allowed_file: Path,
         monkeypatch: pytest.MonkeyPatch,
+        stub_bearer: None,
     ) -> None:
+        """A file the cloud refuses is an answer, not an outage: pass its status and words on.
+
+        Reporting a generic failure would leave the agent retrying something that can never work,
+        and the owner with no idea why their file did not arrive.
+        """
         _seed_manifest(data_dir, hooks_token="secret")
-        monkeypatch.setattr(
-            media_upload, "ALLOWED_PATH_PREFIXES", (str(tmp_path) + "/",)
-        )
-        f = tmp_path / "naughty.exe"
-        f.write_bytes(b"MZ")
+
+        async def _refuse(**_kwargs: object) -> dict[str, object]:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "archive_content_not_allowed",
+                    "message": "'install.sh' inside the archive is not an allowed file type.",
+                },
+            )
+
+        monkeypatch.setattr(media_upload, "_proxy_to_cloud", _refuse)
+
         res = app_client.post(
             "/internal/openclaw/media/upload-local",
             headers={"Authorization": "Bearer secret"},
-            json={"local_path": str(f)},
+            json={"local_path": str(allowed_file)},
         )
-        assert res.status_code == 415
 
-    def test_uses_override_filename_for_extension_gate(
+        assert res.status_code == 400
+        detail = res.json()["detail"]
+        assert detail["code"] == "archive_content_not_allowed"
+        assert "install.sh" in detail["message"]
+
+    def test_override_filename_drives_the_uploaded_name_and_content_type(
         self,
         app_client: TestClient,
         data_dir: Path,

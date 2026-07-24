@@ -6,7 +6,14 @@ import tarfile
 from pathlib import Path
 
 
-def _is_session_jsonl(path: Path, state_dir: Path) -> bool:
+def _is_session_file(path: Path, state_dir: Path) -> bool:
+    """Session transcripts plus the index that makes them reachable.
+
+    ``sessions.json`` maps a session key to its transcript. Without it the restored
+    ``.jsonl`` files are dead weight: OpenClaw does not recognise the old session key,
+    starts an empty session, and the transcripts are never read again. It sits in the
+    same directory but ends in ``.json``, so a plain suffix check silently drops it.
+    """
     try:
         rel = path.relative_to(state_dir).as_posix()
     except ValueError:
@@ -16,65 +23,70 @@ def _is_session_jsonl(path: Path, state_dir: Path) -> bool:
         return False
     if parts[0] != "agents" or parts[2] != "sessions":
         return False
+    if path.name == "sessions.json":
+        return True
     return path.suffix == ".jsonl" and not path.name.endswith(".lock")
 
 
-def _is_workspace_memory_md(path: Path, state_dir: Path) -> bool:
+# Chrome scatters sign-in state across a handful of small files; the rest of a profile is
+# cache — 115 MB of the 127 MB measured on a real agent — and must never travel. Two roots
+# are covered: the profile the browser plugin actually drives, and the legacy fallback used
+# when Chrome is launched without an explicit ``--user-data-dir``.
+_BROWSER_PROFILE_ROOTS = ("browser/openclaw/user-data", "chrome-profile")
+_BROWSER_PROFILE_ROOT_FILES = frozenset({"Local State"})
+_BROWSER_PROFILE_DEFAULT_FILES = frozenset({"Cookies", "Login Data", "Preferences"})
+_BROWSER_PROFILE_DEFAULT_DIRS = ("Local Storage", "Session Storage")
+
+
+def _is_browser_login_state(path: Path, state_dir: Path) -> bool:
+    """True for the profile files that carry browser sign-in state.
+
+    ``Local State`` is included because it holds the key Chrome encrypts cookies with —
+    restore the cookie database without it and the values cannot be decrypted.
+    """
     try:
         rel = path.relative_to(state_dir).as_posix()
     except ValueError:
         return False
-    parts = rel.split("/")
-    if not parts or not parts[0].startswith("workspace-"):
-        return False
-    return len(parts) == 2 and parts[1] == "MEMORY.md"
+    for root in _BROWSER_PROFILE_ROOTS:
+        prefix = f"{root}/"
+        if not rel.startswith(prefix):
+            continue
+        tail = rel[len(prefix) :]
+        if tail in _BROWSER_PROFILE_ROOT_FILES:
+            return True
+        if not tail.startswith("Default/"):
+            return False
+        inner = tail[len("Default/") :]
+        if inner in _BROWSER_PROFILE_DEFAULT_FILES:
+            return True
+        return any(inner.startswith(f"{name}/") for name in _BROWSER_PROFILE_DEFAULT_DIRS)
+    return False
 
 
-def _is_under_workspace_memory_dir(path: Path, state_dir: Path) -> bool:
-    try:
-        rel = path.relative_to(state_dir).as_posix()
-    except ValueError:
-        return False
-    parts = rel.split("/")
-    return (
-        len(parts) >= 3
-        and parts[0].startswith("workspace-")
-        and parts[1] == "memory"
-        and path.is_file()
-    )
+def iter_state_backup_files(state_dir: Path, *, include_browser_profile: bool) -> list[Path]:
+    """List files to include in an edge state backup (sessions + optional browser logins).
 
-
-def _is_under_chrome_profile(path: Path, state_dir: Path) -> bool:
-    try:
-        rel = path.relative_to(state_dir).as_posix()
-    except ValueError:
-        return False
-    parts = rel.split("/")
-    return len(parts) >= 1 and parts[0] == "chrome-profile" and path.is_file()
-
-
-def iter_state_backup_files(state_dir: Path, *, include_chrome: bool) -> list[Path]:
-    """List files to include in an edge state backup (OpenClaw + optional Chrome profile)."""
+    Workspace ``MEMORY.md`` / ``memory/`` are deliberately absent: durable facts live in
+    long-term memory (cloud-side), the agent is instructed never to write them to workspace
+    files, and in practice these are untouched stubs.
+    """
     if not state_dir.is_dir():
         return []
     out: list[Path] = []
     for path in state_dir.rglob("*"):
         if not path.is_file():
             continue
-        if _is_session_jsonl(path, state_dir):
+        if _is_session_file(path, state_dir):
             out.append(path)
-        elif _is_workspace_memory_md(path, state_dir):
-            out.append(path)
-        elif _is_under_workspace_memory_dir(path, state_dir):
-            out.append(path)
-        elif include_chrome and _is_under_chrome_profile(path, state_dir):
+        elif include_browser_profile and _is_browser_login_state(path, state_dir):
             out.append(path)
     return sorted(out)
 
 
-def build_state_backup_archive(state_dir: Path, *, include_chrome: bool) -> bytes:
+def build_state_backup_archive(state_dir: Path, *, include_browser_profile: bool) -> bytes:
     """Build a gzip-compressed tar of allowlisted paths under ``state_dir``."""
-    paths = iter_state_backup_files(state_dir, include_chrome=include_chrome)
+    paths = iter_state_backup_files(state_dir, include_browser_profile=include_browser_profile)
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for file_path in paths:
@@ -103,13 +115,17 @@ def restore_state_backup(state_dir: Path, archive: bytes) -> None:
 
 
 def state_dir_has_restoreable_data(state_dir: Path) -> bool:
-    """Return True if local state already has sessions or MEMORY files (skip cloud restore)."""
+    """Return True if local state already has sessions (skip cloud restore).
+
+    Sessions only: a browser profile is created by Chrome on first launch, so treating it
+    as "local state exists" would make a cold start skip the restore it needs.
+    """
     if not state_dir.is_dir():
         return False
     for path in state_dir.rglob("*"):
         if not path.is_file():
             continue
-        if _is_session_jsonl(path, state_dir) or _is_workspace_memory_md(path, state_dir):
+        if _is_session_file(path, state_dir):
             return True
     return False
 

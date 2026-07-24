@@ -626,12 +626,49 @@ describe("registerInboundRoute", () => {
       expect(pickDeltaJoin("   ", "next")).toBe("");
       expect(pickDeltaJoin("prev", "   ")).toBe("");
     });
+
+    // A blank line inside a table does not separate rows — it ends the table, and every row
+    // after it renders as literal `| … |` text. That is the report the user reported broken,
+    // so a cut between two rows must produce exactly one newline.
+    describe("cuts inside a table", () => {
+      it.each([
+        [
+          "row after row",
+          "| Item | Qty |\n| --- | --- |\n| Collar | 4 |",
+          "| Harness | 1 |",
+        ],
+        ["delimiter after header", "| Item | Qty |", "| --- | --- |"],
+        ["indented row", "  | Collar | 4 |", "| Harness | 1 |"],
+      ])("joins with a single newline (%s)", (_label, prev, next) => {
+        expect(pickDeltaJoin(prev, next)).toBe("\n");
+      });
+
+      it.each([
+        ["prev kept its trailing newline", "| Collar | 4 |\n", "| Harness | 1 |"],
+        ["next kept its leading newline", "| Collar | 4 |", "\n| Harness | 1 |"],
+      ])("adds nothing when the boundary already has a newline (%s)", (_label, prev, next) => {
+        // The joiner is prepended to the RAW delta, so a second newline here would end the
+        // table just as surely as guessing one from scratch.
+        expect(pickDeltaJoin(prev, next)).toBe("");
+      });
+
+      it("still opens a table after prose with a paragraph break", () => {
+        expect(pickDeltaJoin("Товары, которые будут удалены:", "| Item | Qty |")).toBe("\n\n");
+      });
+
+      it("does not mistake prose containing a pipe for a table", () => {
+        expect(pickDeltaJoin("Filter by A | B and", "| Item | Qty |")).toBe("\n\n");
+      });
+    });
   });
 
   describe("deliver integration", () => {
-    // Text parts are posted to ``/turn/{id}/part`` via send.ts's real postOpenclawWebhook
-    // → global fetch (the partial send.js mock only patches inbound.ts's import), so we
-    // assert the join behaviour against a fetch mock.
+    // Text travels on two roads, and which one a delivery takes is the whole point of these
+    // tests. Streamed blocks go to ``/turn/{id}/preview`` — shown live, then discarded. The
+    // model's own final text goes to ``/turn/{id}/part`` and is what the chat keeps.
+    //
+    // Both are posted via send.ts's real postOpenclawWebhook → global fetch (the partial
+    // send.js mock only patches inbound.ts's import), so we assert against a fetch mock.
     const originalFetch = globalThis.fetch;
     let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -639,7 +676,12 @@ describe("registerInboundRoute", () => {
       globalThis.fetch = originalFetch;
     });
 
-    async function dispatchOnce(): Promise<(p: { text: string }) => Promise<void>> {
+    type DeliverWithInfo = (
+      p: Record<string, unknown>,
+      info?: { kind?: string; assistantMessageIndex?: number },
+    ) => Promise<void>;
+
+    async function dispatchOnce(): Promise<DeliverWithInfo> {
       fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
       globalThis.fetch = fetchMock as unknown as typeof fetch;
       readBodyMock.mockResolvedValue({
@@ -653,54 +695,69 @@ describe("registerInboundRoute", () => {
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
       await handler(req, res);
       await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalled());
-      return (dispatchMock.mock.calls.at(-1)![0] as {
-        deliver: (p: { text: string }) => Promise<void>;
-      }).deliver;
+      return (dispatchMock.mock.calls.at(-1)![0] as { deliver: DeliverWithInfo }).deliver;
     }
 
-    function deltaTexts(): string[] {
+    function bodiesFor(pathSuffix: string): Record<string, unknown>[] {
+      const re = new RegExp(`/internal/openclaw/turn/[0-9a-f-]+/${pathSuffix}$`);
       return fetchMock.mock.calls
-        .filter((c) => /\/internal\/openclaw\/turn\/[0-9a-f-]+\/part$/.test(String(c[0])))
-        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { kind: string; text?: string })
-        .filter((b) => b.kind === "text" && typeof b.text === "string")
-        .map((b) => b.text as string)
+        .filter((c) => re.test(String(c[0])))
+        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as Record<string, unknown>);
     }
 
-    it("sends the first delta verbatim", async () => {
+    /** Text committed to the chat message (``/part``, kind=text) — what the user keeps. */
+    function deltaTexts(): string[] {
+      return bodiesFor("part")
+        .filter((b) => b.kind === "text" && typeof b.text === "string")
+        .map((b) => b.text as string);
+    }
+
+    /** Text streamed as the throwaway live preview (``/preview``). */
+    function previewTexts(): string[] {
+      return bodiesFor("preview")
+        .filter((b) => typeof b.text === "string")
+        .map((b) => b.text as string);
+    }
+
+    /** One streamed block of a long reply. */
+    const block = (index = 0) => ({ kind: "block", assistantMessageIndex: index });
+    /** The model's own final text for a sub-message. */
+    const final = (index = 0) => ({ kind: "final", assistantMessageIndex: index });
+
+    it("sends the first preview delta verbatim", async () => {
       const deliver = await dispatchOnce();
-      await deliver({ text: "Hello" });
-      expect(deltaTexts()).toEqual(["Hello"]);
+      await deliver({ text: "Hello" }, block());
+      expect(previewTexts()).toEqual(["Hello"]);
+      expect(deltaTexts()).toEqual([]); // nothing committed until the model's final lands
     });
 
-    it("joins consecutive prose deltas with a single space, not a paragraph break", async () => {
+    it("joins consecutive prose previews with a single space, not a paragraph break", async () => {
       // Regression for "несколько / часов" style mid-phrase cuts.
       const deliver = await dispatchOnce();
-      await deliver({ text: "**Продолжительность:** несколько" });
-      await deliver({ text: "часов (самая короткая кампания)" });
-      expect(deltaTexts().join("")).toBe(
+      await deliver({ text: "**Продолжительность:** несколько" }, block());
+      await deliver({ text: "часов (самая короткая кампания)" }, block());
+      expect(previewTexts().join("")).toBe(
         "**Продолжительность:** несколько часов (самая короткая кампания)",
       );
-      expect(deltaTexts().join("")).not.toContain("несколько\n\nчасов");
+      expect(previewTexts().join("")).not.toContain("несколько\n\nчасов");
     });
 
-    it("escalates to `\\n\\n` when the next delta starts with a markdown structural marker", async () => {
+    it("escalates a preview to `\\n\\n` when the next delta starts with a markdown structural marker", async () => {
       const deliver = await dispatchOnce();
-      await deliver({ text: "Intro paragraph." });
-      await deliver({ text: "## Section heading" });
-      await deliver({ text: "Body text under heading." });
-      await deliver({ text: "- bullet one\n- bullet two" });
-      expect(deltaTexts().join("")).toBe(
+      await deliver({ text: "Intro paragraph." }, block());
+      await deliver({ text: "## Section heading" }, block());
+      await deliver({ text: "Body text under heading." }, block());
+      await deliver({ text: "- bullet one\n- bullet two" }, block());
+      expect(previewTexts().join("")).toBe(
         "Intro paragraph.\n\n## Section heading\n\nBody text under heading.\n\n- bullet one\n- bullet two",
       );
     });
 
-    it("escalates to `\\n\\n` when the previous delta ends with a closing code fence", async () => {
+    it("escalates a preview to `\\n\\n` when the previous delta ends with a closing code fence", async () => {
       const deliver = await dispatchOnce();
-      await deliver({
-        text: '```python\nprint("Hello World")\n```',
-      });
-      await deliver({ text: "Нужен пример посложнее?" });
-      const joined = deltaTexts().join("");
+      await deliver({ text: '```python\nprint("Hello World")\n```' }, block());
+      await deliver({ text: "Нужен пример посложнее?" }, block());
+      const joined = previewTexts().join("");
       expect(joined).toBe(
         '```python\nprint("Hello World")\n```\n\nНужен пример посложнее?',
       );
@@ -709,33 +766,32 @@ describe("registerInboundRoute", () => {
 
     it("ignores empty / whitespace-only deltas without consuming the first-chunk slot", async () => {
       const deliver = await dispatchOnce();
-      await deliver({ text: "  " });
-      await deliver({ text: "" });
-      await deliver({ text: "First real chunk" });
-      await deliver({ text: "More text" });
-      expect(deltaTexts()).toEqual(["First real chunk", " More text"]);
+      await deliver({ text: "  " }, block());
+      await deliver({ text: "" }, block());
+      await deliver({ text: "First real chunk" }, block());
+      await deliver({ text: "More text" }, block());
+      expect(previewTexts()).toEqual(["First real chunk", " More text"]);
     });
 
-    it("drops runtime tool activity footers before posting text parts", async () => {
+    // The runtime appends its tool/subagent footers into the same text chunks as real prose, so
+    // any filter is a guess that also eats genuine lines (a bullet starting with 🛠️, a paragraph
+    // headed "Reasoning:"). We forward the agent's text verbatim instead: losing the answer is
+    // worse than showing a footer.
+    it("forwards runtime tool activity lines verbatim instead of guessing what to strip", async () => {
       const deliver = await dispatchOnce();
-      await deliver({
-        text: [
-          "Сейчас посмотрю ваши заказы.",
-          "🤖 Subagents",
-          "🧾 Session History: session agent:marketing:subagent:87abb016-1111-2222-3333-444444444444, limit 20",
-          "🛠️ sellerclaw agent-orders list failed",
-          "Вот что удалось найти.",
-        ].join("\n"),
-      });
+      await deliver(
+        {
+          text: [
+            "Сейчас посмотрю ваши заказы.",
+            "🛠️ sellerclaw agent-orders list failed",
+            "Вот что удалось найти.",
+          ].join("\n"),
+        },
+        final(),
+      );
       expect(deltaTexts()).toEqual([
-        "Сейчас посмотрю ваши заказы.\nВот что удалось найти.",
+        "Сейчас посмотрю ваши заказы.\n🛠️ sellerclaw agent-orders list failed\nВот что удалось найти.",
       ]);
-    });
-
-    it("does not post a text part when deliver payload is only runtime activity", async () => {
-      const deliver = await dispatchOnce();
-      await deliver({ text: "🤖 Subagents\n🛠️ sellerclaw agent-orders list failed" });
-      expect(deltaTexts()).toEqual([]);
     });
 
     // Regression for the "Weserübung" transcript the user reported: many
@@ -744,22 +800,22 @@ describe("registerInboundRoute", () => {
     // breaks all over the message body.
     it("reassembles a mixed prose / list / heading transcript without spurious paragraph breaks", async () => {
       const deliver = await dispatchOnce();
-      // Each `await deliver({ text: ... })` simulates one chunk emitted by
+      // Each `await deliver({ text: ... }, block())` simulates one chunk emitted by
       // the OpenClaw block-streaming chunker.
-      await deliver({
-        text: "**Операция «Везерюбунг»** — кодовое название вторжения в Данию и Норвегию",
-      });
-      await deliver({ text: "9 апреля 1940 года." });
-      await deliver({ text: "## Захват Дании" });
-      await deliver({
-        text: "**Дата:** 9 апреля 1940 года \n**Продолжительность:** несколько",
-      });
-      await deliver({ text: "часов (самая короткая кампания Второй мировой)" });
-      await deliver({
-        text: "### Как проходило:\n- В 4:15 утра немецкие войска перешли",
-      });
-      await deliver({ text: "датскую границу без объявления войны" });
-      const joined = deltaTexts().join("");
+      await deliver(
+        { text: "**Операция «Везерюбунг»** — кодовое название вторжения в Данию и Норвегию" },
+        block(),
+      );
+      await deliver({ text: "9 апреля 1940 года." }, block());
+      await deliver({ text: "## Захват Дании" }, block());
+      await deliver(
+        { text: "**Дата:** 9 апреля 1940 года \n**Продолжительность:** несколько" },
+        block(),
+      );
+      await deliver({ text: "часов (самая короткая кампания Второй мировой)" }, block());
+      await deliver({ text: "### Как проходило:\n- В 4:15 утра немецкие войска перешли" }, block());
+      await deliver({ text: "датскую границу без объявления войны" }, block());
+      const joined = previewTexts().join("");
 
       // Heading on its own line, with blank line both above and below.
       expect(joined).toContain("\n\n## Захват Дании\n\n");
@@ -772,41 +828,63 @@ describe("registerInboundRoute", () => {
       expect(joined).not.toContain("перешли\n\nдатскую");
     });
 
-    // The engine streams each reply block (info.kind === "block") and then re-delivers the
-    // whole reply once more as a consolidated final (info.kind === "final"). The bridge reads
-    // that label to drop the redundant final instead of string-matching it (which broke on
-    // multi-block replies, where the final never equals any single streamed block).
-    type DeliverWithInfo = (
-      p: Record<string, unknown>,
-      info?: { kind?: string; assistantMessageIndex?: number },
-    ) => Promise<void>;
+    // The bug this whole split exists for: the chunker cut a report inside a table, so the
+    // next block began with `|` and the joiner guessed a paragraph break — ending the table
+    // and leaving the remaining rows rendered as literal `| … |` text.
+    it("keeps the table intact in both the preview and the committed final", async () => {
+      const deliver = await dispatchOnce();
+      await deliver({ text: "| Item | Qty |\n| --- | --- |\n| Collar | 4 |" }, block());
+      await deliver({ text: "| Harness | 1 |" }, block());
+      const finalText = "| Item | Qty |\n| --- | --- |\n| Collar | 4 |\n| Harness | 1 |";
+      await deliver({ text: finalText }, final());
 
-    it("suppresses the consolidated final re-delivery of an already-streamed multi-block reply", async () => {
-      const deliver = (await dispatchOnce()) as unknown as DeliverWithInfo;
-      await deliver({ text: "Part one." }, { kind: "block", assistantMessageIndex: 0 });
-      await deliver({ text: "Part two." }, { kind: "block", assistantMessageIndex: 0 });
-      await deliver({ text: "Part one. Part two." }, { kind: "final", assistantMessageIndex: 0 });
-      // Only the two streamed blocks are posted; the final is dropped.
-      expect(deltaTexts()).toEqual(["Part one.", " Part two."]);
+      // The preview reads the cut for what it is — a row boundary — so the table renders as
+      // a table while it streams, rather than falling apart and snapping back at the end.
+      expect(previewTexts().join("")).toBe(finalText);
+      // And what the chat keeps is the model's own text regardless of how it was cut up.
+      expect(deltaTexts()).toEqual([finalText]);
     });
 
-    it("posts a final-only reply that was never streamed as blocks", async () => {
-      const deliver = (await dispatchOnce()) as unknown as DeliverWithInfo;
-      await deliver({ text: "Quick answer." }, { kind: "final", assistantMessageIndex: 0 });
+    it("commits a final-only reply that was never streamed as blocks", async () => {
+      const deliver = await dispatchOnce();
+      await deliver({ text: "Quick answer." }, final());
       expect(deltaTexts()).toEqual(["Quick answer."]);
+      expect(previewTexts()).toEqual([]);
     });
 
-    it("dedupes finals per assistantMessageIndex across sub-messages in one dispatch", async () => {
-      const deliver = (await dispatchOnce()) as unknown as DeliverWithInfo;
+    it("treats a delivery with no dispatch info as a whole message", async () => {
+      // Engines that don't block-stream (and older runtimes) deliver replies unlabelled;
+      // an unlabelled delivery is a complete message, so it takes the committed road.
+      const deliver = await dispatchOnce();
+      await deliver({ text: "Here you go." });
+      expect(deltaTexts()).toEqual(["Here you go."]);
+      expect(previewTexts()).toEqual([]);
+    });
+
+    it("separates consecutive sub-messages of one dispatch with a blank line", async () => {
+      const deliver = await dispatchOnce();
       // Sub-message 0: a short status (single block, then its final).
-      await deliver({ text: "Working on it." }, { kind: "block", assistantMessageIndex: 0 });
-      await deliver({ text: "Working on it." }, { kind: "final", assistantMessageIndex: 0 });
+      await deliver({ text: "Working on it." }, block(0));
+      await deliver({ text: "Working on it." }, final(0));
       // Sub-message 1: the answer (two blocks, then its final).
-      await deliver({ text: "Answer one." }, { kind: "block", assistantMessageIndex: 1 });
-      await deliver({ text: "Answer two." }, { kind: "block", assistantMessageIndex: 1 });
-      await deliver({ text: "Answer one. Answer two." }, { kind: "final", assistantMessageIndex: 1 });
-      // Both finals suppressed; each sub-message's content appears exactly once.
-      expect(deltaTexts()).toEqual(["Working on it.", " Answer one.", " Answer two."]);
+      await deliver({ text: "Answer one." }, block(1));
+      await deliver({ text: "Answer two." }, block(1));
+      await deliver({ text: "Answer one. Answer two." }, final(1));
+
+      // Each sub-message is committed exactly once, as the model wrote it, and the two are
+      // separated — the cloud concatenates these into one message body.
+      expect(deltaTexts()).toEqual(["Working on it.", "\n\nAnswer one. Answer two."]);
+    });
+
+    it("starts a fresh preview after a final, so the next sub-message is not glued to the last", async () => {
+      const deliver = await dispatchOnce();
+      await deliver({ text: "Working on it." }, block(0));
+      await deliver({ text: "Working on it." }, final(0));
+      await deliver({ text: "Answer one." }, block(1));
+
+      // The committed final ended sub-message 0 and dropped the preview with it; the next
+      // block opens a new preview rather than continuing the old one.
+      expect(previewTexts()).toEqual(["Working on it.", "Answer one."]);
     });
   });
 

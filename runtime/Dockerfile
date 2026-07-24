@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.6.11
+ARG OPENCLAW_TAG=2026.7.1
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -105,6 +105,10 @@ COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/seller
 # the plugins above) and install deps in-image so the transitive native better-sqlite3 binding matches
 # TARGETARCH — even though platform mode never touches the local SQLite store. Must stay root-owned
 # (OpenClaw rejects config-origin plugins with non-root ownership).
+# NOTE: the load path is what makes plugins.slots.memory resolve — dropping it hard-fails config
+# validation ("plugin not found: openclaw-mem0") and the gateway won't boot. It does NOT register
+# the plugin in OpenClaw's plugin registry, which is a separate concern the startup doctor checks —
+# see the registry pre-build step further down.
 # Pin exact version so image rebuilds are reproducible (check: npm view @mem0/openclaw-mem0 version).
 ARG MEM0_OPENCLAW_PLUGIN_VERSION=1.0.13
 RUN mkdir -p /opt/openclaw-plugins/openclaw-mem0 \
@@ -143,6 +147,29 @@ RUN cd /app/dist/extensions && \
         esac; \
     done
 
+# Pre-build OpenClaw's persisted plugin registry with the vendored mem0 plugin already installed.
+#
+# Managed machines run volumeless, so /home/node/.openclaw — which holds the registry
+# (state/openclaw.sqlite) — ships entirely from this image; nothing restores it at boot. Without a
+# pre-built registry every cold start reports "Persisted plugin registry is missing or stale" and
+# the startup doctor re-downloads @mem0/openclaw-mem0 from npm (the package declares an
+# install.npmSpec) before the gateway can serve chat. That fetch is a dominant chunk of cold-start
+# time and silently drifts the runtime off the version pinned above.
+#
+# Being on plugins.load.paths satisfies config validation but does NOT register the plugin — the
+# registry is what the doctor checks — hence this separate install. It is fully offline (local
+# directory source; verified with `docker run --network none`) and must run AFTER the extension
+# prune above so the registry snapshot matches the final image. mem0 stays on load.paths too, which
+# only costs a benign "duplicate plugin id … global plugin will be overridden by config plugin"
+# warning and keeps config validation working even if this registry ever goes stale.
+#
+# The installer also writes a stub openclaw.json (it records the memory slot for itself) and an
+# audit log; drop both — the real per-user config is copied in at boot (see copy_runtime_config in
+# openclaw_start), and only state/openclaw.sqlite + extensions/ need to ship.
+RUN runuser -u node -- env HOME=/home/node openclaw plugins install /opt/openclaw-plugins/openclaw-mem0 \
+    && rm -f /home/node/.openclaw/openclaw.json \
+    && rm -rf /home/node/.openclaw/logs
+
 # KasmVNC server-wide configuration (HTTP mode, no SSL, port 6080).
 COPY sellerclaw-agent/runtime/kasmvnc/kasmvnc.yaml /etc/kasmvnc/kasmvnc.yaml
 
@@ -155,6 +182,10 @@ COPY sellerclaw-agent/runtime/commands/fetch_config_bundle         /usr/local/bi
 COPY sellerclaw-agent/runtime/commands/gost_start                  /usr/local/bin/gost_start
 COPY sellerclaw-agent/runtime/commands/openclaw_chrome             /usr/local/bin/openclaw_chrome
 COPY sellerclaw-agent/runtime/commands/kasmvnc_start               /usr/local/bin/kasmvnc_start
+# Safe archive extraction. Agents must use this instead of `unzip` (see the file_storage skill):
+# it refuses symlinks, path escapes and decompression bombs while unpacking, not just from the
+# zip's (forgeable) table of contents.
+COPY sellerclaw-agent/runtime/commands/sellerclaw_unzip            /usr/local/bin/sellerclaw_unzip
 COPY sellerclaw-agent/runtime/nginx/openclaw-proxy.conf            /etc/nginx/openclaw-proxy.conf
 COPY sellerclaw-agent/runtime/healthchecks/openclaw_tcp_check      /usr/local/bin/openclaw_tcp_check
 COPY sellerclaw-agent/runtime/supervisord.conf                     /etc/supervisor/conf.d/openclaw.conf
@@ -166,6 +197,7 @@ RUN chmod +x \
     /usr/local/bin/gost_start \
     /usr/local/bin/openclaw_chrome \
     /usr/local/bin/kasmvnc_start \
+    /usr/local/bin/sellerclaw_unzip \
     /usr/local/bin/openclaw_tcp_check
 
 EXPOSE 7788 6080 6081 8001

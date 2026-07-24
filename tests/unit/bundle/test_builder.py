@@ -238,8 +238,9 @@ def test_bundle_builder_entry_point_tools_and_subagents(
     assert supervisor["default"] is True
     assert "group:sessions" in supervisor["tools"]["allow"]
     assert supervisor["subagents"]["allowAgents"] == ["scout", "supplier", "marketing"]
-    # subagents block is emitted ONLY for the entry point, never under defaults.
-    assert "subagents" not in cfg["agents"]["defaults"]
+    # The roster (`allowAgents`) is emitted ONLY for the entry point. `defaults.subagents` carries
+    # the shared run-timeout cap and must never name agents.
+    assert "allowAgents" not in cfg["agents"]["defaults"]["subagents"]
     for sub in ("scout", "supplier", "marketing"):
         assert "subagents" not in _agent_payload(cfg, sub)
 
@@ -407,7 +408,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             True, True, True, True,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
-                "message", "browser", "exec", "pdf", "cron", *_MEMORY_TOOLS_EXPECTED,
+                "message", "browser", "exec", "pdf", "cron", "process", *_MEMORY_TOOLS_EXPECTED,
             ],
             [],
             id="entry-point-with-subagents",
@@ -425,7 +426,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             True, True, True, False,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
-                "message", "browser", "exec", "pdf", *_MEMORY_TOOLS_EXPECTED,
+                "message", "browser", "exec", "pdf", "process", *_MEMORY_TOOLS_EXPECTED,
             ],
             [],
             id="entry-point-cron-disabled",

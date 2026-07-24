@@ -90,7 +90,7 @@ async def _execute_remote_command(
             def _full_backup(sd: Path = state_dir) -> bytes:
                 from sellerclaw_agent.cloud.state_backup import build_state_backup_archive
 
-                return build_state_backup_archive(sd, include_chrome=True)
+                return build_state_backup_archive(sd, include_browser_profile=True)
 
             try:
                 archive = await loop.run_in_executor(executor, _full_backup)

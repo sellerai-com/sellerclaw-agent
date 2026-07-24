@@ -44,43 +44,14 @@ ALLOWED_PATH_PREFIXES: tuple[str, ...] = (
     "/tmp/",
 )
 
-# Must stay a superset of (ideally equal to) the cloud's ALLOWED_FILE_EXTENSIONS
-# (sellerclaw: src/domain/utils/file_extensions.py). If the proxy is stricter than the
-# cloud it silently drops artifacts the cloud would accept — e.g. agent-generated `.html`
-# diagrams or `.pdf` reports — leaving the user with the caption but no file.
-ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        # images
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".gif",
-        # text / data
-        ".txt",
-        ".csv",
-        ".md",
-        ".json",
-        ".html",
-        ".xml",
-        ".yaml",
-        ".yml",
-        ".tsv",
-        ".log",
-        # documents
-        ".pdf",
-        ".docx",
-        ".doc",
-        ".xlsx",
-        ".xls",
-        ".pptx",
-        ".ppt",
-        ".rtf",
-        ".odt",
-    }
-)
-
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+# The cloud is the single gate on *what* a file may be: it checks the extension, verifies the
+# magic bytes against it, scans for malware, and vets the contents of an archive. The proxy used
+# to keep its own copy of that extension whitelist, which bought nothing (a file it waved through
+# was still checked in the cloud) and cost a whole class of silent bugs: whenever the cloud gained
+# a format, the stale copy here dropped it — agent-generated videos never reached a chat because
+# of exactly that. So the proxy no longer decides what a file may be. It enforces only what the
+# cloud cannot see: which directories a file may be read from, and how big it may be.
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 
 _UPLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
 
@@ -132,13 +103,6 @@ def _validate_local_path(raw: str) -> Path:
     return resolved
 
 
-def _validate_extension(filename: str) -> str:
-    ext = Path(filename).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=415, detail=f"extension_not_allowed: {ext}")
-    return ext
-
-
 def _read_bounded(path: Path) -> bytes:
     size = path.stat().st_size
     if size > MAX_FILE_SIZE_BYTES:
@@ -172,6 +136,7 @@ def _content_type_for(ext: str) -> str:
         ".ppt": "application/vnd.ms-powerpoint",
         ".rtf": "application/rtf",
         ".odt": "application/vnd.oasis.opendocument.text",
+        ".zip": "application/zip",
     }
     return mapping.get(ext, "application/octet-stream")
 
@@ -196,6 +161,27 @@ router = APIRouter(
 )
 
 
+# Cloud answers that are a verdict on the *file*: bad type / magic mismatch / archive contents
+# (400), too large (413), malware or invalid content (422), uploading too fast (429), no room on
+# the plan (507).
+_FILE_REFUSED_STATUSES: frozenset[int] = frozenset({400, 413, 415, 422, 429, 507})
+
+
+def _cloud_error_detail(response: Any) -> dict[str, Any]:
+    """Reshape the cloud's refusal into a detail the agent can read out loud."""
+    body: dict[str, Any] = {}
+    try:
+        parsed = response.json()
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        body = parsed
+    return {
+        "code": str(body.get("error_code") or "cloud_rejected_file"),
+        "message": str(body.get("detail") or response.text[:500]),
+    }
+
+
 async def _proxy_to_cloud(
     *,
     content: bytes,
@@ -211,6 +197,18 @@ async def _proxy_to_cloud(
             url,
             headers={"Authorization": f"Bearer {bearer}"},
             files={"file": (filename, content, content_type)},
+        )
+    if response.status_code in _FILE_REFUSED_STATUSES:
+        # The cloud refused the file itself — wrong type, too large, no room on the plan, malware,
+        # a script inside an archive. That is an answer, not an outage: pass its status and its
+        # words straight through, so the agent can tell the owner *why* instead of reporting a
+        # generic upload failure and retrying something that will never work.
+        #
+        # Only these statuses. A 401/403/404 says something is wrong with *us* (a stale token, a
+        # moved route), not with the file, and must not be read out as "your file was rejected".
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=_cloud_error_detail(response),
         )
     if response.status_code >= 400:
         raise HTTPException(
@@ -235,7 +233,6 @@ async def upload_local_file(payload: UploadLocalRequest) -> UploadLocalResponse:
     """Read a local file inside the container and upload it to cloud File Storage."""
     resolved = _validate_local_path(payload.local_path)
     filename = (payload.filename or resolved.name).strip() or resolved.name
-    ext = _validate_extension(filename)
     content = _read_bounded(resolved)
     bearer = resolve_agent_bearer_token_from_data_dir(_data_dir())
     if bearer is None:
@@ -243,7 +240,7 @@ async def upload_local_file(payload: UploadLocalRequest) -> UploadLocalResponse:
     cloud = await _proxy_to_cloud(
         content=content,
         filename=filename,
-        content_type=_content_type_for(ext),
+        content_type=_content_type_for(Path(filename).suffix.lower()),
         bearer=bearer,
     )
     try:

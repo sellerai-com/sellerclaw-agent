@@ -226,6 +226,17 @@ def generate_openclaw_config(
     plugin_load_paths: list[str] = [OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI]
     if web_search_enabled:
         plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH)
+    # mem0 MUST stay in plugins.load.paths. It is referenced by plugins.slots.memory, and
+    # OpenClaw resolves slot/allow/entries against load.paths + the installed registry: drop
+    # the load path and config validation hard-fails with "plugins.slots.memory: plugin not
+    # found: openclaw-mem0", so the gateway refuses to boot. (That validation also runs before
+    # every CLI command, so a runtime `openclaw plugins install` cannot bootstrap itself out of
+    # the invalid state — it is blocked by the very config it would repair.)
+    #
+    # Being on a load path satisfies validation but does NOT make the plugin "installed" in
+    # OpenClaw's plugin registry, which is what the startup doctor checks — hence the doctor
+    # re-downloads @mem0/openclaw-mem0 from npm on every cold start of a volumeless machine.
+    # Fixing that means ALSO getting it into the registry, without removing this load path.
     if memory_enabled:
         plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_MEM0)
 
@@ -425,6 +436,17 @@ def generate_openclaw_config(
         "messages": {
             "visibleReplies": "automatic",
             "queue": {"mode": "steer"},
+            # Never surface OpenClaw's synthesized "⚠️ <Tool> failed: …" notices in the chat.
+            # A failed tool call is normal mid-turn noise — the agent sees the error in its
+            # context and usually recovers on the next call — but the notice reads to the user
+            # like a product bug even when the turn ended successfully. It is also a payload
+            # the agent never wrote: it arrives on the final road while the agent's own reply
+            # was already streamed as preview blocks, so the cloud treats it as the reply's
+            # final wording and drops the streamed text (see ``append_text_part`` cloud-side).
+            # The engine only emits it when it cannot tell the assistant already acknowledged
+            # the failure, and that check is an English-only regex — so a Russian-speaking
+            # agent triggers it on essentially every failed command.
+            "suppressToolErrors": True,
         },
         "bindings": [
             *telegram_bindings,

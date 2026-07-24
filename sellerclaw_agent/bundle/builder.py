@@ -84,10 +84,10 @@ def derive_agent_tools(
 
     Returns ``(allow, deny)``. All capability tools are manifest-driven:
 
-    - Entry point (supervisor): broad allow including ``group:fs`` (file access, always).
-      When it has subagents it additionally gets ``group:sessions`` + ``agents_list`` to
-      inspect and drive its team; otherwise (solo agent) it gets ``process`` to run/manage
-      long-lived processes itself. ``cron`` only here, and only when enabled.
+    - Entry point (supervisor): broad allow including ``group:fs`` (file access, always) and
+      ``process`` (background long-running commands instead of blocking the turn). When it has
+      subagents it additionally gets ``group:sessions`` + ``agents_list`` to inspect and drive
+      its team. ``cron`` only here, and only when enabled.
       ``whatsapp_login`` (in-chat QR pairing tool) only here, and only when WhatsApp is on.
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
     - Long-term memory tools (``_MEMORY_TOOLS``) are granted to every agent so the injected
@@ -108,12 +108,17 @@ def derive_agent_tools(
         # is enabled so the tool surface stays minimal otherwise.
         if whatsapp_enabled:
             allow.append("whatsapp_login")
+        # ``process`` lets the agent background long-running commands (publish, export, bulk
+        # jobs) instead of running them synchronously and blocking the whole turn until the exec
+        # timeout — a blocking publish call was stalling mid-turn and timing out. Granted to the
+        # entry point whether or not it drives subagents: children inherit the parent's tool set,
+        # so without it here OpenClaw also strips ``process`` from the subagents ("inherited
+        # tools"), leaving no agent able to run work in the background.
+        allow.append("process")
         if has_subagents:
             # ``agents_list`` lets the supervisor enumerate its available team alongside
             # ``group:sessions`` (spawn/list/manage live child sessions).
             allow = ["group:sessions", "agents_list", *allow]
-        else:
-            allow.append("process")
         deny: list[str] = []
     else:
         allow = [

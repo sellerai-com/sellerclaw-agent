@@ -1,5 +1,8 @@
-# Runtime data (manifest, credentials — never commit secrets)
-data/
+# Runtime data (manifest, credentials — never commit secrets).
+# Anchored to the repo root on purpose: an unanchored `data/` also swallows every nested data dir,
+# which silently un-tracked the test fixtures under tests/unit/bundle/data/ — green locally, red in
+# a fresh CI clone.
+/data/
 
 # Local secrets
 secrets.env

@@ -55,7 +55,7 @@ def test_run_restore_downloads_when_empty(tmp_path: Path, monkeypatch: pytest.Mo
     src = tmp_path / "upstream"
     (src / "agents" / "z" / "sessions").mkdir(parents=True)
     (src / "agents" / "z" / "sessions" / "c.jsonl").write_text("{}\n", encoding="utf-8")
-    archive = build_state_backup_archive(src, include_chrome=False)
+    archive = build_state_backup_archive(src, include_browser_profile=False)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "http://example.com/agent/connection/state-backup"
