@@ -648,15 +648,21 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
 def test_generate_openclaw_config_subagent_run_timeout_in_defaults(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """Two distinct timeouts: a per-turn cap and a total-run cap for delegated subagents.
+    """Three distinct timeouts: a per-turn cap, a total-run cap, and the announce window.
 
     ``timeoutSeconds`` bounds a single agent turn; ``subagents.runTimeoutSeconds`` bounds a
     spawned subagent's whole delegated run (one hour), so a stuck delegation cannot run forever.
+    ``subagents.announceTimeoutMs`` is how long OpenClaw waits for the supervisor's completion
+    run before steering a duplicate of the completion event into the still-running session —
+    the 120s default fired mid-run on a healthy announce and the owner's report was silently
+    dropped (NO_REPLY became the run's final). Must stay above ``timeoutSeconds`` so a hung
+    turn is aborted by its own cap before the announce window ever binds.
     See https://docs.openclaw.ai/tools/subagents.
     """
     defaults = json.loads(_generate(_supervisor_only(make_assembled_agent)))["agents"]["defaults"]
     assert defaults["timeoutSeconds"] == 600
-    assert defaults["subagents"] == {"runTimeoutSeconds": 3600}
+    assert defaults["subagents"] == {"runTimeoutSeconds": 3600, "announceTimeoutMs": 630_000}
+    assert defaults["subagents"]["announceTimeoutMs"] > defaults["timeoutSeconds"] * 1000
 
 
 def test_generate_openclaw_config_suppresses_tool_error_warnings(
