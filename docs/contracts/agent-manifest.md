@@ -29,10 +29,10 @@ Requests to `POST /manifest`, `GET /manifest`, `GET /bundle/archive`, `GET /comm
 Authorization: Bearer <SELLERCLAW_LOCAL_API_KEY>
 ```
 
-- **Meaning.** `SELLERCLAW_LOCAL_API_KEY` (or the auto-generated entry in `secrets.json` under `SELLERCLAW_DATA_DIR`, after one-time migration from legacy `local_api_key`) is the **incoming** secret for HTTP callers of the agent API on port `8001`. In development, keep this in `secrets.env` (not in `.env.*` profile files). The Admin UI bootstraps it via `GET /auth/local-bootstrap` (loopback only).
+- **Meaning.** `SELLERCLAW_LOCAL_API_KEY` (or the auto-generated entry in `secrets.json` under `SELLERCLAW_DATA_DIR`, after one-time migration from legacy `local_api_key`) is the **incoming** secret for HTTP callers of the agent API on port `8001`. In development, keep this in `secrets.env` (not in `.env.*` profile files). The CLI reads the same value straight from `secrets.json` on the host — there is no network bootstrap route.
 - **`AGENT_API_KEY` / `agent_token.json`.** These identify the agent to the **SellerClaw cloud** (`sca_…`). They are used for outbound `Authorization` on `/agent/connection/*`, chat SSE, etc. They are **not** accepted as the control-plane manifest key unless you deliberately set the same value in both places (not recommended).
 
-Public routes that never require the local header: `GET /health`, `GET /auth/local-bootstrap` (loopback only), and the admin UI static mount when it is enabled. Do not place a reverse proxy in front of `/auth/local-bootstrap` without preserving the real client address as loopback; otherwise bootstrap may leak the local key to non-local callers.
+The only public route that never requires the local header is `GET /health`.
 
 ## JSON Schema
 
@@ -90,7 +90,7 @@ The agent derives each agent's OpenClaw `tools.allow` / `tools.deny` from its fl
 Deployment-specific values are **not** part of the manifest:
 
 - The SellerClaw API host is read by the agent from `SELLERCLAW_API_URL` (used both as the OpenClaw plugin `apiBaseUrl` for `sellerclaw-ui` and to derive `SELLERCLAW_AGENT_API_BASE_URL` together with the manifest-supplied `agent_api_base_path`).
-- Allowed CORS origins for the OpenClaw gateway UI come from `SELLERCLAW_WEB_URL` and `ADMIN_URL`.
+- Allowed CORS origins for the OpenClaw gateway UI come from `SELLERCLAW_WEB_URL`.
 
 ### Bundle archive and secrets
 

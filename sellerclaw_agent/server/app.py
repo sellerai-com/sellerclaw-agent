@@ -3,17 +3,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import socket
-import struct
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from starlette.responses import Response
 
 from sellerclaw_agent.bundle import GatewayArchivePayload, build_gateway_archive
@@ -28,7 +24,7 @@ from sellerclaw_agent.cloud.exceptions import (
     CloudDevicePollTerminalError,
 )
 from sellerclaw_agent.cloud.service import AuthStatus, CloudAuthService
-from sellerclaw_agent.cloud.settings import get_admin_url, get_sellerclaw_web_url
+from sellerclaw_agent.cloud.settings import get_sellerclaw_web_url
 from sellerclaw_agent.cloud.supervisor_manager import (
     REJECT_ALREADY_RUNNING,
     SupervisorContainerManager,
@@ -363,16 +359,6 @@ async def health() -> dict[str, Any]:
     }
 
 
-_cors_origins = [get_admin_url()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 def _to_response(s: AuthStatus) -> AuthStatusResponse:
     return AuthStatusResponse(
         connected=s.connected,
@@ -381,69 +367,6 @@ def _to_response(s: AuthStatus) -> AuthStatusResponse:
         user_name=s.user_name,
         connected_at=s.connected_at,
     )
-
-
-def _normalize_client_host(host: str) -> str:
-    """Strip zone id / IPv4-mapped prefix so comparisons match what Docker publishes."""
-    h = (host or "").strip().lower()
-    if "%" in h:
-        h = h.split("%", 1)[0]
-    if h.startswith("::ffff:"):
-        return h[7:]
-    return h
-
-
-def _client_host_is_loopback(host: str) -> bool:
-    if not host:
-        return False
-    h = _normalize_client_host(host)
-    if h in {"127.0.0.1", "::1"}:
-        return True
-    if h.startswith("127."):
-        return True
-    return False
-
-
-def _running_inside_docker() -> bool:
-    """True in normal Linux container runtimes (Docker/Podman often provide this marker)."""
-    try:
-        return Path("/.dockerenv").is_file()
-    except OSError:
-        return False
-
-
-def _default_ipv4_gateway_linux() -> str | None:
-    """Best-effort default IPv4 gateway from /proc/net/route (Linux, little-endian hex)."""
-    try:
-        with open("/proc/net/route", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-    except OSError:
-        return None
-    for line in lines[1:]:
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        dest, gw_hex = parts[1], parts[2]
-        if dest == "00000000" and gw_hex != "00000000":
-            try:
-                gw_int = int(gw_hex, 16)
-            except ValueError:
-                return None
-            try:
-                return socket.inet_ntoa(struct.pack("<I", gw_int))
-            except (OSError, struct.error):
-                return None
-    return None
-
-
-def _client_is_docker_published_host(host: str) -> bool:
-    """Host port publish appears as the container default gateway, not loopback."""
-    if not _running_inside_docker():
-        return False
-    gw = _default_ipv4_gateway_linux()
-    if gw is None:
-        return False
-    return _normalize_client_host(host) == gw
 
 
 @control_plane.get("/manifest", response_model=GetManifestResponse)
@@ -526,19 +449,6 @@ async def auth_disconnect(
 ) -> DisconnectResponse:
     await service.disconnect()
     return DisconnectResponse(status="ok")
-
-
-@app.get("/auth/local-bootstrap")
-def auth_local_bootstrap(request: Request) -> dict[str, str]:
-    """Return the local control-plane API key for same-machine admin UI (loopback only)."""
-    client = request.client
-    host = (client.host if client is not None else "") or ""
-    if not (_client_host_is_loopback(host) or _client_is_docker_published_host(host)):
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "local_bootstrap_forbidden", "message": "Allowed only from loopback"},
-        )
-    return {"local_api_key": get_local_api_key(_get_data_dir())}
 
 
 @control_plane.get("/commands/history", response_model=CommandHistoryResponse)
@@ -658,32 +568,3 @@ def download_bundle_archive(
 
 app.include_router(control_plane)
 app.include_router(media_upload.router)
-
-_default_admin_ui_dist = Path(__file__).resolve().parents[2] / "admin-ui" / "dist"
-_admin_ui_dist = Path(os.environ.get("AGENT_ADMIN_UI_DIST", str(_default_admin_ui_dist)))
-if _admin_ui_dist.is_dir():
-
-    class _NoCacheHtmlStaticFiles(StaticFiles):
-        """StaticFiles that forbids caching of index.html (hashed assets still cache).
-
-        Why: the admin UI shell embeds the current JS bundle hash. Letting the browser
-        cache index.html causes tabs opened before a rebuild to keep polling with the
-        stale bundle (e.g. before ``initApiClient`` gained the request interceptor),
-        producing 401 noise against ``/openclaw/status``. Hashed assets under
-        ``/assets`` are content-addressed and remain cacheable.
-        """
-
-        async def get_response(self, path: str, scope):  # type: ignore[override]
-            response = await super().get_response(path, scope)
-            content_type = response.headers.get("content-type", "")
-            if content_type.startswith("text/html"):
-                # ``no-store`` is sufficient per RFC 9111; we drop the legacy ``Pragma``
-                # and the malformed ``Expires: 0`` (which isn't a valid HTTP-date).
-                response.headers["Cache-Control"] = "no-store"
-            return response
-
-    app.mount(
-        "/admin",
-        _NoCacheHtmlStaticFiles(directory=str(_admin_ui_dist), html=True),
-        name="admin",
-    )

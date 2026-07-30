@@ -171,14 +171,14 @@ def test_auth_connect_returns_502_on_cloud_connection_error(tmp_path: Path) -> N
 
 @pytest.mark.usefixtures("_override_service_ok")
 def test_auth_device_start_returns_codes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SELLERCLAW_WEB_URL", "http://my-admin:5174")
+    monkeypatch.setenv("SELLERCLAW_WEB_URL", "http://my-web:5173")
     with TestClient(app) as client:
         r = client.post("/auth/device/start", headers=_AUTH_HEADERS)
         assert r.status_code == 200
         body = r.json()
         assert body["device_code"] == "dc1"
         assert body["user_code"] == "ABCD-EFGH"
-        assert body["verification_uri"] == "http://my-admin:5174/auth/device?code=ABCD-EFGH"
+        assert body["verification_uri"] == "http://my-web:5173/auth/device?code=ABCD-EFGH"
 
 
 def test_auth_device_poll_pending_then_completed(tmp_path: Path) -> None:

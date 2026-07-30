@@ -89,8 +89,11 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
 
+      # --locked: verify the tag against the exact dependency set it was cut with. An image build must
+      # never re-resolve — that is how a dependency published the same afternoon turns a release into a
+      # burnt tag (it cost sellerclaw-cli the v0.43.0b6 tag on 2026-07-28).
       - name: Install dependencies
-        run: uv sync --extra server --python ${{ matrix.python-version }}
+        run: uv sync --extra server --locked --python ${{ matrix.python-version }}
 
       - name: Ruff
         run: uv run --extra server ruff check sellerclaw_agent tests

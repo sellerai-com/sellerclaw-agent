@@ -35,7 +35,12 @@ OPENCLAW_BUNDLE_LOG_LEVEL = "warn"
 OPENCLAW_BUNDLE_CONSOLE_STYLE = "pretty"
 OPENCLAW_BUNDLE_REDACT_SENSITIVE = "tools"
 
-OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 30000
+# Per-file truncation limit for workspace bootstrap files (AGENTS.md, SOUL.md, …). The
+# supervisor's assembled AGENTS.md (full roster + owner rules appended by the cloud) is the
+# largest and sat at ~34.7k before the 2026-07 template slim-down; 40k leaves room for
+# owner-authored rules without inviting unbounded prompt growth — the cloud's
+# test_assembled_bootstrap_files_fit_openclaw_limit guards the template side.
+OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 40000
 
 # Bundled OpenClaw skills allowed in every agent workspace. All other bundled skills are
 # dropped at load time; workspace/manifest skills and extra-dir skills are unaffected.
@@ -359,7 +364,20 @@ def generate_openclaw_config(
         # task could run indefinitely; we cap it at one hour. See
         # https://docs.openclaw.ai/tools/subagents and
         # https://docs.openclaw.ai/gateway/config-agents (`agents.defaults.subagents.runTimeoutSeconds`).
-        "subagents": {"runTimeoutSeconds": 3600},
+        #
+        # `announceTimeoutMs` is how long OpenClaw waits for the supervisor's completion run (the
+        # "A background task completed…" wake) to produce its final reply before falling back to
+        # steering the same completion event into the still-running session as a duplicate. The
+        # 120s default fired mid-run on a perfectly healthy announce (the run took ~128s), the
+        # duplicate drew a NO_REPLY, and — because only a run's final text is delivered — the
+        # already-written owner report was silently discarded (staging chat 4ed0228a, 2026-07-27).
+        # There is no total-run bound to align with (`timeoutSeconds` above caps one *turn*), so no
+        # value removes the race outright; this one is chosen to sit above the single-turn cap
+        # (600s): a run that stalls inside one turn is aborted by that cap first — the fallback
+        # then proceeds off the error — while a run still making progress across turns is left
+        # alone instead of being interrupted. Upstream has no dedup before the steer fallback
+        # (openclaw#41235 fixed a different sub-case), so the window is our only lever.
+        "subagents": {"runTimeoutSeconds": 3600, "announceTimeoutMs": 630_000},
         "bootstrapMaxChars": OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
         "model": model_defaults.model,
         "thinkingDefault": thinking_default,

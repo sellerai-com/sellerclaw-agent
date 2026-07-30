@@ -2,7 +2,7 @@
 
 Thank you for contributing to **SellerClaw Agent**.
 
-`sellerclaw-agent` is the local edge agent that wraps the OpenClaw runtime: it exposes a small FastAPI control plane, ships a CLI for onboarding (`sellerclaw-agent setup` / `login`), and pairs with a SellerClaw (or compatible) cloud over HTTP polling. Contributions are welcome from developers who want to improve the agent's CLI, runtime behaviour, manifest handling, admin UI, or tooling around it.
+`sellerclaw-agent` is the local edge agent that wraps the OpenClaw runtime: it exposes a small FastAPI control plane, ships a CLI for onboarding (`sellerclaw-agent setup` / `login`), and pairs with a SellerClaw (or compatible) cloud over HTTP polling. Contributions are welcome from developers who want to improve the agent's CLI, runtime behaviour, manifest handling, or tooling around it.
 
 This guide explains how to contribute effectively.
 
@@ -23,7 +23,6 @@ If you are looking for agent-specific context, start with:
 - [`docs/cli.md`](docs/cli.md) — CLI installation and usage
 - [`docs/connection-protocol.md`](docs/connection-protocol.md) — cloud pairing protocol
 - [`docs/contracts/agent-manifest.md`](docs/contracts/agent-manifest.md) — manifest wire contract
-- [`docs/developer/admin-ui.md`](docs/developer/admin-ui.md) — Vue 3 admin UI
 
 ## What Kinds of Contributions Are Welcome
 
@@ -31,7 +30,6 @@ We welcome contributions such as:
 
 - bug fixes in the CLI, FastAPI server, or bundle renderer
 - improvements to the manifest validation / schema
-- admin UI usability and clarity improvements
 - better error messages and diagnostics
 - additional hosting-mode flexibility (env profiles, custom cloud URLs)
 - test coverage improvements
@@ -77,23 +75,19 @@ git remote add upstream https://github.com/sellerai-com/sellerclaw-agent.git
 
 `setup.sh` checks for Docker, installs Python dependencies (via `uv` or `pip`), brings up the Docker stack, and starts the interactive sign-in.
 
-For iterating on the agent server and admin UI with hot reload:
+For iterating on the agent server:
 
 ```bash
-make up          # docker compose up --build (server + admin-ui)
-```
-
-For the server only (faster cycle when you are not touching the UI):
-
-```bash
-make up-server
+make up          # docker compose up server --build, .env.production profile
+make up-stage    # same, against the staging cloud (.env.staging)
+make up-dev      # same, against a local cloud (.env.local)
 ```
 
 Building or publishing a runtime image from a fork is described under [Building the runtime image](docs/cli.md#building-the-runtime-image) in [`docs/cli.md`](docs/cli.md).
 
 If you are also iterating on `sellerclaw-cli`, you can build the agent against a local source checkout (no PyPI release needed) by setting `SELLERCLAW_CLI_LOCAL_PATH` in a gitignored `dev.env` — see [Using a local sellerclaw-cli build](docs/cli.md#using-a-local-sellerclaw-cli-build-contributors).
 
-See [`docs/cli.md`](docs/cli.md) for environment profiles (`.env.local`, `.env.staging`, `.env.production`, `secrets.env`) and [`docs/developer/admin-ui.md`](docs/developer/admin-ui.md) for the admin UI setup.
+See [`docs/cli.md`](docs/cli.md) for environment profiles (`.env.local`, `.env.staging`, `.env.production`, `secrets.env`).
 
 ## Code Expectations
 
@@ -139,7 +133,6 @@ This includes changes that affect:
 - the manifest wire format or schema
 - control-plane HTTP routes
 - the cloud connection protocol
-- admin UI behavior
 
 At minimum, keep the relevant docs in sync:
 
@@ -147,7 +140,6 @@ At minimum, keep the relevant docs in sync:
 - [`docs/connection-protocol.md`](docs/connection-protocol.md)
 - [`docs/contracts/agent-manifest.md`](docs/contracts/agent-manifest.md)
 - [`docs/contracts/agent-manifest-schema.json`](docs/contracts/agent-manifest-schema.json)
-- [`docs/developer/admin-ui.md`](docs/developer/admin-ui.md)
 
 ## Pull Request Guidelines
 
@@ -197,7 +189,6 @@ If you are contributing for the first time, good places to start include:
 
 - documentation fixes (especially `docs/cli.md` and the onboarding flow)
 - small CLI polish (clearer errors, better help text)
-- admin UI clarity improvements
 - test coverage improvements
 - small bug fixes
 - cleanup that improves readability without changing behavior

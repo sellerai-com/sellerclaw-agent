@@ -507,6 +507,13 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         // bounded.
         let prevTail = "";
         const TAIL_KEEP_CHARS = 512;
+        // Which sub-message the preview deltas so far belong to. A turn can hold several ("working
+        // on it…", then the answer), and `pickDeltaJoin` reads the gap between two of them as a
+        // chunk the chunker cut mid-sentence — so it glues them with a single space and the status
+        // note runs into the answer as one paragraph. The dispatcher labels every delivery with the
+        // sub-message it belongs to, so that boundary is known rather than guessed. `null` until the
+        // first block, and again after a final commits (which drops the preview buffer).
+        let previewMessageIndex: number | null = null;
         // Whether this turn has already committed a sub-message, so the next one is separated
         // from it by a blank line. Finals are whole sub-messages, so unlike preview deltas there
         // is nothing to guess about the boundary between them.
@@ -665,7 +672,15 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
               // we persist. A short reply that never streamed still arrives as a final, so it
               // takes the same road and needs no special case.
               if (dispatchInfo?.kind === "block") {
-                const outText = pickDeltaJoin(prevTail, text) + text;
+                // A preview that outlives its turn is what the user keeps: `end_turn` persists it
+                // when no final ever arrived. So the boundary between sub-messages has to be right
+                // here too, not only on the committed road below.
+                const messageIndex = dispatchInfo.assistantMessageIndex ?? null;
+                const startsNewSubMessage =
+                  previewMessageIndex !== null && messageIndex !== previewMessageIndex;
+                previewMessageIndex = messageIndex;
+                const joiner = startsNewSubMessage ? "\n\n" : pickDeltaJoin(prevTail, text);
+                const outText = joiner + text;
                 prevTail = outText.slice(-TAIL_KEEP_CHARS);
                 try {
                   await ensurePartsTurn();
@@ -688,6 +703,9 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
                 // guessed.
                 const outText = committedAnyText ? `\n\n${text}` : text;
                 prevTail = "";
+                // Committing text drops the preview buffer cloud-side, so the next block starts a
+                // fresh preview with nothing before it to be separated from.
+                previewMessageIndex = null;
                 try {
                   await ensurePartsTurn();
                   await postTurnPart(

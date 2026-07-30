@@ -7,5 +7,3 @@ __pycache__/
 Makefile
 docker-compose.yml
 Dockerfile.*
-admin-ui/node_modules
-admin-ui/dist

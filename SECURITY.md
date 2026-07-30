@@ -14,7 +14,6 @@ It covers security issues related to areas such as:
 - the local FastAPI control-plane server (`/manifest`, `/auth/*`, `/openclaw/*`)
 - authentication and session handling against a SellerClaw (or compatible) cloud
 - credential storage on disk (`agent_token.json`, `secrets.json`, legacy `local_api_key`, `edge_session.json`)
-- the admin UI (Vue 3 SPA under `admin-ui/`)
 - the bundle renderer and the manifest wire contract
 - the combined OpenClaw + agent Docker image defined in `runtime/Dockerfile`
 - unsafe defaults in the public self-hosted experience
@@ -39,7 +38,7 @@ Use a subject line such as:
 To help us investigate quickly, please include as much of the following as possible:
 
 - a clear description of the issue
-- the affected area or file (e.g. `sellerclaw_agent/server/app.py`, `admin-ui/src/...`)
+- the affected area or file (e.g. `sellerclaw_agent/server/app.py`, `sellerclaw_agent/cli.py`)
 - steps to reproduce the problem
 - the expected behavior
 - the actual behavior
@@ -111,7 +110,7 @@ If your report touches both this repository and a broader product concern, pleas
 - never committing `data/agent_token.json`, `data/secrets.json`, `data/local_api_key`, or `data/edge_session.json`
 - using strong local credentials for cloud accounts
 - avoiding exposing the agent's control-plane port (`8001` by default) to the public network (compose binds it to `127.0.0.1` by default)
-- understanding that `/auth/local-bootstrap` is intentionally loopback-only (`127.0.0.1`, `::1`, other `127.*`, and IPv4-mapped `::ffff:127.*`): anyone who can open `8001` from non-loopback addresses could otherwise obtain the local API key; do not put this path behind a reverse proxy that hides the real client address
+- understanding that every control-plane route on `8001` (all of them except `GET /health`) requires the local API key: the agent never hands that key out over HTTP, so keep `secrets.json` readable only by the account running the stack
 - keeping `SELLERCLAW_LOCAL_API_KEY` and other secrets in `secrets.env` (gitignored), not in committed `.env.*` profile files
 - pinning a known runtime image tag (`SELLERCLAW_AGENT_IMAGE`) instead of tracking `latest` in production
 - reviewing integration credentials carefully before adding them to a manifest

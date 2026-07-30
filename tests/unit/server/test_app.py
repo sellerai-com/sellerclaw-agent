@@ -12,11 +12,10 @@ from uuid import UUID
 
 import pytest
 import sellerclaw_agent.server.app as srv_app
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
-from sellerclaw_agent.server.app import app, auth_local_bootstrap, get_command_history_storage, get_openclaw_manager, get_storage
+from sellerclaw_agent.server.app import app, get_command_history_storage, get_openclaw_manager, get_storage
 from sellerclaw_agent.server.command_history import CommandHistoryStorage
 from sellerclaw_agent.server.local_api_key import reset_local_api_key_cache
 from sellerclaw_agent.server.secrets_store import reset_secrets_cache
@@ -615,97 +614,6 @@ def test_openclaw_stop_failed(
     response = client.post("/openclaw/stop", headers=_CONTROL_PLANE_AUTH)
     assert response.status_code == 200
     assert response.json() == {"outcome": "failed", "error": "timeout"}
-
-
-def test_auth_local_bootstrap_loopback_ipv4(monkeypatch, tmp_path) -> None:
-    reset_local_api_key_cache()
-    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "loop-key")
-    req = MagicMock()
-    req.client.host = "127.0.0.1"
-    assert auth_local_bootstrap(req) == {"local_api_key": "loop-key"}
-
-
-def test_auth_local_bootstrap_loopback_ipv6(monkeypatch, tmp_path) -> None:
-    reset_local_api_key_cache()
-    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "loop-key6")
-    req = MagicMock()
-    req.client.host = "::1"
-    assert auth_local_bootstrap(req) == {"local_api_key": "loop-key6"}
-
-
-def test_auth_local_bootstrap_loopback_ipv4_mapped(monkeypatch, tmp_path) -> None:
-    reset_local_api_key_cache()
-    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "loop-mapped")
-    req = MagicMock()
-    req.client.host = "::ffff:127.0.0.1"
-    assert auth_local_bootstrap(req) == {"local_api_key": "loop-mapped"}
-
-
-def test_auth_local_bootstrap_loopback_class_b(monkeypatch, tmp_path) -> None:
-    reset_local_api_key_cache()
-    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "loop-b")
-    req = MagicMock()
-    req.client.host = "127.2.3.4"
-    assert auth_local_bootstrap(req) == {"local_api_key": "loop-b"}
-
-
-def test_auth_local_bootstrap_non_loopback_forbidden(monkeypatch, tmp_path) -> None:
-    reset_local_api_key_cache()
-    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    req = MagicMock()
-    req.client.host = "203.0.113.1"
-    with pytest.raises(HTTPException) as exc_info:
-        auth_local_bootstrap(req)
-    assert exc_info.value.status_code == 403
-
-
-def test_auth_local_bootstrap_docker_published_host_gateway_ok(monkeypatch, tmp_path) -> None:
-    reset_local_api_key_cache()
-    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "gw-key")
-    monkeypatch.setattr("sellerclaw_agent.server.app._running_inside_docker", lambda: True)
-    monkeypatch.setattr(
-        "sellerclaw_agent.server.app._default_ipv4_gateway_linux",
-        lambda: "172.17.0.1",
-    )
-    req = MagicMock()
-    req.client.host = "172.17.0.1"
-    assert auth_local_bootstrap(req) == {"local_api_key": "gw-key"}
-
-
-def test_auth_local_bootstrap_docker_published_host_gateway_ipv4_mapped(
-    monkeypatch, tmp_path
-) -> None:
-    reset_local_api_key_cache()
-    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("SELLERCLAW_LOCAL_API_KEY", "gw-mapped")
-    monkeypatch.setattr("sellerclaw_agent.server.app._running_inside_docker", lambda: True)
-    monkeypatch.setattr(
-        "sellerclaw_agent.server.app._default_ipv4_gateway_linux",
-        lambda: "172.17.0.1",
-    )
-    req = MagicMock()
-    req.client.host = "::ffff:172.17.0.1"
-    assert auth_local_bootstrap(req) == {"local_api_key": "gw-mapped"}
-
-
-def test_auth_local_bootstrap_docker_sibling_container_forbidden(monkeypatch, tmp_path) -> None:
-    reset_local_api_key_cache()
-    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr("sellerclaw_agent.server.app._running_inside_docker", lambda: True)
-    monkeypatch.setattr(
-        "sellerclaw_agent.server.app._default_ipv4_gateway_linux",
-        lambda: "172.17.0.1",
-    )
-    req = MagicMock()
-    req.client.host = "172.18.0.5"
-    with pytest.raises(HTTPException) as exc_info:
-        auth_local_bootstrap(req)
-    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio

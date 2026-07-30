@@ -21,15 +21,12 @@ Start here if you are working on the SellerClaw Cloud side of the connection, or
 
 ## Contribute to the agent
 
-Start here if you are changing the agent's code or its local UI.
+Start here if you are changing the agent's code.
 
-- **[Admin UI guide](./developer/admin-ui.md)** — the Vue 3 SPA used locally for viewing and editing the manifest: structure, hot reload, API contract, and backend coverage.
-
-See also the top-level [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the contribution workflow and [`ROADMAP.md`](../ROADMAP.md) for current priorities.
+See the top-level [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the contribution workflow and [`ROADMAP.md`](../ROADMAP.md) for current priorities.
 
 ## Quick reference
 
 - **Local control plane (agent HTTP API):** `http://localhost:8001` — fixed, published from the container in `docker-compose.yml`
 - **OpenClaw gateway:** `:7788` inside the container, supervised alongside the agent server
-- **Admin UI (development):** `http://localhost:5174/admin/`
 - **On-disk state:** `agent_token.json`, `local_api_key`, and `edge_session.json` under `SELLERCLAW_DATA_DIR` (defaults to `/data` inside the container, bind-mounted to `./data` on the host)

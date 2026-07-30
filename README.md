@@ -29,7 +29,7 @@ It lets you run the OpenClaw agent that powers SellerClaw on your own computer o
 
 In other words, SellerClaw Agent moves only the runtime to your hardware. The product experience does not change.
 
-> **Status:** SellerClaw Agent is already working and open for experimentation. The CLI and public wire contracts are stable; the local admin UI and internal structure continue to evolve.
+> **Status:** SellerClaw Agent is already working and open for experimentation. The CLI and public wire contracts are stable; the internal structure continues to evolve.
 
 ## What SellerClaw Agent Is
 
@@ -44,7 +44,7 @@ From a user's point of view this means:
 - when an agent task runs, the actual browser, tools, and LLM calls happen on *your* machine
 - nothing on your network needs to be exposed to the internet — the agent only makes outbound calls
 
-Under the hood, SellerClaw Agent is a small, focused runtime wrapper. It packages OpenClaw, a local control-plane API, an onboarding CLI, and a debugging admin UI into a single Docker image that you bring up with one command.
+Under the hood, SellerClaw Agent is a small, focused runtime wrapper. It packages OpenClaw, a local control-plane API, and an onboarding CLI into a single Docker image that you bring up with one command.
 
 ## Who It Is For
 
@@ -71,7 +71,7 @@ Key advantages include:
 - **Safe local execution** — the agent runs in Docker, with no access to the host system and no inbound network exposure
 - **Outbound-only pairing** — no public IP, no port forwarding, no tunnels; the agent connects out to SellerClaw and pulls work
 - **One-command onboarding** — `./setup.sh` checks Docker, builds the stack, signs you in, and starts the runtime
-- **Local control and inspection** — a built-in admin UI for viewing the manifest and the OpenClaw status during installation and debugging
+- **Local control and inspection** — `sellerclaw-agent status`, container logs, and a documented HTTP control plane for checking the manifest and the OpenClaw runtime during installation and debugging
 - **Open wire contracts** — the cloud connection protocol and the manifest format are public, so the runtime is inspectable and extensible
 
 ## Cloud Runtime and Self-Hosted Runtime
@@ -94,7 +94,6 @@ It makes the OpenClaw runtime usable as a piece of the broader SellerClaw produc
 - Docker-isolated execution — OpenClaw, the local control plane, and the KasmVNC browser run in one container, supervised together
 - one-command CLI onboarding — install, sign in, and start the runtime in a single step
 - a bundled cloud tool layer — the public [`sellerclaw-cli`](https://github.com/sellerai-com/sellerclaw-cli) ships inside the runtime image, pre-authenticated with the agent token, so OpenClaw drives the SellerClaw cloud (stores, orders, listings, ads, suppliers, media) through it
-- a local admin UI for inspection, manifest editing, and troubleshooting
 
 In practice, SellerClaw Agent is the operational and packaging layer that makes the OpenClaw runtime a first-class self-hosted option for the SellerClaw product.
 
@@ -107,7 +106,6 @@ SellerClaw Agent provides the building blocks needed to operate a self-hosted Op
 - automatic manifest sync and OpenClaw bundle rendering
 - long-running ping / command loop with reconnection and recovery
 - a local FastAPI control plane with a documented HTTP surface
-- a Vue 3 admin UI for local manifest viewing, editing, and runtime inspection
 - a combined Docker image that includes OpenClaw, the KasmVNC browser, and the agent server
 - environment profiles for local, staging, and production SellerClaw clouds
 
@@ -123,7 +121,7 @@ At a high level, a self-hosted SellerClaw setup looks like this:
 
 Inside that container, OpenClaw reaches the SellerClaw cloud through a bundled copy of [`sellerclaw-cli`](https://github.com/sellerai-com/sellerclaw-cli) — the same public command-line / MCP client anyone can install, here baked into the image and signed in automatically with the agent token. So a self-hosted setup has two distinct channels: the **control-plane pairing** (cloud dispatches commands, the agent reports results) and the **CLI tool calls** OpenClaw makes to read and change stores, orders, listings, ads, suppliers, and media.
 
-End users never interact with the local agent directly. They work in the web admin panel at `sellerclaw.ai`, which routes commands and results through the cloud connection. The local FastAPI server and admin UI exist for installation, sign-in, and host-side troubleshooting.
+End users never interact with the local agent directly. They work in the web admin panel at `sellerclaw.ai`, which routes commands and results through the cloud connection. The local FastAPI server exists for installation, sign-in, and host-side troubleshooting.
 
 See the [cloud connection protocol](docs/connection-protocol.md) and the [agent manifest contract](docs/contracts/agent-manifest.md) for the wire details.
 
@@ -134,7 +132,6 @@ See the [cloud connection protocol](docs/connection-protocol.md) and the [agent 
 | CLI | Python 3.12+, `rich`, `questionary`, `httpx` |
 | Agent ↔ cloud tooling | [`sellerclaw-cli`](https://github.com/sellerai-com/sellerclaw-cli), bundled in the runtime image |
 | Local control plane | FastAPI, uvicorn, Pydantic v2 |
-| Admin UI | Vue 3, Vite, TypeScript, axios |
 | Agent runtime | OpenClaw, Node.js 20, KasmVNC, Playwright |
 | Process supervision | supervisord |
 | Packaging | Docker, Docker Compose |
@@ -160,7 +157,6 @@ This checks Docker, installs Python dependencies, brings up the stack, and runs 
 After startup:
 
 - Local control plane: `http://localhost:8001`
-- Admin UI: `http://localhost:5174/admin/`
 
 For installation details, environment profiles, and CLI usage, see [CLI reference](docs/cli.md).
 
@@ -168,7 +164,6 @@ For installation details, environment profiles, and CLI usage, see [CLI referenc
 
 ```text
 sellerclaw_agent/       # Python package (CLI, server, cloud client, bundle renderer)
-admin-ui/               # Vue 3 admin SPA (manifest viewer, sign-in)
 runtime/                # Dockerfile for the combined OpenClaw + agent image
 tests/                  # unit and contract tests
 docs/                   # public technical documentation
@@ -184,7 +179,6 @@ Use the documentation based on what you want to do next:
 - **[CLI reference](docs/cli.md)** — install SellerClaw Agent, set up environment profiles, sign in, and run the day-to-day commands
 - **[Cloud connection protocol](docs/connection-protocol.md)** — how the agent pairs with the SellerClaw Cloud, heartbeats, pulls commands, and reports results
 - **[Agent manifest contract](docs/contracts/agent-manifest.md)** — the wire format the SellerClaw Cloud uses to configure the OpenClaw runtime
-- **[Admin UI guide](docs/developer/admin-ui.md)** — structure of the local admin SPA, its API surface, and how to extend it
 
 A full index lives in [`docs/README.md`](docs/README.md).
 

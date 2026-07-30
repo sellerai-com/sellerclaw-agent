@@ -32,8 +32,12 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
 
+      # --locked: install exactly the committed uv.lock, and fail if it no longer matches
+      # pyproject.toml instead of silently re-resolving. Without it the committed lock is decoration:
+      # a dependency edit pushed without its lock update passes here, and a third-party release cut
+      # minutes ago can redden a run that has nothing to do with the change under test.
       - name: Install dependencies
-        run: uv sync --extra server --python ${{ matrix.python-version }}
+        run: uv sync --extra server --locked --python ${{ matrix.python-version }}
 
       - name: Ruff
         run: uv run --extra server ruff check sellerclaw_agent tests
