@@ -75,10 +75,19 @@ RUN apt-get update \
     && adduser node ssl-cert \
     && rm -rf /var/lib/apt/lists/*
 
-# Playwright is required for browser tool internals and CDP flows.
+# Playwright is required for browser tool internals and CDP flows. Resolved via NODE_PATH, so the
+# version OpenClaw picks up here must match the `playwright-core` it depends on itself — keep this ARG
+# in lockstep with the base image when OPENCLAW_TAG moves:
+#   docker run --rm --entrypoint sh ghcr.io/openclaw/openclaw:$OPENCLAW_TAG -c 'grep playwright-core /app/package.json'
+# (openclaw 2026.7.1 pins playwright-core 1.61.1 exactly, and browsers come from the base image's
+# system Chrome — hence PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD.)
+# Unpinned before: `npm install -g playwright` took whatever npm called latest at build time, so the
+# shipped version changed silently the first time the layer cache missed — a rebuild today would jump
+# to 1.62.0 (Chromium 151) while every existing image runs 1.61.1 (Chromium 149).
+ARG PLAYWRIGHT_VERSION=1.61.1
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV NODE_PATH=/usr/local/lib/node_modules
-RUN npm install -g playwright
+RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}"
 
 # gost proxy forwarder.
 RUN wget -qO- "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_linux_${TARGETARCH}.tar.gz" \
@@ -208,8 +217,11 @@ CMD ["supervisord", "-n", "-c", "/etc/supervisor/conf.d/openclaw.conf"]
 # ---- Admin UI (served by agent FastAPI from /admin) ----
 FROM node:24-alpine AS ui-build
 WORKDIR /ui
-COPY sellerclaw-agent/admin-ui/package.json sellerclaw-agent/admin-ui/package-lock.json* ./
-RUN npm install
+# `npm ci`, not `npm install`: build the shipped admin UI from exactly the committed
+# admin-ui/package-lock.json, and fail if it disagrees with package.json. This is the image users run,
+# so it must not pick up a dependency published between two builds (same rule as `uv sync --locked`).
+COPY sellerclaw-agent/admin-ui/package.json sellerclaw-agent/admin-ui/package-lock.json ./
+RUN npm ci
 COPY sellerclaw-agent/admin-ui/ ./
 RUN npm run build
 

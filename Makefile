@@ -97,7 +97,14 @@ lint:
 	$(UV) run --extra server ruff check $(LINT_PATHS)
 	$(UV) run --extra server pyright
 
-check: lint test_unit
+# Does the committed uv.lock still describe pyproject.toml? ci.yml and build-image.yml install with
+# `uv sync --locked`, so a dependency edit pushed without its lock update fails there — this catches it
+# before the push. `uv lock --check` only reports; run `uv lock` (or any `make test_unit`, which
+# re-locks on the way in) to refresh, then commit uv.lock alongside the pyproject change.
+lock-check:
+	$(UV) lock --check
+
+check: lock-check lint test_unit
 
 openclaw-skills:
 	$(DOCKER_COMPOSE) exec server bash -lc 'node openclaw.mjs skills list'
@@ -133,14 +140,22 @@ PART ?= minor
 REMOTE ?= origin
 
 # Gate every release on lint + unit tests (~20s), run against the exact tree about to be tagged.
-# build-image.yml runs NO tests — it just builds and pushes the image — so this is the only thing
-# standing between a broken commit and a published GHCR image. It is a *prerequisite* of `release`,
+# build-image.yml does gate the image on a `verify` job (ruff + pyright + unit tests on 3.12/3.13),
+# but it runs AFTER the tag exists: a failure there leaves a pushed tag with no image behind it. This
+# preflight is what keeps the tag from being cut at all. It is a *prerequisite* of `release`,
 # so it runs before anything is tagged or pushed and a failure leaves no tag behind. (Prerequisite,
 # not an in-recipe `$(MAKE)` call: make executes recipe lines that mention $(MAKE) even under `-n`,
 # which would turn a dry-run `make -n release` into a real one.)
-# Escape hatch: SKIP_CHECKS=1 (emergencies only — you are shipping untested code).
+# `lock-check` runs FIRST and is NOT skippable: ci.yml and build-image.yml install with
+# `uv sync --locked`, so a stale lock rejects the tag build no matter how urgent the release is —
+# skipping it only turns a 1-second failure into a burnt tag. Order matters inside `check` too:
+# `uv run` re-locks on the way into the tests, so a stale lock would be silently rewritten mid-release
+# and resurface as a confusing "working tree is dirty" in `release` below.
+# Escape hatch: SKIP_CHECKS=1 (emergencies only — you are shipping untested code, lock excepted).
 release-preflight:
 	@set -e; \
+	echo "release-preflight: uv.lock must match pyproject.toml (not skippable)..."; \
+	$(MAKE) --no-print-directory lock-check; \
 	if [ -n "$${SKIP_CHECKS:-}" ]; then \
 	  echo "release-preflight: SKIP_CHECKS=1 — skipping lint + unit tests. Shipping unverified."; \
 	else \
