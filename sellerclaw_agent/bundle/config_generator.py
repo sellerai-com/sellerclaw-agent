@@ -35,7 +35,12 @@ OPENCLAW_BUNDLE_LOG_LEVEL = "warn"
 OPENCLAW_BUNDLE_CONSOLE_STYLE = "pretty"
 OPENCLAW_BUNDLE_REDACT_SENSITIVE = "tools"
 
-OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 30000
+# Per-file truncation limit for workspace bootstrap files (AGENTS.md, SOUL.md, …). The
+# supervisor's assembled AGENTS.md (full roster + owner rules appended by the cloud) is the
+# largest and sat at ~34.7k before the 2026-07 template slim-down; 40k leaves room for
+# owner-authored rules without inviting unbounded prompt growth — the cloud's
+# test_assembled_bootstrap_files_fit_openclaw_limit guards the template side.
+OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 40000
 
 # Bundled OpenClaw skills allowed in every agent workspace. All other bundled skills are
 # dropped at load time; workspace/manifest skills and extra-dir skills are unaffected.
