@@ -1,6 +1,6 @@
 # `sellerclaw-agent` CLI
 
-Command-line tool for the local edge agent: it brings up the Docker stack, connects the agent to the SellerClaw cloud, and prints the Admin UI URL. **All auth traffic goes to the local Agent Server only** (not directly to the cloud) — your credentials never leave your machine without passing through the agent process first.
+Command-line tool for the local edge agent: it brings up the Docker stack and connects the agent to the SellerClaw cloud. **All auth traffic goes to the local Agent Server only** (not directly to the cloud) — your credentials never leave your machine without passing through the agent process first.
 
 This page covers installation, environments, every CLI command, and common failure modes. If you only want to get started quickly, run `./setup.sh` from the `sellerclaw-agent/` directory and come back here when something surprises you.
 
@@ -97,8 +97,7 @@ Non-secret variables live in `.env.local` / `.env.staging` / `.env.production`. 
 |----------|---------|----------------|
 | `SELLERCLAW_API_URL` | Cloud API the agent server talks to | Profile `.env.*` |
 | `SELLERCLAW_WEB_URL` | SellerClaw website that hosts the `/auth/device` verification page | Profile `.env.*` |
-| `ADMIN_URL` | Admin UI URL — used as the CORS origin for the agent HTTP API | Profile `.env.*` |
-| `SELLERCLAW_LOCAL_API_KEY` | **Incoming** Bearer for control-plane routes (`/manifest`, `/auth/*` except bootstrap, `/bundle/archive`, `/openclaw/*`, `/commands/history`, …) on port `8001` | `secrets.env` or unset (stored in `SELLERCLAW_DATA_DIR/secrets.json`; legacy `local_api_key` file is migrated once) |
+| `SELLERCLAW_LOCAL_API_KEY` | **Incoming** Bearer for control-plane routes (`/manifest`, `/auth/*`, `/bundle/archive`, `/openclaw/*`, `/commands/history`, …) on port `8001` | `secrets.env` or unset (stored in `SELLERCLAW_DATA_DIR/secrets.json`; legacy `local_api_key` file is migrated once) |
 | `AGENT_API_KEY` | **Outgoing** Bearer for the SellerClaw cloud (`/agent/connection/*`, chat SSE, etc.) — same role as the token in `agent_token.json` | `secrets.env` or sign-in |
 | `SELLERCLAW_DATA_DIR` | Where the agent stores `agent_token.json`, `secrets.json`, `edge_session.json`, manifest (and legacy `local_api_key` until migrated) | `/data` (inside the container) |
 | `SELLERCLAW_EDGE_PING` | Enable the background ping loop (cloud mode) | `1` |
@@ -112,7 +111,7 @@ See the [cloud connection protocol](./connection-protocol.md) for how the ping l
 
 | Command | Description |
 |---------|-------------|
-| `setup` | **Default** when no argument is given: `docker compose up -d --build`, wait for `GET /health`, interactive cloud sign-in, print Admin UI URL. |
+| `setup` | **Default** when no argument is given: `docker compose up -d --build`, wait for `GET /health`, interactive cloud sign-in. |
 | `start` | Start the stack only: `docker compose up -d --build` in the agent directory. |
 | `stop` | Stop the stack: `docker compose down`. |
 | `status` | Show whether the agent is connected to the cloud (`GET /auth/status`). |
@@ -183,7 +182,6 @@ How it works:
 - **Timeout waiting for the agent after setup** (`GET /health` during `setup`) — inspect logs with `docker compose logs` in `sellerclaw-agent/`. The most common causes are the server still booting (wait another 10–20 s and retry `sellerclaw-agent status`) or port `8001` being in use by another process.
 - **Agent unreachable for `login` / `status`** — run `sellerclaw-agent start` and confirm nothing else is listening on `127.0.0.1:8001`.
 - **Wrong cloud URL after switching environments** — run `docker compose down` **before** switching profiles so the container picks up the new `SELLERCLAW_API_URL`. Containers do not re-read env vars on simple restart.
-- **Admin UI at `http://localhost:5174/admin/` does not load** — confirm the `admin-ui` service is running (`docker compose ps`). If you recently added an npm dependency, rebuild with `docker compose build admin-ui && docker compose up -d admin-ui`. See [`developer/admin-ui.md`](./developer/admin-ui.md) for details.
 
 ### Cloud sign-in issues
 
@@ -209,4 +207,3 @@ This clears the stored cloud agent token, the auto-generated local API key, and 
 - [Documentation index](./README.md)
 - [Cloud connection protocol](./connection-protocol.md)
 - [Agent manifest contract](./contracts/agent-manifest.md)
-- [Admin UI](./developer/admin-ui.md)

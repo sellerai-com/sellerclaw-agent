@@ -8,7 +8,7 @@ This roadmap is **directional, not contractual**. Priorities may change as the a
 
 ## Scope
 
-This roadmap covers the **public `sellerclaw-agent` repository**: the CLI, the local FastAPI control-plane server, the bundle renderer, the admin UI, and the wire contracts the agent exposes.
+This roadmap covers the **public `sellerclaw-agent` repository**: the CLI, the local FastAPI control-plane server, the bundle renderer, and the wire contracts the agent exposes.
 
 It does not describe:
 
@@ -48,7 +48,6 @@ Focus areas include:
 - clearer first-run messages from `sellerclaw-agent setup`
 - better diagnostics when Docker is missing, stale, or misconfigured
 - cleaner failure modes for expired or invalid credentials
-- a friendlier admin UI empty state (no manifest, no cloud connection)
 - better documentation for installation, `.env*` profiles, and local operation
 
 ### 2. Stronger manifest and bundle handling
@@ -81,7 +80,7 @@ Focus areas include:
 
 - more structured logs from the ping loop and bundle renderer
 - richer `GET /openclaw/status` output
-- easier log access from the admin UI
+- easier log access from the CLI
 - better signals when the OpenClaw program misbehaves
 
 ### 5. Better contributor experience
@@ -114,7 +113,6 @@ If you want to contribute, the most helpful areas are often:
 - documentation (CLI, connection protocol, manifest contract)
 - manifest validation and error messages
 - runtime reliability and diagnostics
-- admin UI usability improvements
 - testing and developer tooling
 - small, focused bug fixes
 

@@ -25,7 +25,7 @@ SELLERCLAW_DATA_DIR/
 
 ## Agent authentication
 
-Sign-in (CLI, admin UI, or device flow) exchanges user proof for an **agent-scoped** token via cloud routes under `POST /agent/auth/*`. The agent persists that token in `agent_token.json` (or uses `AGENT_API_KEY` from the environment as an override for the same value).
+Sign-in (CLI password prompt or device flow) exchanges user proof for an **agent-scoped** token via cloud routes under `POST /agent/auth/*`. The agent persists that token in `agent_token.json` (or uses `AGENT_API_KEY` from the environment as an override for the same value).
 
 The agent sends `Authorization: Bearer <agent_token>` on every cloud request. There is **no** token refresh path: on **401** the client treats auth as invalid, clears local `agent_token.json` (and related session state where applicable), and waits until the user signs in again.
 

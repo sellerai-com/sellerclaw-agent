@@ -214,18 +214,6 @@ EXPOSE 7788 6080 6081 8001
 CMD ["supervisord", "-n", "-c", "/etc/supervisor/conf.d/openclaw.conf"]
 
 
-# ---- Admin UI (served by agent FastAPI from /admin) ----
-FROM node:24-alpine AS ui-build
-WORKDIR /ui
-# `npm ci`, not `npm install`: build the shipped admin UI from exactly the committed
-# admin-ui/package-lock.json, and fail if it disagrees with package.json. This is the image users run,
-# so it must not pick up a dependency published between two builds (same rule as `uv sync --locked`).
-COPY sellerclaw-agent/admin-ui/package.json sellerclaw-agent/admin-ui/package-lock.json ./
-RUN npm ci
-COPY sellerclaw-agent/admin-ui/ ./
-RUN npm run build
-
-
 # ---- Staging: SellerClaw agent API + OpenClaw runtime in one image ----
 FROM base AS staging
 
@@ -304,14 +292,12 @@ RUN if [ "$SELLERCLAW_CLI_SOURCE" = "local" ]; then \
     && rm -rf /tmp/local-wheels
 
 COPY sellerclaw-agent/sellerclaw_agent/ /app/sellerclaw_agent/
-COPY --from=ui-build /ui/dist /app/admin-ui/dist
 
-ENV AGENT_ADMIN_UI_DIST=/app/admin-ui/dist
 ENV OPENCLAW_BUNDLE_VOLUME_PATH=/opt/config-bundle
 ENV SELLERCLAW_EDGE_PING=1
 ENV OPENCLAW_GATEWAY_HTTP_BASE=http://127.0.0.1:7789
 
-RUN chown -R node:node /app/sellerclaw_agent /app/admin-ui
+RUN chown -R node:node /app/sellerclaw_agent
 
 COPY sellerclaw-agent/runtime/supervisord-staging.conf /etc/supervisor/conf.d/openclaw.conf
 

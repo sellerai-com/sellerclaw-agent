@@ -12,7 +12,6 @@ from sellerclaw_agent.bundle.manifest import AgentSpec, GenericManifest, ModelGr
 from sellerclaw_agent.bundle.result import BundleResult
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
 from sellerclaw_agent.cloud.settings import (
-    get_admin_url,
     get_sellerclaw_api_url,
     get_sellerclaw_web_url,
 )
@@ -43,16 +42,9 @@ def _compose_agent_api_base_url(
 
 
 def _resolve_allowed_origins() -> tuple[str, ...]:
-    candidates = (get_sellerclaw_web_url(), get_admin_url())
-    seen: set[str] = set()
-    unique: list[str] = []
-    for raw in candidates:
-        value = (raw or "").strip().rstrip("/")
-        if not value or value in seen:
-            continue
-        unique.append(value)
-        seen.add(value)
-    return tuple(unique)
+    """CORS origins for the OpenClaw gateway UI: the SellerClaw web app, when configured."""
+    value = (get_sellerclaw_web_url() or "").strip().rstrip("/")
+    return (value,) if value else ()
 
 
 # Long-term memory tools contributed by the openclaw-mem0 plugin (platform mode → the cloud
