@@ -886,6 +886,34 @@ describe("registerInboundRoute", () => {
       // block opens a new preview rather than continuing the old one.
       expect(previewTexts()).toEqual(["Working on it.", "Answer one."]);
     });
+
+    it("separates sub-messages in the preview when no final ever arrives", async () => {
+      // Regression: a run whose finals never landed (aborted, timed out, or a runtime that only
+      // block-streams) has its preview persisted by the cloud as the message body. Two separate
+      // statements were joined with a single space there — `pickDeltaJoin` cannot tell a new
+      // sub-message from a chunk cut mid-sentence — so a "starting now" note ran straight into
+      // the report of what had been done, reading as one confused paragraph.
+      const deliver = await dispatchOnce();
+      await deliver({ text: "I will take this product and start publishing." }, block(0));
+      await deliver({ text: "This will take a few minutes." }, block(0));
+      await deliver({ text: "Publishing started in every store." }, block(1));
+
+      expect(previewTexts().join("")).toBe(
+        "I will take this product and start publishing. This will take a few minutes." +
+          "\n\nPublishing started in every store.",
+      );
+    });
+
+    it("keeps joining chunks of one sub-message when the dispatcher labels none of them", async () => {
+      // An older runtime labels blocks without an index. With no boundary to read, the chunk-cut
+      // heuristic is still the best guess — the fix must not turn every unlabelled delta into its
+      // own paragraph.
+      const deliver = await dispatchOnce();
+      await deliver({ text: "a few" }, { kind: "block" });
+      await deliver({ text: "hours" }, { kind: "block" });
+
+      expect(previewTexts().join("")).toBe("a few hours");
+    });
   });
 
   describe("readDeliverPayload", () => {
