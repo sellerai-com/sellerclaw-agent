@@ -131,6 +131,9 @@ openclaw-measure-gateway-memory:
 #   make release PART=major     # bump major:  v0.7.0 -> v1.0.0
 #   make release VERSION=1.2.3  # explicit version (without leading v)
 #   make release VERSION=1.2.3-beta.1  # explicit pre-release (usually use `make release-beta`)
+# PART bumps the last STABLE tag — pre-releases are skipped on purpose: their number is not three
+# integers, so bumping the newest tag when that is v0.60.0-beta.6 would mean `patch+1` on the string
+# "0-beta". Same anchor the `release-latest` / `release-beta` wrappers use.
 # Add ALLOW_DIRTY=1 to skip the clean-working-tree check.
 # Every release path runs lint + unit tests first (`make check`) — see release-preflight below;
 # add SKIP_CHECKS=1 to bypass that gate (emergencies only).
@@ -174,7 +177,7 @@ release: release-preflight
 	if [ -n "$${VERSION:-}" ]; then \
 	  new="$$VERSION"; \
 	else \
-	  last=$$(git tag --list 'v*' --sort=-v:refname | head -n1); \
+	  last=$$(git tag --list 'v*' --sort=v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | tail -n1); \
 	  if [ -z "$$last" ]; then last="v0.0.0"; fi; \
 	  base=$${last#v}; \
 	  major=$$(echo "$$base" | cut -d. -f1); \
