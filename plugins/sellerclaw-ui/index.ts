@@ -2,6 +2,7 @@ import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { sellerclawUiChannelPlugin, setPluginConfig } from "./src/channel.js";
+import { registerCompletionDeliveryGuard } from "./src/completion-delivery.js";
 import {
   registerAbortRoute,
   registerFeasibilityCheckRoute,
@@ -22,5 +23,6 @@ export default defineChannelPluginEntry({
     registerAbortRoute(api);
     registerScheduledRunRoute(api);
     registerFeasibilityCheckRoute(api);
+    registerCompletionDeliveryGuard(api);
   },
 });

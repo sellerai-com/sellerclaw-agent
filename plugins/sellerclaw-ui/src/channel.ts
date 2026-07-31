@@ -94,6 +94,19 @@ export function looksLikeSellerclawUiTarget(raw: string): boolean {
   return SELLERCLAW_UI_DIRECT_TARGET_RE.test(raw.trim());
 }
 
+/**
+ * Same address, unanchored: session keys carry it as a suffix
+ * (``agent:<agentId>:sellerclaw-ui:direct:<chat_id>``), so lifecycle hooks — which see a
+ * session key, never a bare target — can recover the chat this run replies into.
+ */
+const SELLERCLAW_UI_SESSION_KEY_RE =
+  /sellerclaw-ui:direct:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/** Extract the ``sellerclaw-ui:direct:<chat_id>`` target embedded in a session key. */
+export function extractTargetFromSessionKey(sessionKey: string): string | null {
+  return sessionKey.match(SELLERCLAW_UI_SESSION_KEY_RE)?.[0] ?? null;
+}
+
 export function resolveSessionKey(params: Record<string, unknown>): string | null {
   const top =
     (typeof params.sessionKey === "string" && params.sessionKey) ||

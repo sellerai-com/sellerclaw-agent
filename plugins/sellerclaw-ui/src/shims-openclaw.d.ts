@@ -96,6 +96,12 @@ declare module "openclaw/plugin-sdk/core" {
         res: ServerResponse,
       ) => boolean | Promise<boolean>;
     }) => void;
+    /**
+     * Typed lifecycle hook registration. Present only when the plugin is loaded in "full"
+     * registration mode, hence optional — callers must feature-check before using it.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    on?: (hookName: string, handler: (event: any, ctx?: any) => any, opts?: unknown) => void;
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
