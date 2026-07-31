@@ -500,7 +500,16 @@ def generate_openclaw_config(
             ],
             "load": {"paths": plugin_load_paths},
             "entries": {
-                "sellerclaw-ui": {"enabled": True, "config": sellerclaw_ui_plugin_config},
+                "sellerclaw-ui": {
+                    "enabled": True,
+                    # Path-loaded (non-bundled) plugin: OpenClaw blocks its conversation-access
+                    # hooks unless we opt in. Without this the ``before_agent_finalize`` guard is
+                    # silently dropped at load, and a completion run that answers with plain text
+                    # instead of the ``message`` tool goes back to posting the subagent's raw
+                    # internal envelope into the owner's chat.
+                    "hooks": {"allowConversationAccess": True},
+                    "config": sellerclaw_ui_plugin_config,
+                },
                 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID: {"enabled": True},
                 **(
                     {web_search_plugin_id: web_search_plugin_entry}

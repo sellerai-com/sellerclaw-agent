@@ -37,6 +37,14 @@ ENV PYTHONUNBUFFERED=1
 ENV OPENCLAW_NODE_MAX_OLD_SPACE_SIZE_MB=2560
 # Extra cgroup startup logging; default off, turn on for capacity debugging.
 ENV OPENCLAW_DIAGNOSTICS=0
+# Output an `exec` command may return once it has been backgrounded. OpenClaw defaults this to
+# 30k chars while a command that finishes in the foreground may return 200k — so the same command
+# silently loses data for taking a few seconds longer, and it loses it from the *front*: the cap
+# keeps the tail, so JSON arrives starting mid-object. Worse, the truncation notice is only
+# printed when nothing at all survived, so an agent reading a clipped response cannot tell.
+# Matching the foreground cap removes the surprise. Polling drains the buffer, so a larger cap
+# does not multiply cost across polls — it only stops discarding.
+ENV OPENCLAW_BASH_PENDING_MAX_OUTPUT_CHARS=200000
 
 USER root
 
