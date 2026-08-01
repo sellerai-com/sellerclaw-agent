@@ -208,33 +208,63 @@ release: release-preflight
 #                         #   moves the :beta image tag, never touches :latest
 #   make release-latest   # from main -> X.Y.Z        (stable):      "Latest" on GitHub, moves :latest
 #
-# Both share one "base" = the last STABLE tag bumped by PART (minor by default; PART=patch|major).
-# release-beta cuts pre-releases for that base (-beta.1, -beta.2, …); release-latest finalizes it to
-# the clean X.Y.Z. Typical flow: `make release-beta` on dev (repeat) → `make release-latest` on main.
+# Both work toward one "base" version. Normally that is the last STABLE tag bumped by PART (minor by
+# default; PART=patch|major): release-beta cuts pre-releases for it (-beta.1, -beta.2, …) and
+# release-latest finalizes it to the clean X.Y.Z. Typical flow: `make release-beta` on dev (repeat) →
+# `make release-latest` on main.
+#
+# The exception is an OPEN beta line, which both targets follow instead of bumping: betas already cut
+# for a base that still outranks every stable tag. Following it is what makes PART a one-time choice
+# instead of something you must retype forever — `make release-beta PART=major` opens 2.0.0-beta.1,
+# and a plain `make release-beta` the next day continues that line (2.0.0-beta.2) rather than dropping
+# back to 1.1.0-beta.1, a *lower* version than the beta already published.
+#
+# A line stays open only while its base outranks the newest stable release — not merely while its own
+# vX.Y.Z tag is missing. Both endings close it: its own stable tag (v0.60.0 closes the 0.60.0-beta.N
+# line) and a later release that jumped over it (v1.0.0 closes the still-unreleased 0.61.0-beta.N
+# line). Once closed, the next beta opens a fresh line off the newest stable, so a superseded
+# pre-release can never be cut — appending -beta.2 to a line that 1.0.0 already overtook would publish
+# a build that is dead on arrival. When the repo has only beta tags and no stable one at all, the open
+# line is followed as usual instead of falling back to v0.0.0.
 # Delegates to `release`, which does all the tag pushing.
 release-latest release-beta:
 	@set -eu; \
 	git fetch --tags --quiet $(REMOTE); \
 	last_stable=$$(git tag --list 'v*' --sort=v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | tail -n1); \
 	if [ -z "$$last_stable" ]; then last_stable="v0.0.0"; fi; \
-	b=$${last_stable#v}; \
-	major=$$(echo "$$b" | cut -d. -f1); \
-	minor=$$(echo "$$b" | cut -d. -f2); \
-	patch=$$(echo "$$b" | cut -d. -f3); \
-	case "$(PART)" in \
-	  major) base="$$((major+1)).0.0" ;; \
-	  minor) base="$$major.$$((minor+1)).0" ;; \
-	  patch) base="$$major.$$minor.$$((patch+1))" ;; \
-	  *) echo "Unknown PART=$(PART) (use major|minor|patch)" >&2; exit 1 ;; \
-	esac; \
+	stable=$${last_stable#v}; \
+	base=""; \
+	latest_beta=$$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$$' | head -n1); \
+	if [ -n "$$latest_beta" ]; then \
+	  beta_base=$${latest_beta#v}; beta_base=$${beta_base%-beta.*}; \
+	  if [ "$$beta_base" != "$$stable" ] && \
+	     [ "$$(printf '%s\n%s\n' "$$beta_base" "$$stable" | sort -V | tail -n1)" = "$$beta_base" ]; then \
+	    base="$$beta_base"; \
+	    echo "$@: open beta line $$base (latest $$latest_beta, ahead of stable $$last_stable)."; \
+	  else \
+	    echo "$@: beta line $$beta_base is closed by stable $$last_stable — opening the next line."; \
+	  fi; \
+	fi; \
+	if [ -z "$$base" ]; then \
+	  major=$$(echo "$$stable" | cut -d. -f1); \
+	  minor=$$(echo "$$stable" | cut -d. -f2); \
+	  patch=$$(echo "$$stable" | cut -d. -f3); \
+	  case "$(PART)" in \
+	    major) base="$$((major+1)).0.0" ;; \
+	    minor) base="$$major.$$((minor+1)).0" ;; \
+	    patch) base="$$major.$$minor.$$((patch+1))" ;; \
+	    *) echo "Unknown PART=$(PART) (use major|minor|patch)" >&2; exit 1 ;; \
+	  esac; \
+	  echo "$@: base $$base (PART=$(PART) from last stable $$last_stable)."; \
+	fi; \
 	if [ "$@" = "release-beta" ]; then \
 	  n=$$(git tag --list "v$${base}-beta.*" | grep -oE '[0-9]+$$' | sort -n | tail -n1); \
 	  if [ -z "$$n" ]; then n=0; fi; \
 	  new="$${base}-beta.$$((n+1))"; \
-	  echo "release-beta: base $$base (from last stable $$last_stable) -> pre-release $$new"; \
+	  echo "release-beta: -> pre-release $$new"; \
 	  $(MAKE) --no-print-directory release VERSION="$$new"; \
 	else \
-	  echo "release-latest: finalizing base $$base (from last stable $$last_stable) -> stable $$base"; \
+	  echo "release-latest: -> stable $$base"; \
 	  $(MAKE) --no-print-directory release VERSION="$$base"; \
 	fi
 

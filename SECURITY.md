@@ -106,13 +106,14 @@ If your report touches both this repository and a broader product concern, pleas
 
 `sellerclaw-agent` is designed to run as a local self-hosted stack on a user's own machine. Even so, operators and contributors should follow basic security practices such as:
 
+- reading the installer before running it, if piping a script into a shell is not something you do lightly: `curl -fsSL https://get.sellerclaw.ai/agent.sh -o agent.sh`, read it (the same file is committed here as `install.sh`), then `sh agent.sh`
 - keeping `AGENT_API_KEY` and cloud tokens out of git
 - never committing `data/agent_token.json`, `data/secrets.json`, `data/local_api_key`, or `data/edge_session.json`
 - using strong local credentials for cloud accounts
 - avoiding exposing the agent's control-plane port (`8001` by default) to the public network (compose binds it to `127.0.0.1` by default)
 - understanding that every control-plane route on `8001` (all of them except `GET /health`) requires the local API key: the agent never hands that key out over HTTP, so keep `secrets.json` readable only by the account running the stack
 - keeping `SELLERCLAW_LOCAL_API_KEY` and other secrets in `secrets.env` (gitignored), not in committed `.env.*` profile files
-- pinning a known runtime image tag (`SELLERCLAW_AGENT_IMAGE`) instead of tracking `latest` in production
+- pinning a known runtime image version instead of tracking `latest` in production — `curl -fsSL https://get.sellerclaw.ai/agent.sh | sh -s -- --version X.Y.Z` for the one-command install, `SELLERCLAW_AGENT_IMAGE` for a compose/managed deploy
 - reviewing integration credentials carefully before adding them to a manifest
 - keeping Docker, Compose, and local tooling reasonably up to date
 
