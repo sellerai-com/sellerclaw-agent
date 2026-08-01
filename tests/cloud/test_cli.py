@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -9,13 +10,16 @@ import pytest
 from rich.console import Console
 from sellerclaw_agent.cli import (
     _clear_local_control_plane_key_cache,
+    _cli_hint,
     _compose_env_file_args,
     _compose_profile_env_file,
     _connect_password,
     _device_flow,
     _diagnose_compose_failure,
     _ensure_local_api_key,
+    _interactive_auth,
     _local_control_plane_auth_headers,
+    _local_data_dir,
     _require_agent_env,
     _wait_for_cloud_live,
     agent_base_url,
@@ -437,3 +441,114 @@ def test_wait_for_cloud_live_tolerates_health_errors(
     )
     assert ok is True
     assert calls["n"] >= 2
+
+
+# ---------------------------------------------------------------------------
+# Running the CLI from inside the runtime image (one-command install)
+# ---------------------------------------------------------------------------
+
+def test_local_data_dir_follows_the_container_data_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Inside the image the package sits at /app while the volume is elsewhere."""
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path / "volume"))
+    assert _local_data_dir(Path("/app")) == tmp_path / "volume"
+
+
+def test_local_data_dir_falls_back_to_the_checkout_layout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("SELLERCLAW_DATA_DIR", raising=False)
+    assert _local_data_dir(tmp_path) == tmp_path / "data"
+
+
+def test_ensure_local_api_key_reads_the_container_data_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The secrets file the server wrote must be the one the CLI reads — not a second one."""
+    monkeypatch.delenv("SELLERCLAW_LOCAL_API_KEY", raising=False)
+    monkeypatch.delenv("SELLERCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("SELLERCLAW_HOOKS_TOKEN", raising=False)
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    (volume / "local_api_key").write_text("container-bearer\n", encoding="utf-8")
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(volume))
+
+    assert _ensure_local_api_key(Path("/app")) == "container-bearer"
+    assert not (Path("/app") / "data").exists()
+
+
+@pytest.mark.parametrize(
+    ("has_compose_file", "expected"),
+    [
+        pytest.param(True, "./setup.sh start", id="repo-checkout"),
+        pytest.param(False, "sellerclaw-agent start", id="one-command-install"),
+    ],
+)
+def test_cli_hint_matches_the_install_type(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    has_compose_file: bool,
+    expected: str,
+) -> None:
+    if has_compose_file:
+        (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr("sellerclaw_agent.cli.agent_root", lambda: tmp_path)
+
+    assert _cli_hint("start") == expected
+
+
+def test_browser_only_auth_skips_the_menu_and_the_local_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`docker exec` has no menu to answer and no desktop browser to open."""
+    calls: dict[str, object] = {}
+
+    def _fake_device_flow(_console: Console, base_url: str, *, open_browser: bool = True) -> None:
+        calls["base_url"] = base_url
+        calls["open_browser"] = open_browser
+
+    def _explode(*_args: object, **_kwargs: object) -> str:
+        msg = "the sign-in menu must not be shown in browser-only mode"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr("sellerclaw_agent.cli._device_flow", _fake_device_flow)
+    monkeypatch.setattr("sellerclaw_agent.cli._select_option", _explode)
+
+    _interactive_auth(Console(record=True), "http://127.0.0.1:8001", browser_only=True)
+
+    assert calls == {"base_url": "http://127.0.0.1:8001", "open_browser": False}
+
+
+def test_main_login_browser_flag_reaches_the_auth_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def _fake_cmd_login(_console: Console, *, browser_only: bool = False) -> int:
+        seen["browser_only"] = browser_only
+        return 0
+
+    monkeypatch.setattr("sellerclaw_agent.cli.cmd_login", _fake_cmd_login)
+    monkeypatch.setattr(sys, "argv", ["sellerclaw-agent", "login", "--browser"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 0
+    assert seen == {"browser_only": True}
+
+
+def test_module_entry_point_runs_the_cli() -> None:
+    """`python -m sellerclaw_agent` is how the installed wrapper reaches the CLI."""
+    result = subprocess.run(
+        [sys.executable, "-m", "sellerclaw_agent", "help"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "login" in result.stdout

@@ -8,7 +8,11 @@ For a product overview, see the top-level [`README`](../README.md). The pages he
 
 Start here if you want to install SellerClaw Agent on your own machine and pair it with your SellerClaw account.
 
-- **[CLI — installation and usage](./cli.md)** — install SellerClaw Agent, understand `.env.local` / `.env.staging` / `.env.production` profiles and `secrets.env`, run `setup` / `login` / `status`, build the runtime image, and troubleshoot the most common first-run failures.
+```bash
+curl -fsSL https://get.sellerclaw.ai/agent.sh | sh
+```
+
+- **[CLI — installation and usage](./cli.md)** — the one-command install and the `sellerclaw-agent` command it gives you, the contributor path that builds the image from source, `.env.local` / `.env.staging` / `.env.production` profiles and `secrets.env`, `setup` / `login` / `status`, and the most common first-run failures.
 
 ## Integrate with the agent
 
@@ -29,4 +33,4 @@ See the top-level [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the contribution w
 
 - **Local control plane (agent HTTP API):** `http://localhost:8001` — fixed, published from the container in `docker-compose.yml`
 - **OpenClaw gateway:** `:7788` inside the container, supervised alongside the agent server
-- **On-disk state:** `agent_token.json`, `local_api_key`, and `edge_session.json` under `SELLERCLAW_DATA_DIR` (defaults to `/data` inside the container, bind-mounted to `./data` on the host)
+- **On-disk state:** `agent_token.json`, `local_api_key`, and `edge_session.json` under `SELLERCLAW_DATA_DIR` (`/data` inside the container — the `sellerclaw-agent-data` volume for a one-command install, the bind-mounted `./data` directory in a checkout)

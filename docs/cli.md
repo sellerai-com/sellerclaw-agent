@@ -1,20 +1,79 @@
 # `sellerclaw-agent` CLI
 
-Command-line tool for the local edge agent: it brings up the Docker stack and connects the agent to the SellerClaw cloud. **All auth traffic goes to the local Agent Server only** (not directly to the cloud) — your credentials never leave your machine without passing through the agent process first.
+Command-line tool for the local edge agent: it brings up the runtime and connects the agent to the SellerClaw cloud. **All auth traffic goes to the local Agent Server only** (not directly to the cloud) — your credentials never leave your machine without passing through the agent process first.
 
-This page covers installation, environments, every CLI command, and common failure modes. If you only want to get started quickly, run `./setup.sh` from the `sellerclaw-agent/` directory and come back here when something surprises you.
+This page covers both installation paths, environments, every command, and common failure modes.
 
-## Requirements
+There are two ways to run the agent, and they differ in exactly one thing — where the image comes from:
+
+| | Install (users) | From source (contributors) |
+|---|---|---|
+| Command | `curl -fsSL https://get.sellerclaw.ai/agent.sh \| sh` | `./setup.sh` in a checkout |
+| Image | downloaded from GHCR | built locally from `runtime/Dockerfile` |
+| Needs on the host | Docker | Docker + Compose v2, Python 3.12+, uv, the repo |
+| Runs the container with | `docker run` | `docker compose` |
+| Day-to-day commands | `sellerclaw-agent …` | `./setup.sh …` |
+
+Both end up running the same image, talk to the same control plane on `127.0.0.1:8001`, and use the same sign-in flow.
+
+## Install (one command)
+
+```bash
+curl -fsSL https://get.sellerclaw.ai/agent.sh | sh
+```
+
+The script checks the machine (Linux or macOS, x86_64 or arm64, more than 2 GB of RAM), installs Docker if it is missing, downloads `ghcr.io/sellerai-com/sellerclaw-agent:latest`, starts the container, writes the `sellerclaw-agent` command, and runs the browser sign-in.
+
+To read it before running it: `curl -fsSL https://get.sellerclaw.ai/agent.sh -o agent.sh`, read, then `sh agent.sh`. The same file lives in this repository as [`install.sh`](../install.sh).
+
+Options:
+
+| Option | Effect |
+|---|---|
+| `--version X.Y.Z` | Install a specific version instead of the latest release. |
+| `--beta` | Install the current pre-release build (the `:beta` tag). |
+| `--env staging` \| `local` | Point the agent at a non-production SellerClaw cloud. |
+| `--yes` | Answer yes to every question — required when there is no terminal. |
+| `--no-login` | Start the agent but skip sign-in (do it later with `sellerclaw-agent login`). |
+| `--dry-run` | Print the exact docker commands without running anything. |
+| `--uninstall` | Remove the container and the `sellerclaw-agent` command. |
+| `--purge` | With `--uninstall`: also delete the data volume (sign-in is lost). |
+
+What it creates:
+
+- container `sellerclaw-agent`, restart policy `unless-stopped`, ports published on loopback only (`127.0.0.1:8001` control plane, `127.0.0.1:6080` the agent's browser view);
+- volume `sellerclaw-agent-data` mounted at `/data` — the account token and local secrets, which is why an upgrade never asks you to sign in again;
+- `~/.local/bin/sellerclaw-agent` — a thin wrapper around `docker`, plus a copy of the installer under `~/.sellerclaw-agent/`.
+
+OpenClaw's own state directory is deliberately *not* a volume: it ships inside the image, and a stale copy would shadow the plugins and extensions of a newer version. Sessions and memory come back from the cloud state backup on the next start, exactly like a managed agent.
+
+### Day-to-day commands
+
+```bash
+sellerclaw-agent status      # connected to your account?
+sellerclaw-agent login       # sign in (prints a code and a link)
+sellerclaw-agent logout      # disconnect this agent from the account
+sellerclaw-agent logs 200    # follow the container log
+sellerclaw-agent stop|start|restart
+sellerclaw-agent browser     # where to watch the agent's browser
+sellerclaw-agent version     # installed agent version
+sellerclaw-agent update      # pull the newest image and recreate the container
+sellerclaw-agent uninstall   # remove it (add --purge to delete stored data too)
+```
+
+`status`, `login` and `logout` run the very CLI documented below — inside the container, through `docker exec`, so the host needs no Python.
+
+## Run from source (contributors)
+
+Requirements:
 
 - **Docker** and **Docker Compose v2** (`docker compose version` must succeed). On macOS, install/start Docker Desktop.
 - **Python 3.12+** (only for running the CLI itself; the agent services run inside Docker).
 - **Combined runtime image** — `docker compose` builds a single image (OpenClaw browser stack + SellerClaw agent) from `runtime/Dockerfile` target `staging`.
 
-For normal local use the image is built automatically on first run. If you want to pre-build or publish your own copy, see [Building the runtime image](#building-the-runtime-image) below.
+The image is built automatically on first run. To pre-build or publish your own copy, see [Building the runtime image](#building-the-runtime-image) below.
 
 Optional: set `OPENCLAW_RUNTIME_IMAGE` to a tag for display in `GET /openclaw/status`.
-
-## Quick start
 
 One command from the `sellerclaw-agent/` directory:
 
@@ -115,11 +174,17 @@ See the [cloud connection protocol](./connection-protocol.md) for how the ping l
 | `start` | Start the stack only: `docker compose up -d --build` in the agent directory. |
 | `stop` | Stop the stack: `docker compose down`. |
 | `status` | Show whether the agent is connected to the cloud (`GET /auth/status`). |
-| `login` | Sign in to the cloud (server must be running): up to 15 s wait for the agent, then the same interactive flow as `setup`. |
+| `login` | Sign in to the cloud (server must be running): up to 15 s wait for the agent, then the same interactive flow as `setup`. `login --browser` skips the menu and signs in by link. |
 | `logout` | Clear stored cloud credentials on the agent (`POST /auth/disconnect`). |
 | `help` | Short help. Same idea: `-h`, `--help`, `help`. |
 
 Unknown command: exit code `2`.
+
+`setup`, `start` and `stop` drive `docker compose` and therefore only work in a checkout. The rest work anywhere the CLI can reach the control plane — including inside the container, which is how the one-command install runs them:
+
+```bash
+docker exec -w /app sellerclaw-agent python -m sellerclaw_agent status
+```
 
 ## Signing in to the cloud (interactive)
 
@@ -127,6 +192,8 @@ For `setup` or `login` you can choose:
 
 1. **Email and password** — sent to the local agent at `POST /auth/connect`; the agent talks to the cloud.
 2. **Browser (device flow)** — the agent requests codes (`POST /auth/device/start`); the terminal shows the user code and verification link; the CLI polls `GET /auth/device/poll?device_code=...` until success or timeout. In the browser, sign in to SellerClaw and approve the device.
+
+`login --browser` goes straight to the second option and never opens a browser locally — the path taken when the CLI runs inside the container, where there is no menu to answer and the only browser is the agent's own.
 
 ## Where the CLI looks for `docker-compose.yml`
 
@@ -190,9 +257,23 @@ How it works:
 - **`502` during sign-in** — the agent could reach the cloud but the cloud returned a bad upstream response. Usually transient; retry after a minute.
 - **Repeated `agent_session_invalidated`** — another agent instance is signed in with the same account. Either log out from the other device or accept that only the newest session survives (this is by design — see the [connection protocol](./connection-protocol.md#session-lifecycle)).
 
+### One-command install specifics
+
+- **`no matching manifest for linux/arm64`** — that version predates the arm64 builds. Install a newer one (`--version X.Y.Z`) or the latest release.
+- **`sellerclaw-agent: command not found` right after installing** — `~/.local/bin` is not on your `PATH` (the installer warns about this). Add it, or call the full path `~/.local/bin/sellerclaw-agent`.
+- **Nothing to ask on: `--yes` required** — the script was piped into `sh` with no terminal available (a provisioning script, CI). Re-run it with `--yes`: `curl -fsSL https://get.sellerclaw.ai/agent.sh | sh -s -- --yes`.
+- **Upgrading** — `sellerclaw-agent update` re-runs the installer with the flags of the original install. The data volume is kept, so no second sign-in.
+
 ### Wiping local state
 
-If you want to start completely over:
+Installed with one command:
+
+```bash
+sellerclaw-agent uninstall --purge
+curl -fsSL https://get.sellerclaw.ai/agent.sh | sh
+```
+
+From a checkout:
 
 ```bash
 docker compose down
@@ -200,7 +281,7 @@ rm -rf data/agent_token.json data/secrets.json data/local_api_key data/edge_sess
 ./setup.sh
 ```
 
-This clears the stored cloud agent token, the auto-generated local API key, and the current session ID so the next `setup` registers a fresh session.
+Either way this clears the stored cloud agent token, the auto-generated local API key, and the current session ID, so the next start registers a fresh session.
 
 ## See also
 

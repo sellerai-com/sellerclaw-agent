@@ -104,11 +104,27 @@ jobs:
       - name: Unit tests
         run: uv run --extra server python -m pytest tests -m unit
 
+  # One job per architecture, each on a runner of that architecture. The alternative —
+  # a single job emitting both platforms — would build arm64 under QEMU, where the Node,
+  # Playwright and apt steps in runtime/Dockerfile take hours. Native ARM runners are free
+  # for public repositories, so both halves build at roughly the same speed and in parallel.
+  # Each half pushes an untagged image identified by its digest; `merge` then joins them
+  # into one multi-platform tag. No tag ever points at a half-built pair.
   build:
-    name: Build server image
+    name: Build server image (${{ matrix.platform }})
     needs: [resolve, verify]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - name: Checkout (into sellerclaw-agent/)
         uses: actions/checkout@v5
@@ -130,57 +146,118 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: sellerclaw-agent/runtime/Dockerfile
           target: staging
-          push: true
+          platforms: ${{ matrix.platform }}
           build-args: |
             SELLERCLAW_AGENT_VERSION=${{ needs.resolve.outputs.version }}
-          # Always tag the exact version. The rolling tag depends on the channel: a stable
-          # release moves `:latest`; a pre-release moves `:beta` and never touches `:latest`,
-          # so a dev beta can't overwrite the image production pulls.
-          tags: |
-            ${{ needs.resolve.outputs.image }}:${{ needs.resolve.outputs.version }}
-            ${{ needs.resolve.outputs.prerelease == 'true' && format('{0}:beta', needs.resolve.outputs.image) || format('{0}:latest', needs.resolve.outputs.image) }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
-          cache-from: type=registry,ref=${{ needs.resolve.outputs.image }}:cache
-          cache-to: type=registry,ref=${{ needs.resolve.outputs.image }}:cache,mode=max
+          outputs: type=image,name=${{ needs.resolve.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          # Per-architecture cache refs: one shared ref would have each build overwrite the
+          # other's layers and neither would ever hit.
+          cache-from: type=registry,ref=${{ needs.resolve.outputs.image }}:cache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ needs.resolve.outputs.image }}:cache-${{ matrix.arch }},mode=max
 
-      - name: Write image info to job summary
+      - name: Export digest
         shell: bash
         run: |
           set -euo pipefail
-          image="${{ needs.resolve.outputs.image }}"
-          version="${{ needs.resolve.outputs.version }}"
+          mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
-          if [[ "${{ needs.resolve.outputs.prerelease }}" == "true" ]]; then
-            rolling="beta"
-          else
-            rolling="latest"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish multi-platform tags
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        id: manifest
+        shell: bash
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          # Always tag the exact version. The rolling tag depends on the channel: a stable
+          # release moves `:latest`; a pre-release moves `:beta` and never touches `:latest`,
+          # so a dev beta can't overwrite the image production pulls.
+          if [[ "$PRERELEASE" == "true" ]]; then rolling="beta"; else rolling="latest"; fi
+          # Guard against publishing a single-arch tag if a matrix leg silently produced nothing.
+          count="$(ls -1 | wc -l)"
+          if [[ "$count" -ne 2 ]]; then
+            echo "Expected 2 per-architecture digests, found ${count}" >&2
+            exit 1
           fi
-          package_name="${image##*/}"
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:${rolling}" \
+            $(printf "${IMAGE}@sha256:%s " *)
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "rolling=${rolling}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Write image info to job summary
+        shell: bash
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          ROLLING: ${{ steps.manifest.outputs.rolling }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          package_name="${IMAGE##*/}"
           owner="${GITHUB_REPOSITORY%%/*}"
           package_url="https://github.com/${owner}/${GITHUB_REPOSITORY#*/}/pkgs/container/${package_name}"
           {
             echo "## GHCR image"
             echo ""
-            echo "- Image: \`${image}:${version}\`"
-            echo "- Also tagged: \`${image}:${rolling}\`"
-            echo "- Digest: \`${digest}\`"
-            echo "- Pull: \`docker pull ${image}:${version}\`"
+            echo "- Image: \`${IMAGE}:${VERSION}\` (linux/amd64 + linux/arm64)"
+            echo "- Also tagged: \`${IMAGE}:${ROLLING}\`"
+            echo "- Digest: \`${DIGEST}\`"
+            echo "- Pull: \`docker pull ${IMAGE}:${VERSION}\`"
             echo "- Registry: ${package_url}"
           } >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Create GitHub release
-    needs: [resolve, build]
+    needs: [resolve, merge]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -222,11 +299,23 @@ jobs:
           fi
           notes_file="$(mktemp)"
           {
+            echo "## Install"
+            echo ""
+            echo "\`\`\`bash"
+            if [[ "${PRERELEASE}" == "true" ]]; then
+              echo "curl -fsSL https://get.sellerclaw.ai/agent.sh | sh -s -- --version ${VERSION}"
+            else
+              echo "curl -fsSL https://get.sellerclaw.ai/agent.sh | sh"
+            fi
+            echo "\`\`\`"
+            echo ""
+            echo "Already installed? \`sellerclaw-agent update\`."
+            echo ""
             echo "## Docker image"
             echo ""
             echo "${channel_note}"
             echo ""
-            echo "Published to GHCR: [\`${IMAGE}:${VERSION}\`](${package_url})"
+            echo "Published to GHCR for linux/amd64 and linux/arm64: [\`${IMAGE}:${VERSION}\`](${package_url})"
             echo ""
             echo "\`\`\`bash"
             echo "docker pull ${IMAGE}:${VERSION}"

@@ -29,6 +29,29 @@ It lets you run the OpenClaw agent that powers SellerClaw on your own computer o
 
 In other words, SellerClaw Agent moves only the runtime to your hardware. The product experience does not change.
 
+## Install
+
+```bash
+curl -fsSL https://get.sellerclaw.ai/agent.sh | sh
+```
+
+That is the whole installation. The script checks the machine, installs Docker if it is missing, downloads the prebuilt runtime image, starts it, and prints a code to confirm in your browser — after which the agent is paired with your SellerClaw account. There is nothing to clone and nothing to build; the CLI, OpenClaw, the browser and `sellerclaw-cli` all live inside the image.
+
+You need Docker-capable hardware with more than 2 GB of RAM, on Linux or macOS (x86_64 or Apple Silicon).
+
+Then manage it with the `sellerclaw-agent` command:
+
+```bash
+sellerclaw-agent status     # is it connected to your account?
+sellerclaw-agent logs       # follow what it is doing
+sellerclaw-agent update     # move to the latest version
+sellerclaw-agent uninstall  # remove it from this machine
+```
+
+Prefer to read before you run? `curl -fsSL https://get.sellerclaw.ai/agent.sh -o agent.sh`, read it, then `sh agent.sh`. Building the image from source is the contributor path — see [CLI reference](docs/cli.md).
+
+Finally, open **Settings → Hosting** in the web panel and switch to self-hosted, so your tasks run on this machine.
+
 > **Status:** SellerClaw Agent is already working and open for experimentation. The CLI and public wire contracts are stable; the internal structure continues to evolve.
 
 ## What SellerClaw Agent Is
@@ -70,7 +93,7 @@ Key advantages include:
 - **No managed-runtime hosting fee** — you bring the compute (a laptop, a desktop, a home server, a small VPS) and skip the hosting portion of a SellerClaw plan
 - **Safe local execution** — the agent runs in Docker, with no access to the host system and no inbound network exposure
 - **Outbound-only pairing** — no public IP, no port forwarding, no tunnels; the agent connects out to SellerClaw and pulls work
-- **One-command onboarding** — `./setup.sh` checks Docker, builds the stack, signs you in, and starts the runtime
+- **One-command onboarding** — a single `curl … | sh` pulls the prebuilt image, starts the runtime and signs you in; no checkout, no build, no Python on the host
 - **Local control and inspection** — `sellerclaw-agent status`, container logs, and a documented HTTP control plane for checking the manifest and the OpenClaw runtime during installation and debugging
 - **Open wire contracts** — the cloud connection protocol and the manifest format are public, so the runtime is inspectable and extensible
 
@@ -138,27 +161,23 @@ See the [cloud connection protocol](docs/connection-protocol.md) and the [agent 
 | Tooling | uv |
 | Quality | pytest, ruff, pyright |
 
-## Quick Start
+## Running From Source (contributors)
 
-### Prerequisites
+Users install the released image with the one-liner at the top of this page. Building the runtime from this checkout is the contributor path — it compiles the image locally from `runtime/Dockerfile` instead of downloading it.
 
-- Docker + Docker Compose v2
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
-
-### Run locally
+Prerequisites: Docker + Docker Compose v2, Python 3.12+, [uv](https://docs.astral.sh/uv/).
 
 ```bash
+git clone https://github.com/sellerai-com/sellerclaw-agent.git
+cd sellerclaw-agent
 ./setup.sh
 ```
 
-This checks Docker, installs Python dependencies, brings up the stack, and runs the interactive SellerClaw sign-in — all in one step.
+This checks Docker, installs Python dependencies, builds and brings up the stack, and runs the interactive SellerClaw sign-in.
 
-After startup:
+After startup the local control plane answers on `http://localhost:8001`.
 
-- Local control plane: `http://localhost:8001`
-
-For installation details, environment profiles, and CLI usage, see [CLI reference](docs/cli.md).
+For environment profiles, every CLI command, and common failure modes, see [CLI reference](docs/cli.md).
 
 ## Repository Structure
 
@@ -167,9 +186,10 @@ sellerclaw_agent/       # Python package (CLI, server, cloud client, bundle rend
 runtime/                # Dockerfile for the combined OpenClaw + agent image
 tests/                  # unit and contract tests
 docs/                   # public technical documentation
-docker-compose.yml      # local stack
+docker-compose.yml      # local stack (source build)
 Makefile                # common tasks
-setup.sh                # one-shot onboarding script
+install.sh              # what get.sellerclaw.ai/agent.sh serves — the user-facing installer
+setup.sh                # contributor onboarding script (builds the image from this checkout)
 ```
 
 ## Documentation

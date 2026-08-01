@@ -86,16 +86,32 @@ def _compose_env_file_args(agent_dir: Path) -> list[str]:
     return ["--env-file", str(_compose_profile_env_file(agent_dir))]
 
 
+def _local_data_dir(agent_dir: Path) -> Path:
+    """Directory holding ``secrets.json``.
+
+    Two installs, two layouts:
+
+    * repo checkout — ``<agent_dir>/data``, the host side of the compose bind mount, so the
+      CLI on the host and the server in the container read the very same file;
+    * one-command install — the CLI runs *inside* the container (``docker exec``), where the
+      package lives at ``/app`` and the data volume is mounted elsewhere. ``SELLERCLAW_DATA_DIR``
+      (``/data``, set by the image/run command) is then the only correct answer; deriving the
+      path from the package location would create a second, empty secrets file and every
+      control-plane call would 401.
+    """
+    env_dir = (os.environ.get("SELLERCLAW_DATA_DIR") or "").strip()
+    return Path(env_dir) if env_dir else agent_dir / "data"
+
+
 def _ensure_local_api_key(agent_dir: Path) -> str:
     """Return the local control-plane API key (same rules as the agent ``secrets.json`` flow).
 
-    Delegates to ``load_or_create_secrets`` under ``<agent_dir>/data`` so host and container
+    Delegates to ``load_or_create_secrets`` under :func:`_local_data_dir` so CLI and server
     share ``secrets.json`` (and migrate legacy ``local_api_key`` once).
     """
     from sellerclaw_agent.server.secrets_store import load_or_create_secrets
 
-    data_dir = agent_dir / "data"
-    return load_or_create_secrets(data_dir).local_api_key
+    return load_or_create_secrets(_local_data_dir(agent_dir)).local_api_key
 
 
 def _local_control_plane_auth_headers(base_url: str) -> dict[str, str]:
@@ -123,6 +139,22 @@ def agent_root() -> Path:
 def agent_base_url() -> str:
     """Base URL of the Agent Server (mapped host port in docker-compose)."""
     return "http://127.0.0.1:8001"
+
+
+def _installed_from_repo() -> bool:
+    """True for a git checkout, False for the one-command install.
+
+    ``docker-compose.yml`` sits next to the package in the repo and is absent from the
+    runtime image, where the CLI is reached through ``docker exec`` by the
+    ``sellerclaw-agent`` wrapper that ``install.sh`` writes.
+    """
+    return (agent_root() / "docker-compose.yml").is_file()
+
+
+def _cli_hint(command: str = "") -> str:
+    """How to invoke this CLI, phrased for the way it was installed."""
+    prefix = "./setup.sh" if _installed_from_repo() else "sellerclaw-agent"
+    return f"{prefix} {command}".rstrip()
 
 
 _QUESTIONARY_STYLE = (
@@ -204,8 +236,15 @@ def _confirm(console: Console, question: str, *, default: bool = True) -> bool:
 
 
 def _active_env_label() -> str:
-    """Human-readable label for the current ``AGENT_ENV`` (never guesses a default)."""
-    return (os.environ.get("AGENT_ENV") or "").strip() or "<unset>"
+    """Human-readable label for the current environment (never guesses a default).
+
+    Repo checkout: the ``AGENT_ENV`` profile name. One-command install: there are no
+    profile files at all, so name the cloud the container is actually pointed at.
+    """
+    profile = (os.environ.get("AGENT_ENV") or "").strip()
+    if profile:
+        return profile
+    return (os.environ.get("SELLERCLAW_API_URL") or "").strip() or "<unset>"
 
 
 def parse_command(argv: list[str]) -> str:
@@ -578,7 +617,7 @@ def _print_status(console: Console, base_url: str) -> int:
     except httpx.ConnectError:
         console.print(
             f"[error]Agent is not reachable at {escape(base_url)}[/error]\n"
-            "[hint]Start it first: ./setup.sh[/hint]",
+            f"[hint]Start it first: {_cli_hint('start')}[/hint]",
         )
         return 1
     except Exception as exc:  # noqa: BLE001
@@ -600,7 +639,7 @@ def _print_status(console: Console, base_url: str) -> int:
             Panel(
                 f"[warning]Not connected[/warning] to SellerClaw cloud.\n"
                 f"{env_line}\n"
-                "[hint]Run: ./setup.sh[/hint]",
+                f"[hint]Run: {_cli_hint('login')}[/hint]",
                 border_style="yellow",
                 expand=False,
             ),
@@ -617,7 +656,7 @@ def _logout(console: Console, base_url: str) -> int:
     except httpx.ConnectError:
         console.print(
             f"[error]Agent is not reachable at {escape(base_url)}[/error]\n"
-            "[hint]Is it running? ./setup.sh[/hint]",
+            f"[hint]Is it running? {_cli_hint('start')}[/hint]",
         )
         return 1
     except Exception as exc:  # noqa: BLE001
@@ -664,7 +703,7 @@ def _connect_password(console: Console, base_url: str, email: str, password: str
     return True
 
 
-def _device_flow(console: Console, base_url: str) -> None:
+def _device_flow(console: Console, base_url: str, *, open_browser: bool = True) -> None:
     with Progress(
         SpinnerColumn(),
         TextColumn("[hint]Preparing your sign-in link…[/hint]"),
@@ -678,7 +717,7 @@ def _device_flow(console: Console, base_url: str) -> None:
         except httpx.ConnectError:
             console.print(
                 "[error]SellerClaw is not running.[/error]\n"
-                "[hint]Start it with: ./setup.sh[/hint]",
+                f"[hint]Start it with: {_cli_hint('start')}[/hint]",
             )
             raise SystemExit(1) from None
 
@@ -718,7 +757,10 @@ def _device_flow(console: Console, base_url: str) -> None:
     )
     console.print()
 
-    if uri:
+    # Opening a browser only makes sense on the user's own desktop. In the one-command
+    # install the CLI runs inside the container, where the only browser is the agent's
+    # own headless Chrome — launching it there would show the sign-in page to nobody.
+    if uri and open_browser:
         try:
             webbrowser.open(uri)
             console.print(
@@ -726,6 +768,8 @@ def _device_flow(console: Console, base_url: str) -> None:
             )
         except Exception:  # noqa: BLE001
             console.print("[hint]Open the link above in your browser to continue.[/hint]")
+    elif uri:
+        console.print("[hint]Open the link above in your browser to continue.[/hint]")
 
     deadline = time.monotonic() + float(data.get("expires_in") or 900)
     with Progress(
@@ -765,12 +809,22 @@ def _device_flow(console: Console, base_url: str) -> None:
 
     console.print(
         "[error]Sign-in timed out.[/error]\n"
-        "[hint]Run `./setup.sh` to try again.[/hint]",
+        f"[hint]Run `{_cli_hint('login')}` to try again.[/hint]",
     )
     raise SystemExit(1)
 
 
-def _interactive_auth(console: Console, base_url: str) -> None:
+def _interactive_auth(console: Console, base_url: str, *, browser_only: bool = False) -> None:
+    """Sign in to the cloud.
+
+    ``browser_only`` skips the "how would you like to sign in?" menu and goes straight to
+    the browser code flow. That is the path the one-command install takes: it runs the CLI
+    through ``docker exec`` with no terminal attached, where a menu (and a password prompt)
+    has nobody to answer it, while a printed code and link work the same over SSH.
+    """
+    if browser_only:
+        _device_flow(console, base_url, open_browser=False)
+        return
     while True:
         method = _select_option(
             console,
@@ -1044,15 +1098,15 @@ def cmd_stop(console: Console) -> int:
     return rc
 
 
-def cmd_login(console: Console) -> int:
+def cmd_login(console: Console, *, browser_only: bool = False) -> int:
     base = agent_base_url()
     if not wait_for_agent(base, console, timeout_s=15):
         console.print(
             f"[error]Agent is not reachable at {escape(base)}[/error]\n"
-            "[hint]Start it first: ./setup.sh[/hint]",
+            f"[hint]Start it first: {_cli_hint('start')}[/hint]",
         )
         return 1
-    _interactive_auth(console, base)
+    _interactive_auth(console, base, browser_only=browser_only)
     ok, reason, chat_ok = _wait_for_cloud_live(base, console)
     if not ok:
         _print_cloud_verification_failure(console, reason or "unknown error")
@@ -1075,7 +1129,11 @@ def cmd_help(console: Console) -> int:
     tbl.add_row("start", "Start the SellerClaw container")
     tbl.add_row("stop", "Stop the SellerClaw container")
     tbl.add_row("status", "Show cloud connection status")
-    tbl.add_row("login", "Connect to your account (server must be running)")
+    tbl.add_row(
+        "login",
+        "Connect to your account (server must be running)  "
+        "[hint]--browser: skip the menu, sign in by link[/hint]",
+    )
     tbl.add_row("logout", "Disconnect from your account")
     tbl.add_row("help", "Show this help")
     console.print(tbl)
@@ -1086,7 +1144,8 @@ def cmd_help(console: Console) -> int:
 
 def main() -> None:
     console = _console()
-    cmd = parse_command(sys.argv[1:])
+    argv = sys.argv[1:]
+    cmd = parse_command(argv)
     if cmd == "help":
         raise SystemExit(cmd_help(console))
     if cmd == "setup":
@@ -1098,11 +1157,11 @@ def main() -> None:
     if cmd == "status":
         raise SystemExit(_print_status(console, agent_base_url()))
     if cmd == "login":
-        raise SystemExit(cmd_login(console))
+        raise SystemExit(cmd_login(console, browser_only="--browser" in argv))
     if cmd == "logout":
         raise SystemExit(_logout(console, agent_base_url()))
     console.print(
         f"[error]Unknown command: {escape(cmd)}[/error]\n"
-        "[hint]Run: ./setup.sh help[/hint]",
+        f"[hint]Run: {_cli_hint('help')}[/hint]",
     )
     raise SystemExit(2)

@@ -304,6 +304,12 @@ COPY sellerclaw-agent/sellerclaw_agent/ /app/sellerclaw_agent/
 ENV OPENCLAW_BUNDLE_VOLUME_PATH=/opt/config-bundle
 ENV SELLERCLAW_EDGE_PING=1
 ENV OPENCLAW_GATEWAY_HTTP_BASE=http://127.0.0.1:7789
+# Same value the server already defaults to, made explicit so the image describes its own
+# layout: the one-command install runs the CLI inside this container (`docker exec`), and the
+# CLI resolves the secrets/token directory from this variable. Without it the CLI would fall
+# back to "next to the package" (/app/data), create a second secrets.json and 401 on every
+# control-plane call.
+ENV SELLERCLAW_DATA_DIR=/data
 
 RUN chown -R node:node /app/sellerclaw_agent
 
