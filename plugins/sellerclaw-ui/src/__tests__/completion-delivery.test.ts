@@ -59,6 +59,23 @@ describe("completion delivery guard", () => {
     expect(warn).toHaveBeenCalledOnce();
   });
 
+  it("tells the run what to send, not merely to send it", () => {
+    // The rescued run is the one that already drifted: a supervisor that spent its turn on
+    // bookkeeping answered with its own paperwork. Asking only for delivery posted that verbatim.
+    const { result } = runGuard({
+      runId: ANNOUNCE_RUN_ID,
+      sessionKey: SESSION_KEY,
+      lastAssistantMessage:
+        "Task complete. **Agent task** `dfcff8eb` is now in `pending_review` status.",
+    });
+
+    const instruction = (result as { retry: { instruction: string } }).retry.instruction;
+    expect(instruction).toContain("the language they write in");
+    expect(instruction).toContain("pending_review");
+    expect(instruction).toContain("bare UUIDs");
+    expect(instruction).toContain("rewrite it first");
+  });
+
   it("recognizes a completion run from the trigger text when the run id is not prefixed", () => {
     const { result } = runGuard({
       runId: "run-42",

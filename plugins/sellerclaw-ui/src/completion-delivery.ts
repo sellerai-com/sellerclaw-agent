@@ -100,6 +100,12 @@ function isCompletionRun(event: BeforeAgentFinalizeEvent): boolean {
 function buildRetryInstruction(target: string): string {
   // The runtime prefixes this with "Do not repeat completed work or rerun tools unless the
   // request explicitly requires it" — so the tool call has to be stated as the requirement.
+  //
+  // The pass names what to send, not just that to send. Asking only for delivery ("send the
+  // answer you just wrote") assumes the text is already the owner's — and the run this guard
+  // catches is precisely the one that drifted: a supervisor that had spent its turn closing
+  // tasks answered "Task complete … Agent task `dfcff8eb…` is now in `pending_review` status",
+  // and the rescue faithfully posted its bookkeeping to the owner, in the wrong language.
   return [
     "This revision requires one tool call and nothing else.",
     "",
@@ -107,8 +113,15 @@ function buildRetryInstruction(target: string): string {
     "`message` tool — anything else is discarded, and the specialist's raw internal report is",
     "posted in its place.",
     "",
-    `Call \`message\` now: action "send", target "${target}", and as the message the owner-facing`,
-    "answer you just wrote — their language, no internal ids, no status/summary/artifacts labels.",
+    `Call \`message\` now: action "send", target "${target}".`,
+    "",
+    "What you send is the owner's answer: what changed in their business and what it means for",
+    "them, in the language they write in. Re-read the text you just wrote and rewrite it first if",
+    "it does any of these — none of it is an answer:",
+    "- opens as a report to yourself (\"Task complete\", \"Here is a summary of what was done\")",
+    "- names task machinery: task ids, `pending_review` / `completed`, request-review, subagent",
+    "- carries bare UUIDs, or `status:` / `summary:` / `artifacts:` labels from the envelope",
+    "- is in a different language from the owner's own messages",
     "",
     "If you already sent that answer with `message` during this turn, reply with exactly NO_REPLY",
     "instead of sending it again.",
