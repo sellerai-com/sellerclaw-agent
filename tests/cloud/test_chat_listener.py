@@ -170,6 +170,9 @@ async def test_user_message_not_posted_when_openclaw_stopped(
     supervisor = _FakeSupervisor(status="stopped", error=None)
     inbound = _InboundRecorder(behavior="ok")
     dedup = cl._MessageIdDedup()
+    # A genuinely stopped OpenClaw is waited out first (see the retry tests below); skip the wall
+    # clock so the test measures the outcome, not the delay.
+    monkeypatch.setattr(cl.asyncio, "sleep", _instant_sleep())
 
     await _run_consume(
         sse_body=body,
@@ -182,6 +185,109 @@ async def test_user_message_not_posted_when_openclaw_stopped(
 
     assert inbound.calls == [], "should not POST when OpenClaw is stopped"
     assert dedup.already_forwarded(mid) is False, "must not record dropped message"
+
+
+def _instant_sleep() -> Any:
+    """``asyncio.sleep`` replacement that yields instead of waiting, recording what was asked for."""
+
+    async def _sleep(seconds: float) -> None:
+        _sleep.slept.append(seconds)  # type: ignore[attr-defined]
+
+    _sleep.slept = []  # type: ignore[attr-defined]
+    return _sleep
+
+
+def _scripted_gate(verdicts: list[tuple[bool, str, str | None]]) -> Any:
+    """A readiness gate that answers from ``verdicts``, repeating the last one once exhausted."""
+
+    async def _gate() -> tuple[bool, str, str | None]:
+        _gate.calls += 1  # type: ignore[attr-defined]
+        return verdicts.pop(0) if len(verdicts) > 1 else verdicts[0]
+
+    _gate.calls = 0  # type: ignore[attr-defined]
+    return _gate
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_waits_out_a_momentary_not_running_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner's message is delivered once OpenClaw answers again, not thrown away.
+
+    The readiness probe reports "starting" whenever OpenClaw is too busy to answer its own health
+    check in time — which is what a running agent mid-tool-call looks like. That once cost an owner
+    a message: they asked for an ad campaign, the agent never saw it, told them no such request
+    existed, and they had to ask a second time.
+    """
+    sleep = _instant_sleep()
+    monkeypatch.setattr(cl.asyncio, "sleep", sleep)
+    gate = _scripted_gate([(False, "starting", None), (True, "running", None)])
+    inbound = _InboundRecorder(behavior="ok")
+    dedup = cl._MessageIdDedup()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(inbound)) as http:
+        forwarder = LocalOpenClawForwarder(
+            base_url="http://gw.test", hooks_token="t", gateway_token="g", http_client=http
+        )
+        await cl.forward_user_message(
+            {"chat_id": "c1", "agent_id": "supervisor", "user_id": "u1", "text": "run ads", "message_id": "m-w"},
+            forwarder=forwarder,
+            dedup=dedup,
+            openclaw_gate=gate,
+        )
+
+    assert [c["text"] for c in inbound.calls] == ["run ads"]
+    assert dedup.already_forwarded("m-w") is True
+    assert sleep.slept, "the wait must actually pause before re-checking"
+
+
+@pytest.mark.asyncio
+async def test_a_user_message_is_given_up_on_only_after_the_whole_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bounded: a real outage cannot hold the SSE loop open forever behind one message."""
+    sleep = _instant_sleep()
+    monkeypatch.setattr(cl.asyncio, "sleep", sleep)
+    gate = _scripted_gate([(False, "stopped", None)])
+    inbound = _InboundRecorder(behavior="ok")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(inbound)) as http:
+        forwarder = LocalOpenClawForwarder(
+            base_url="http://gw.test", hooks_token="t", gateway_token="g", http_client=http
+        )
+        await cl.forward_user_message(
+            {"chat_id": "c1", "agent_id": "supervisor", "user_id": "u1", "text": "hi", "message_id": "m-x"},
+            forwarder=forwarder,
+            dedup=cl._MessageIdDedup(),
+            openclaw_gate=gate,
+        )
+
+    assert inbound.calls == []
+    assert sum(sleep.slept) == pytest.approx(cl._USER_MESSAGE_WAIT_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_a_deliverable_message_never_pauses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The common case costs nothing: one probe, no sleep, straight to the POST."""
+    sleep = _instant_sleep()
+    monkeypatch.setattr(cl.asyncio, "sleep", sleep)
+    gate = _scripted_gate([(True, "running", None)])
+    inbound = _InboundRecorder(behavior="ok")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(inbound)) as http:
+        forwarder = LocalOpenClawForwarder(
+            base_url="http://gw.test", hooks_token="t", gateway_token="g", http_client=http
+        )
+        await cl.forward_user_message(
+            {"chat_id": "c1", "agent_id": "supervisor", "user_id": "u1", "text": "hi", "message_id": "m-y"},
+            forwarder=forwarder,
+            dedup=cl._MessageIdDedup(),
+            openclaw_gate=gate,
+        )
+
+    assert len(inbound.calls) == 1
+    assert sleep.slept == []
+    assert gate.calls == 1
 
 
 @pytest.mark.asyncio
@@ -441,6 +547,10 @@ async def test_probe_ttl_caches_status_across_messages(
     )
     supervisor = _FakeSupervisor(status="stopped", error=None)
     inbound = _InboundRecorder(behavior="ok")
+    # Frozen clock (the sleeps do not advance ``time.monotonic``), so every probe in every message's
+    # wait falls inside one TTL window — which is what "cached" means here. In production the wait
+    # interval deliberately outlives the TTL so each retry asks again.
+    monkeypatch.setattr(cl.asyncio, "sleep", _instant_sleep())
 
     await _run_consume(
         sse_body=body,

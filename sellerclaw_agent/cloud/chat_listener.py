@@ -147,6 +147,34 @@ async def forward_cancel(payload: dict[str, Any], *, forwarder: LocalOpenClawFor
         _log.exception("chat_cancel_forward_failed", chat_id=cancel_chat_id)
 
 
+#: How long a user message waits for OpenClaw before it is given up on, and how often the wait
+#: re-checks. The gate's verdict is cached for a few seconds, so the interval has to outlast that
+#: cache or every retry re-reads the same stale answer.
+_USER_MESSAGE_WAIT_SECONDS = 30.0
+_USER_MESSAGE_RETRY_INTERVAL = 6.0
+
+
+async def _wait_for_openclaw(openclaw_gate: OpenClawGate) -> tuple[bool, str, str | None]:
+    """Wait out a brief "not running" verdict, up to :data:`_USER_MESSAGE_WAIT_SECONDS`.
+
+    Only user messages get this: they are the owner talking, and a dropped one is invisible to them
+    — they see an agent that ignored what they asked for and answer it a second time. Everything
+    else on this stream (scheduled runs, hook events) is regenerated on its next tick and can be
+    dropped safely.
+
+    Bounded on purpose. A restart takes a couple of minutes and blocking the SSE loop that long
+    would stall every other event behind this one; what this covers is the short window where
+    OpenClaw is up but momentarily fails its own health check.
+    """
+    running, oc_status, oc_err = await openclaw_gate()
+    waited = 0.0
+    while not running and waited < _USER_MESSAGE_WAIT_SECONDS:
+        await asyncio.sleep(_USER_MESSAGE_RETRY_INTERVAL)
+        waited += _USER_MESSAGE_RETRY_INTERVAL
+        running, oc_status, oc_err = await openclaw_gate()
+    return running, oc_status, oc_err
+
+
 async def forward_user_message(
     payload: dict[str, Any],
     *,
@@ -168,13 +196,18 @@ async def forward_user_message(
         return
     chat_id = str(payload.get("chat_id") or "") or None
     user_id = str(payload.get("user_id") or "") or None
-    running, oc_status, oc_err = await openclaw_gate()
+    running, oc_status, oc_err = await _wait_for_openclaw(openclaw_gate)
     if not running:
-        _log.info(
-            "chat_message_dropped",
+        # Error, not info: this is the owner's own message and nothing will deliver it later — the
+        # cloud only replays still-PROCESSING messages when the stream reconnects, which may not
+        # happen for hours. Losing one quietly is how an agent came to deny a request it was never
+        # given.
+        _log.error(
+            "chat_message_lost",
             reason="openclaw_not_running",
             openclaw_status=oc_status,
             openclaw_error=oc_err,
+            waited_seconds=_USER_MESSAGE_WAIT_SECONDS,
             message_id=mid or None,
             chat_id=chat_id,
             user_id=user_id,
@@ -186,8 +219,8 @@ async def forward_user_message(
         if mid:
             dedup.record_forwarded(mid)
     except httpx.ConnectError as exc:
-        _log.info(
-            "chat_message_dropped",
+        _log.error(
+            "chat_message_lost",
             reason="gateway_unreachable",
             message_id=mid or None,
             chat_id=chat_id,
@@ -195,8 +228,8 @@ async def forward_user_message(
             error=str(exc),
         )
     except httpx.TimeoutException as exc:
-        _log.info(
-            "chat_message_dropped",
+        _log.error(
+            "chat_message_lost",
             reason="gateway_timeout",
             message_id=mid or None,
             chat_id=chat_id,

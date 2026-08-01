@@ -602,7 +602,7 @@ class SupervisorContainerManager:
         return f"http://127.0.0.1:{self.gateway_host_port}/ready"
 
     def _gateway_is_ready(self, *, timeout: float = 1.5) -> bool:
-        """Return True iff gateway ``/ready`` responded 200 with ``ready: true``.
+        """Return True unless gateway ``/ready`` shows the listener is not up yet.
 
         Supervisor reports RUNNING as soon as the openclaw process stays up for
         >startsecs, but the gateway HTTP listener (and plugin registry) can take
@@ -610,6 +610,17 @@ class SupervisorContainerManager:
         "process alive" from "accepting inbound traffic" — otherwise the cloud
         forwards user chat messages that immediately drop with ConnectError on
         the local POST /channels/sellerclaw-ui/inbound.
+
+        A probe that *times out* is not that case and must not be read as one. Nothing refused the
+        connection, so the listener is there — it is busy, which is exactly what a healthy agent
+        mid-run looks like: OpenClaw is single-threaded, and a long tool call keeps its event loop
+        from answering a 1.5-second health check. Once, that read a running agent as "starting" and
+        the owner's next chat message was dropped on the floor; they asked for an ad campaign, were
+        told no such request existed, and had to say it twice.
+
+        So only an answer that actually shows the listener is absent or unhealthy — a refused
+        connection, a non-2xx, a body that says ``ready: false`` — counts as not ready. Being slow
+        does not, and the delivery attempt (which has its own timeouts) decides for itself.
         """
         url = self._gateway_ready_url()
         try:
@@ -617,7 +628,14 @@ class SupervisorContainerManager:
                 if not (200 <= resp.status < 300):
                     return False
                 raw = resp.read()
-        except (urllib.error.URLError, TimeoutError, OSError):
+        except TimeoutError:  # socket.timeout is an alias of this since 3.10
+            return True
+        except urllib.error.URLError as exc:
+            # ``URLError`` wraps whatever went wrong underneath, including the timeout raised while
+            # the connection was still being set up — unwrap it rather than lumping it in with a
+            # refusal.
+            return isinstance(exc.reason, TimeoutError)
+        except OSError:
             return False
         body = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
         return _is_ready_payload(body)

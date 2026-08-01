@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -120,6 +121,54 @@ def test_probe_supervisor_running_but_gateway_not_ready_is_starting(
             stderr="",
         )
         assert mgr.probe_openclaw_status() == ("starting", None)
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected", "why"),
+    [
+        pytest.param(
+            TimeoutError("timed out"),
+            True,
+            "a busy listener is still a listener",
+            id="read-timeout",
+        ),
+        pytest.param(
+            urllib.error.URLError(TimeoutError("timed out")),
+            True,
+            "the same timeout, raised while the connection was being set up",
+            id="timeout-wrapped-in-urlerror",
+        ),
+        pytest.param(
+            urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+            False,
+            "nothing is listening on the port yet",
+            id="connection-refused",
+        ),
+        pytest.param(
+            OSError("host unreachable"),
+            False,
+            "the socket itself failed",
+            id="socket-error",
+        ),
+    ],
+)
+def test_a_slow_ready_probe_does_not_mean_the_gateway_is_down(
+    tmp_path: Path,
+    raised: Exception,
+    expected: bool,
+    why: str,
+) -> None:
+    """Only an answer showing the listener is absent counts as not ready — being slow does not.
+
+    OpenClaw runs one event loop, so a long tool call keeps it from answering a 1.5-second health
+    check. Reading that as "still starting" made the edge drop the owner's next chat message: they
+    asked for an ad campaign, the agent was told nothing, and replied that no such request existed.
+    """
+    mgr = _mgr(tmp_path)
+    with patch(
+        "sellerclaw_agent.cloud.supervisor_manager.urllib.request.urlopen", side_effect=raised
+    ):
+        assert mgr._gateway_is_ready() is expected, why
 
 
 @pytest.mark.parametrize(
