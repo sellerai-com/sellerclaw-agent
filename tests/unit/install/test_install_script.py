@@ -176,6 +176,11 @@ def _run(
         capture_output=True,
         text=True,
         timeout=60,
+        # A new session has no controlling terminal, so the installer's `/dev/tty` questions
+        # cannot be answered — which is exactly the unattended install these tests describe.
+        # Without it the child inherits the developer's terminal when the suite is run from a
+        # shell: the prompt lands in their console and the run blocks until the timeout.
+        start_new_session=True,
     )
 
 
