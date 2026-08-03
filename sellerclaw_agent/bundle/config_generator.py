@@ -383,8 +383,23 @@ def generate_openclaw_config(
         "thinkingDefault": thinking_default,
         "reasoningDefault": reasoning_default,
         "blockStreamingDefault": "on",
+        # How soon a reply starts appearing in the owner's chat.
+        #
+        # ``blockStreamingBreak: text_end`` pushes whatever the agent has written the moment it
+        # finishes a text block — i.e. right before it reaches for a tool — instead of holding
+        # everything until the turn ends. It is also the upstream default; pinning it here keeps
+        # a future default change from silently making the chat go quiet again.
+        #
+        # ``minChars`` then decides how a *long* stretch of writing is cut up. At 800 the first
+        # visible piece only appeared once the agent had written a whole page, so a run that
+        # spent six minutes importing a product and opening tasks showed nothing at all until it
+        # was over — its running commentary added up to 671 characters, under the threshold, and
+        # landed in one lump at the end. 200 is about a short paragraph: enough that a cut still
+        # falls on a sentence or line break, small enough that the owner sees the agent talking
+        # while it works.
+        "blockStreamingBreak": "text_end",
         "blockStreamingChunk": {
-            "minChars": 800,
+            "minChars": 200,
             "maxChars": 3000,
             "breakPreference": "newline",
         },

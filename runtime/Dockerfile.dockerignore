@@ -1,0 +1,20 @@
+# Build-context excludes for runtime/Dockerfile.
+#
+# WHY THIS FILE AND NOT A REPO-ROOT .dockerignore: the build context is the PARENT of this
+# repository (docker-compose.yml sets `context: ..`, and CI checks the repo out into a
+# `sellerclaw-agent/` subdirectory and builds with `context: .`), and Docker only ever reads a
+# .dockerignore from the context root. A .dockerignore inside this repo is therefore never
+# consulted — BuildKit does read `<dockerfile>.dockerignore` next to the Dockerfile, which is
+# what this is.
+#
+# Keep local builds identical to CI. plugins/*/node_modules is gitignored, so a fresh CI clone
+# has none, while a contributor who ran `npm install` (or `npm test`) in a plugin used to ship
+# ~49 MB of dev-only dependencies — typescript and vitest, nothing the runtime loads — into the
+# image, and every reinstall changed the COPY layer and re-ran every step after it.
+**/node_modules
+
+# Python build/test droppings from a host-side `uv run pytest`; never referenced by any COPY.
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.venv

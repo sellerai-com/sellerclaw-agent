@@ -111,15 +111,10 @@ RUN wget -qO- "https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2
 RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins /home/node/.config \
     && chown -R node:node /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /opt/openclaw-plugins /home/node/.config
 
-# SellerClaw web UI chat delivery channel (OpenClaw plugin).
-# Files must stay root-owned: OpenClaw blocks config-origin plugins with non-root ownership.
-COPY sellerclaw-agent/plugins/sellerclaw-ui /opt/openclaw-plugins/sellerclaw-ui
-COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/sellerclaw-web-search
-
 # Long-term memory: the official mem0 OpenClaw plugin, used in PLATFORM mode pointed at the cloud's
 # Mem0-compatible adapter (config_generator enables it only when the manifest's memory block is on).
 # Vendor the package AT the plugin load path (its openclaw.plugin.json must sit at the dir root, like
-# the plugins above) and install deps in-image so the transitive native better-sqlite3 binding matches
+# our own plugins copied below) and install deps in-image so the transitive native better-sqlite3 binding matches
 # TARGETARCH — even though platform mode never touches the local SQLite store. Must stay root-owned
 # (OpenClaw rejects config-origin plugins with non-root ownership).
 # NOTE: the load path is what makes plugins.slots.memory resolve — dropping it hard-fails config
@@ -186,6 +181,18 @@ RUN cd /app/dist/extensions && \
 RUN runuser -u node -- env HOME=/home/node openclaw plugins install /opt/openclaw-plugins/openclaw-mem0 \
     && rm -f /home/node/.openclaw/openclaw.json \
     && rm -rf /home/node/.openclaw/logs
+
+# Our own OpenClaw plugins: the SellerClaw web UI chat delivery channel and web search.
+# Files must stay root-owned: OpenClaw blocks config-origin plugins with non-root ownership.
+#
+# Deliberately placed AFTER the mem0 steps above, not before: these directories are edited on
+# almost every contributor branch, and Docker invalidates every later layer on the first change
+# it sees. With the plugins copied first, a one-line plugin edit re-ran the mem0 npm install and
+# the registry pre-build — ~3 minutes of network + CPU per `make up-dev`, for a plugin that had
+# not changed. Nothing between here and the base runtime depends on these paths, so the cheap,
+# frequently-changing layers belong last.
+COPY sellerclaw-agent/plugins/sellerclaw-ui /opt/openclaw-plugins/sellerclaw-ui
+COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/sellerclaw-web-search
 
 # KasmVNC server-wide configuration (HTTP mode, no SSL, port 6080).
 COPY sellerclaw-agent/runtime/kasmvnc/kasmvnc.yaml /etc/kasmvnc/kasmvnc.yaml

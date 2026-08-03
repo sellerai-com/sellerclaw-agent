@@ -651,6 +651,25 @@ def test_generate_openclaw_config_bootstrap_max_chars_in_defaults(
     )
 
 
+def test_generate_openclaw_config_streams_replies_while_the_agent_works(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """The owner should see the agent talking mid-run, not one lump when the turn ends.
+
+    ``text_end`` pushes each finished text block before the agent picks up a tool, and the
+    chunk floor decides when a long stretch is cut. At 800 a six-minute run whose running
+    commentary totalled 671 characters showed nothing until it was done.
+    """
+    defaults = json.loads(_generate(_supervisor_only(make_assembled_agent)))["agents"]["defaults"]
+
+    assert defaults["blockStreamingDefault"] == "on"
+    assert defaults["blockStreamingBreak"] == "text_end"
+    assert defaults["blockStreamingChunk"]["minChars"] == 200
+    # A cut must still land on a line break rather than mid-sentence.
+    assert defaults["blockStreamingChunk"]["breakPreference"] == "newline"
+    assert defaults["blockStreamingChunk"]["maxChars"] == 3000
+
+
 def test_generate_openclaw_config_subagent_run_timeout_in_defaults(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
