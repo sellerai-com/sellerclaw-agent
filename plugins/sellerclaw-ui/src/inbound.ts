@@ -9,7 +9,7 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 
 import { resolveSellerclawUiAccount } from "./channel.js";
-import { logError, logInfo, logWarn } from "./log.js";
+import { logDelivery, logError, logInfo, logWarn } from "./log.js";
 import {
   postScheduledTaskFeasibility,
   postScheduledTaskRun,
@@ -449,6 +449,19 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
       // One streaming assistant message per turn, started lazily on the first delivered
       // part (or eagerly at finish for an empty dispatch) and finalized after dispatch.
       const partsMessageId = crypto.randomUUID();
+      /**
+       * Delivery timeline for this turn, logged at warn so it survives ``logging.level: warn``
+       * and reaches the shipped logs.
+       *
+       * A turn that runs for minutes while the owner watches an empty chat is the symptom we
+       * cannot currently explain: the engine is configured to stream (``blockStreamingDefault:
+       * on``, ``blockStreamingBreak: text_end``, a 200-char floor), yet the assistant message
+       * is created at the exact moment the run ends — so nothing arrived here before the final.
+       * This records what the dispatcher actually handed us and when, which tells us whether
+       * blocks are never emitted, emitted but empty, or emitted and dropped on our side.
+       */
+      const turnStartedAt = Date.now();
+      let deliveryCount = 0;
       let partsTurnStarted = false;
       const ensurePartsTurn = async (): Promise<void> => {
         if (partsTurnStarted) return;
@@ -575,6 +588,14 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
             dispatchInfo?: { kind?: string; assistantMessageIndex?: number },
           ) => {
             const { text, mediaUrls } = readDeliverPayload(replyPayload);
+            deliveryCount += 1;
+            logDelivery(
+              api,
+              `inbound delivery #${deliveryCount} kind=${dispatchInfo?.kind ?? "none"} ` +
+                `at=+${Math.round((Date.now() - turnStartedAt) / 1000)}s chars=${text.length} ` +
+                `media=${mediaUrls.length} idx=${dispatchInfo?.assistantMessageIndex ?? "-"} ` +
+                `session_key=${sessionKey}`,
+            );
 
             // Reasoning blocks travel on a separate transient channel and are NOT
             // appended as user-visible parts. The UI renders them as a collapsible
@@ -713,6 +734,13 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         // however, marks the message so a crashed/aborted dispatch surfaces as a visible
         // error the user can retry instead of a silently "completed" blank reply.
         await ensurePartsTurn();
+        // Closing line of the delivery timeline: how many pieces the turn produced and how long
+        // it ran. One delivery on a multi-minute turn means the owner watched an empty chat.
+        logDelivery(
+          api,
+          `inbound turn ${status} deliveries=${deliveryCount} ` +
+            `duration=${Math.round((Date.now() - turnStartedAt) / 1000)}s session_key=${sessionKey}`,
+        );
         try {
           await postTurnEnd(account, sessionKey, partsMessageId, payload.chat_id, status);
         } catch (err) {
