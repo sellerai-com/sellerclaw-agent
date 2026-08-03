@@ -216,6 +216,28 @@ async function deliverOutboundAsParts(
   return { messageId };
 }
 
+/**
+ * Post one text answer into a chat as its own assistant message, bypassing the runtime.
+ *
+ * Used by the completion-delivery rescue: when a completion run's answer is written but the
+ * runtime never asks us to deliver it, the plugin sends it itself. Same road as an outbound
+ * ``message`` send (queued per session, one parts turn), so ordering against a live stream
+ * holds and the cloud dedupes by ``message_id`` as usual.
+ */
+export async function deliverTextToChat(
+  account: ScwUiAccount,
+  sessionKey: string,
+  text: string,
+): Promise<{ messageId: string }> {
+  // A session key carries the address as a suffix (``agent:<id>:sellerclaw-ui:direct:<uuid>``),
+  // so recover the address first — the anchored extractor only matches a bare one.
+  const address = extractTargetFromSessionKey(sessionKey) ?? sessionKey;
+  const chatId = extractChatIdFromAddress(address);
+  return enqueueSend(sessionKey, () =>
+    deliverOutboundAsParts(account, sessionKey, chatId, [{ kind: "text", text }]),
+  );
+}
+
 async function outboundSendText(params: unknown): Promise<{ messageId: string }> {
   const p = params as OutboundParams;
   if (p.silent) {

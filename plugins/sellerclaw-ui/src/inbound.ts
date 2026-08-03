@@ -9,6 +9,7 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 
 import { resolveSellerclawUiAccount } from "./channel.js";
+import { logError, logInfo, logWarn } from "./log.js";
 import {
   postScheduledTaskFeasibility,
   postScheduledTaskRun,
@@ -55,36 +56,6 @@ interface InboundPayload {
  * Keyed by the stable cloud message_id; cleared once the turn finishes (success OR failure).
  */
 const inFlightInboundMessageIds = new Set<string>();
-
-/**
- * Plugin logger wrappers: when OpenClaw runs without a logger (or with `info`/`error`
- * stripped — happens with `redactSensitive: "tools"`), optional chaining swallows
- * media-delivery failures silently. Fall back to `console.*` so the operator can still
- * see what happened when chasing a "image not delivered" bug.
- */
-function logInfo(api: OpenClawPluginApi, msg: string): void {
-  if (api.logger?.info) {
-    api.logger.info(msg);
-    return;
-  }
-  console.info(msg);
-}
-
-function logError(api: OpenClawPluginApi, msg: string): void {
-  if (api.logger?.error) {
-    api.logger.error(msg);
-    return;
-  }
-  console.error(msg);
-}
-
-function logWarn(api: OpenClawPluginApi, msg: string): void {
-  if (api.logger?.warn) {
-    api.logger.warn(msg);
-    return;
-  }
-  console.warn(msg);
-}
 
 interface ImagePart {
   url: string;

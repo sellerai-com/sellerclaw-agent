@@ -1,33 +1,44 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
-import { extractTargetFromSessionKey } from "./channel.js";
+import { deliverTextToChat, extractTargetFromSessionKey, resolveSellerclawUiAccount } from "./channel.js";
+import { logDelivery, logDeliveryFailure } from "./log.js";
 
 /**
- * A completion run reaches the owner only through the ``message`` tool — this hook enforces it.
+ * Makes a completion run's answer reach the owner without the agent having to send it.
  *
- * When a subagent finishes, OpenClaw wakes its requester with the child's result and a trigger
- * that reads "A background task completed. Use this result to reply to the user in your normal
- * assistant voice." For a direct-message target that instruction is a trap: the runtime treats
- * a subagent completion aimed at a DM as delivered *only* when the agent called the ``message``
- * tool (``subagentDirectMessageCompletionRequiresMessageTool``), and our chat address —
- * ``sellerclaw-ui:direct:<chat_id>`` — always classifies as direct. Ordinary reply text from
- * that run reaches nobody. Worse, seeing no delivery, the runtime falls back to posting the
- * *child's* own raw completion text into the owner's chat (``deliverTextCompletionDirect``):
- * an internal envelope — ``- **status**: success``, bare UUIDs, written in whatever language
- * the specialist happened to use — presented to the owner as the agent's own update.
+ * The runtime refuses to deliver a completion run's ordinary reply text when the requester is
+ * a direct message — and our chat address, ``sellerclaw-ui:direct:<chat_id>``, always is. The
+ * condition (``subagentDirectMessageCompletionRequiresMessageTool`` in
+ * ``subagent-announce-delivery.ts``) is computed, not configured: no setting turns it off, and
+ * ``visibleReplies: "automatic"`` is checked on a different branch that never reaches this one.
+ * Having suppressed the answer, the runtime then fills the silence itself — it sends the
+ * *child's* raw ``task_completion.result`` to the owner, an internal envelope written for the
+ * supervisor, in whatever language the specialist happened to use. That is upstream bug
+ * openclaw#90840: open, P1, and unresolved because the clean fix needs a product decision they
+ * cannot make for every deployment. We can make it for ours: the subagents are the owner's own
+ * and so is the data, so the supervisor's answer is exactly what should be shown.
  *
- * Seen in production: the supervisor composed a correct, owner-facing Russian summary of an
- * eBay withdrawal, wrote it as ordinary text, and the owner received the eBay specialist's
- * internal report instead. The supervisor's own instructions already carry a strongly worded
- * rule about this and it still did not hold — a prompt alone cannot make the send reliable.
+ * So this module lets the runtime keep its delivery, and corrects what it carries:
  *
- * So the guard is structural: a completion turn that produced an answer but never sent it gets
- * one more pass, with an instruction naming the tool and the exact target. The runtime bounds
- * this itself (per-run retry budget below, plus its own revision ceiling), so a model that
- * refuses to comply costs a couple of turns, not a loop.
+ *  1. ``before_tool_call`` — remember that the agent sent something itself, so a run that
+ *     complied is left completely alone.
+ *  2. ``before_agent_finalize`` — a completion run's answer text is captured here. (Not
+ *     ``agent_end``: only this hook hands us the final text ready-made.)
+ *  3. ``agent_end`` — the same run with *no* visible text at all, which finalize never sees
+ *     (the runtime skips it when ``hasAssistantVisibleText`` is false). Nothing to substitute,
+ *     so the fallback must be stopped rather than corrected.
+ *  4. ``message_sending`` — the interception point. Runs inside the shared outbound path
+ *     (``deliverOutboundPayloads``) before the channel adapter is called, and may rewrite the
+ *     text or cancel the send. A cancelled send is recorded as ``suppressed``, which the
+ *     durable-send layer commits as a success — so cancelling costs no retries and does not
+ *     fail the announce.
+ *
+ * If the runtime delivers nothing at all (upstream fixes #90840, or the announce path changes
+ * shape), a short timer sends the answer ourselves. That is why this does not depend on the
+ * bug staying unfixed.
  */
 
-/** Announce (subagent-completion) runs are the only ones this guard applies to. */
+/** Announce (subagent-completion) runs are the only ones this module acts on. */
 const ANNOUNCE_RUN_ID_PREFIX = "announce:";
 
 /**
@@ -41,11 +52,54 @@ const COMPLETION_TRIGGER_MARKERS = [
   "[Internal task completion event]",
 ];
 
+/** Tools that put a message in front of the owner on their own. */
+const MESSAGING_TOOL_NAMES = new Set(["message", "conversations_send"]);
+
 /**
- * One extra pass per run per instruction. The runtime keys its retry budget on
- * (runId, instruction), so this is a real ceiling, not a hint.
+ * How long a captured answer stays applicable. The fallback send follows finalization within
+ * moments, so this only has to outlive one announce round-trip; keeping it short means a later,
+ * unrelated delivery in the same chat can never pick up a stale answer.
  */
-const MAX_RETRY_ATTEMPTS = 2;
+const PENDING_TTL_MS = 60_000;
+
+/**
+ * Shorter window for the "nothing to show" entry. It suppresses rather than substitutes, and
+ * the fallback it is waiting for follows finalization immediately — so anything beyond a few
+ * seconds is pure risk of cancelling an unrelated send the owner did want (a `message` from a
+ * fresh chat turn, say).
+ */
+const EMPTY_PENDING_TTL_MS = 15_000;
+
+/**
+ * Grace period before the plugin delivers the answer itself. Long enough for the runtime's own
+ * delivery to arrive first (it normally does, within milliseconds of finalization), short
+ * enough that the owner is not left waiting on a path that will never fire.
+ */
+const SELF_DELIVER_AFTER_MS = 5_000;
+
+/** How long a self-delivered entry lingers, purely to swallow a late runtime delivery. */
+const SUPPRESS_AFTER_SELF_DELIVERY_MS = 30_000;
+
+/** Bound on remembered messaging-tool runs, so a long-lived gateway cannot accumulate them. */
+const MESSAGED_RUN_TTL_MS = 10 * 60_000;
+
+/** The silent token: an answer of exactly this means "deliver nothing". */
+const SILENT_REPLY_TOKEN = "NO_REPLY";
+
+interface PendingAnswer {
+  /** The supervisor's answer, or "" when the run produced no visible text at all. */
+  answer: string;
+  expiresAt: number;
+  /** Set once the plugin delivered the answer itself; the entry then only suppresses. */
+  deliveredBySelf: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/** Keyed by session key — the only identifier both the run hooks and delivery hooks share. */
+const pendingAnswers = new Map<string, PendingAnswer>();
+
+/** Run ids (or session keys, when no run id is available) that already messaged the owner. */
+const messagedRuns = new Map<string, number>();
 
 interface BeforeAgentFinalizeEvent {
   runId?: unknown;
@@ -54,17 +108,39 @@ interface BeforeAgentFinalizeEvent {
   messages?: unknown;
 }
 
-interface BeforeAgentFinalizeCtx {
-  sessionKey?: unknown;
+interface AgentEndEvent {
+  runId?: unknown;
+  messages?: unknown;
 }
 
-interface BeforeAgentFinalizeResult {
-  action: "revise";
-  retry: { instruction: string; maxAttempts: number; idempotencyKey: string };
+interface BeforeToolCallEvent {
+  toolName?: unknown;
+  params?: unknown;
+  runId?: unknown;
+}
+
+interface MessageSendingEvent {
+  to?: unknown;
+  content?: unknown;
+}
+
+interface HookContext {
+  sessionKey?: unknown;
+  runId?: unknown;
+}
+
+interface MessageSendingResult {
+  content?: string;
+  cancel?: boolean;
+  cancelReason?: string;
 }
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function isSilentAnswer(text: string): boolean {
+  return text.trim().toUpperCase() === SILENT_REPLY_TOKEN;
 }
 
 /**
@@ -89,82 +165,218 @@ function lastUserMessageText(messages: unknown): string {
   return "";
 }
 
-function isCompletionRun(event: BeforeAgentFinalizeEvent): boolean {
-  if (asString(event.runId).startsWith(ANNOUNCE_RUN_ID_PREFIX)) return true;
+function isCompletionRun(runId: unknown, messages: unknown): boolean {
+  if (asString(runId).startsWith(ANNOUNCE_RUN_ID_PREFIX)) return true;
   // Must *open* the turn, not merely appear in it: an owner who pastes the trigger wording into
   // chat should not have their live turn rerouted through the completion path.
-  const trigger = lastUserMessageText(event.messages).trimStart();
+  const trigger = lastUserMessageText(messages).trimStart();
   return COMPLETION_TRIGGER_MARKERS.some((marker) => trigger.startsWith(marker));
 }
 
-function buildRetryInstruction(target: string): string {
-  // The runtime prefixes this with "Do not repeat completed work or rerun tools unless the
-  // request explicitly requires it" — so the tool call has to be stated as the requirement.
-  //
-  // The pass names what to send, not just that to send. Asking only for delivery ("send the
-  // answer you just wrote") assumes the text is already the owner's — and the run this guard
-  // catches is precisely the one that drifted: a supervisor that had spent its turn closing
-  // tasks answered "Task complete … Agent task `dfcff8eb…` is now in `pending_review` status",
-  // and the rescue faithfully posted its bookkeeping to the owner, in the wrong language.
-  return [
-    "This revision requires one tool call and nothing else.",
-    "",
-    "Your reply text is not delivered in this run. The owner sees only what you send with the",
-    "`message` tool — anything else is discarded, and the specialist's raw internal report is",
-    "posted in its place.",
-    "",
-    `Call \`message\` now: action "send", target "${target}".`,
-    "",
-    "What you send is the owner's answer: what changed in their business and what it means for",
-    "them, in the language they write in. Re-read the text you just wrote and rewrite it first if",
-    "it does any of these — none of it is an answer:",
-    "- opens as a report to yourself (\"Task complete\", \"Here is a summary of what was done\")",
-    "- names task machinery: task ids, `pending_review` / `completed`, request-review, subagent",
-    "- carries bare UUIDs, or `status:` / `summary:` / `artifacts:` labels from the envelope",
-    "- is in a different language from the owner's own messages",
-    "",
-    "If you already sent that answer with `message` during this turn, reply with exactly NO_REPLY",
-    "instead of sending it again.",
-  ].join("\n");
+function sweepMessagedRuns(now: number): void {
+  for (const [key, expiresAt] of messagedRuns) {
+    if (expiresAt <= now) messagedRuns.delete(key);
+  }
+}
+
+function messagedKeys(runId: unknown, sessionKey: string): string[] {
+  const keys = [`session:${sessionKey}`];
+  const run = asString(runId);
+  if (run) keys.unshift(`run:${run}`);
+  return keys;
+}
+
+function hasMessagedOwner(runId: unknown, sessionKey: string): boolean {
+  const now = Date.now();
+  sweepMessagedRuns(now);
+  return messagedKeys(runId, sessionKey).some((key) => (messagedRuns.get(key) ?? 0) > now);
+}
+
+function clearPending(sessionKey: string): void {
+  const pending = pendingAnswers.get(sessionKey);
+  if (pending?.timer) clearTimeout(pending.timer);
+  pendingAnswers.delete(sessionKey);
+}
+
+function readPending(sessionKey: string): PendingAnswer | null {
+  const pending = pendingAnswers.get(sessionKey);
+  if (!pending) return null;
+  if (pending.expiresAt <= Date.now()) {
+    clearPending(sessionKey);
+    return null;
+  }
+  return pending;
 }
 
 /**
- * Register the guard. Requires ``plugins.entries.sellerclaw-ui.hooks.allowConversationAccess``
- * in the OpenClaw config: ``before_agent_finalize`` is a conversation hook, and path-loaded
- * (non-bundled) plugins are blocked from those unless the config opts in. Without it OpenClaw
- * logs a warning at load and the hook never runs.
+ * Send the captured answer ourselves, then keep the entry briefly so a late runtime delivery
+ * of the child's raw text is swallowed instead of arriving as a second message.
+ */
+async function selfDeliver(api: OpenClawPluginApi, sessionKey: string): Promise<void> {
+  const pending = readPending(sessionKey);
+  if (!pending || pending.deliveredBySelf || !pending.answer) return;
+  let account;
+  try {
+    account = resolveSellerclawUiAccount(api.config);
+  } catch (err) {
+    logDeliveryFailure(
+      api,
+      `cannot resolve account for rescue send session_key=${sessionKey}: ${String(err)}`,
+    );
+    clearPending(sessionKey);
+    return;
+  }
+  try {
+    await deliverTextToChat(account, sessionKey, pending.answer);
+    pending.deliveredBySelf = true;
+    pending.timer = null;
+    pending.expiresAt = Date.now() + SUPPRESS_AFTER_SELF_DELIVERY_MS;
+    logDelivery(api, `rescue send completed session_key=${sessionKey}`);
+  } catch (err) {
+    logDeliveryFailure(api, `rescue send failed session_key=${sessionKey}: ${String(err)}`);
+    clearPending(sessionKey);
+  }
+}
+
+function rememberAnswer(api: OpenClawPluginApi, sessionKey: string, answer: string): void {
+  clearPending(sessionKey);
+  const pending: PendingAnswer = {
+    answer,
+    expiresAt: Date.now() + (answer ? PENDING_TTL_MS : EMPTY_PENDING_TTL_MS),
+    deliveredBySelf: false,
+    timer: null,
+  };
+  if (answer) {
+    const timer = setTimeout(() => {
+      void selfDeliver(api, sessionKey);
+    }, SELF_DELIVER_AFTER_MS);
+    // Never hold the process open for a rescue send. The cast is for the local type-check
+    // only: this package has no Node typings, so `setTimeout` is typed as the DOM one, while
+    // inside the gateway container it is a Node timer that does have `unref`.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    pending.timer = timer;
+  }
+  pendingAnswers.set(sessionKey, pending);
+}
+
+function registerMessagingToolTracker(api: OpenClawPluginApi): void {
+  api.on?.("before_tool_call", (event: BeforeToolCallEvent, ctx?: HookContext) => {
+    const toolName = asString(event?.toolName).trim();
+    if (!MESSAGING_TOOL_NAMES.has(toolName)) return undefined;
+    const params = (event?.params ?? {}) as Record<string, unknown>;
+    // `message` carries an action; anything other than a send leaves the owner unaddressed.
+    // `conversations_send` has no action field — the name is the action.
+    const action = asString(params.action).trim().toLowerCase();
+    if (toolName === "message" && action && action !== "send") return undefined;
+    const sessionKey = asString(ctx?.sessionKey);
+    if (!sessionKey || !extractTargetFromSessionKey(sessionKey)) return undefined;
+    const expiresAt = Date.now() + MESSAGED_RUN_TTL_MS;
+    for (const key of messagedKeys(event?.runId ?? ctx?.runId, sessionKey)) {
+      messagedRuns.set(key, expiresAt);
+    }
+    return undefined;
+  });
+}
+
+function registerAnswerCapture(api: OpenClawPluginApi): void {
+  api.on?.("before_agent_finalize", (event: BeforeAgentFinalizeEvent, ctx?: HookContext) => {
+    const sessionKey = asString(event.sessionKey) || asString(ctx?.sessionKey);
+    // Not a chat of ours (subagent-to-subagent completion, another channel): leave it alone.
+    if (!sessionKey || !extractTargetFromSessionKey(sessionKey)) return undefined;
+    if (!isCompletionRun(event.runId ?? ctx?.runId, event.messages)) return undefined;
+    const answer = asString(event.lastAssistantMessage).trim();
+    // Reached only with visible text (the runtime skips this hook otherwise), so an empty
+    // answer here means the text was whitespace — treated the same as a silent reply.
+    if (!answer || isSilentAnswer(answer)) {
+      rememberAnswer(api, sessionKey, "");
+      return undefined;
+    }
+    if (hasMessagedOwner(event.runId ?? ctx?.runId, sessionKey)) {
+      // The run did the right thing on its own; the runtime will not fall back at all.
+      clearPending(sessionKey);
+      return undefined;
+    }
+    rememberAnswer(api, sessionKey, answer);
+    logDelivery(
+      api,
+      `completion answer captured for delivery session_key=${sessionKey} chars=${answer.length}`,
+    );
+    return undefined;
+  });
+
+  // The no-visible-text case, which finalize never fires for. There is nothing to show the
+  // owner, so the only job left is to stop the runtime from showing the child's report.
+  api.on?.("agent_end", (event: AgentEndEvent, ctx?: HookContext) => {
+    const sessionKey = asString(ctx?.sessionKey);
+    if (!sessionKey || !extractTargetFromSessionKey(sessionKey)) return undefined;
+    if (!isCompletionRun(event?.runId ?? ctx?.runId, event?.messages)) return undefined;
+    if (readPending(sessionKey)) return undefined;
+    if (hasMessagedOwner(event?.runId ?? ctx?.runId, sessionKey)) return undefined;
+    rememberAnswer(api, sessionKey, "");
+    logDeliveryFailure(api, `completion run produced no answer session_key=${sessionKey}`);
+    return undefined;
+  });
+}
+
+function registerDeliveryRewrite(api: OpenClawPluginApi): void {
+  api.on?.(
+    "message_sending",
+    (event: MessageSendingEvent, ctx?: HookContext): MessageSendingResult | undefined => {
+      const sessionKey = asString(ctx?.sessionKey);
+      if (!sessionKey) return undefined;
+      const pending = readPending(sessionKey);
+      if (!pending) return undefined;
+      const content = asString(event?.content);
+      // A media-only payload arrives with empty text. Generated images and files are the
+      // child's deliverables, not its internal report — they must reach the owner untouched.
+      if (!content.trim()) return undefined;
+
+      if (pending.deliveredBySelf) {
+        logDelivery(api, `late runtime delivery suppressed session_key=${sessionKey}`);
+        return { cancel: true, cancelReason: "answer already delivered by sellerclaw-ui" };
+      }
+      if (!pending.answer) {
+        clearPending(sessionKey);
+        logDeliveryFailure(
+          api,
+          `raw subagent report suppressed, owner gets nothing session_key=${sessionKey}`,
+        );
+        return { cancel: true, cancelReason: "completion run produced no owner-facing answer" };
+      }
+      const answer = pending.answer;
+      clearPending(sessionKey);
+      if (content.trim() === answer.trim()) {
+        // Already the right text (a future runtime that delivers the parent's own answer):
+        // nothing to correct, and rewriting would only risk changing formatting.
+        logDelivery(api, `runtime delivered the answer itself session_key=${sessionKey}`);
+        return undefined;
+      }
+      logDelivery(
+        api,
+        `substituted completion answer for runtime fallback session_key=${sessionKey} ` +
+          `fallback_chars=${content.length} answer_chars=${answer.length}`,
+      );
+      return { content: answer };
+    },
+  );
+}
+
+/**
+ * Register the completion-delivery hooks. ``before_agent_finalize`` and ``agent_end`` are
+ * conversation hooks, so they need ``plugins.entries.sellerclaw-ui.hooks
+ * .allowConversationAccess`` in the OpenClaw config (the bundle sets it); without it OpenClaw
+ * logs a warning at load and those two never run. ``before_tool_call`` and ``message_sending``
+ * carry no such gate.
  */
 export function registerCompletionDeliveryGuard(api: OpenClawPluginApi): void {
   if (typeof api.on !== "function") return;
+  registerMessagingToolTracker(api);
+  registerAnswerCapture(api);
+  registerDeliveryRewrite(api);
+}
 
-  const handler = (
-    event: BeforeAgentFinalizeEvent,
-    ctx?: BeforeAgentFinalizeCtx,
-  ): BeforeAgentFinalizeResult | undefined => {
-    const sessionKey = asString(event.sessionKey) || asString(ctx?.sessionKey);
-    const target = sessionKey ? extractTargetFromSessionKey(sessionKey) : null;
-    // Not a chat of ours (subagent-to-subagent completion, another channel): leave it alone.
-    if (!target) return undefined;
-    if (!isCompletionRun(event)) return undefined;
-    // The runtime only calls this hook when the turn ended with visible assistant text, and on
-    // this route visible text is by definition undelivered — so reaching here means an answer
-    // was written and nobody will see it.
-    if (asString(event.lastAssistantMessage).trim() === "") return undefined;
-
-    api.logger?.warn?.(
-      "sellerclaw-ui: completion run answered without the message tool, " +
-        `requesting a send pass session_key=${sessionKey}`,
-    );
-
-    return {
-      action: "revise",
-      retry: {
-        instruction: buildRetryInstruction(target),
-        maxAttempts: MAX_RETRY_ATTEMPTS,
-        idempotencyKey: "sellerclaw-ui:completion-requires-message-tool",
-      },
-    };
-  };
-
-  api.on("before_agent_finalize", handler);
+/** Test-only: drop all cross-run state so cases cannot leak into each other. */
+export function __resetCompletionDeliveryState(): void {
+  for (const sessionKey of [...pendingAnswers.keys()]) clearPending(sessionKey);
+  messagedRuns.clear();
 }

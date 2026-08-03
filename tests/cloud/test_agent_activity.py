@@ -251,6 +251,32 @@ def test_log_errors_capture_silent_delivery_failures(tmp_path: Path) -> None:
     ]
 
 
+def test_log_errors_capture_undelivered_completion_answers(tmp_path: Path) -> None:
+    """The plugin's own silent-delivery marker rides along; routine delivery lines do not.
+
+    ``sellerclaw-ui`` logs every completion delivery under one prefix, but only the lines that
+    cost the owner an answer carry ``undelivered`` — without that split the ping's error list
+    would fill up with successful sends and stop meaning anything.
+    """
+    state_dir = tmp_path / ".openclaw"
+    state_dir.mkdir(parents=True)
+    log_file = tmp_path / "openclaw.log"
+    log_file.write_text(
+        "sellerclaw-ui[delivery] substituted completion answer for runtime fallback "
+        "session_key=agent:supervisor:sellerclaw-ui:direct:48729abf\n"
+        "sellerclaw-ui[delivery] undelivered: completion run produced no answer "
+        "session_key=agent:supervisor:sellerclaw-ui:direct:48729abf\n",
+        encoding="utf-8",
+    )
+
+    probe = _reader(state_dir, log_file=log_file).probe()
+
+    assert probe.log_errors == [
+        "sellerclaw-ui[delivery] undelivered: completion run produced no answer "
+        "session_key=agent:supervisor:sellerclaw-ui:direct:48729abf",
+    ]
+
+
 def test_create_reader_honours_state_dir_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENCLAW_STATE_DIR", "/custom/state")
     monkeypatch.setenv("AGENT_ACTIVITY_WORKING_WINDOW_SEC", "5")

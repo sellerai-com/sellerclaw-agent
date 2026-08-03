@@ -51,6 +51,10 @@ _LOG_ERROR_TOKENS = (
     "wake failed",
     "was not woken",
     "could not be woken",
+    # Same class, our own side of it: the sellerclaw-ui plugin marks a completion run whose
+    # answer never reached the owner. Routine delivery lines share the ``sellerclaw-ui
+    # [delivery]`` prefix but not this word, so only the ones that cost an answer ride along.
+    "sellerclaw-ui[delivery] undelivered",
 )
 
 
