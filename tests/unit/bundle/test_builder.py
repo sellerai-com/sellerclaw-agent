@@ -245,6 +245,34 @@ def test_bundle_builder_entry_point_tools_and_subagents(
         assert "subagents" not in _agent_payload(cfg, sub)
 
 
+def test_bundle_builder_entry_point_keeps_delegation_tools_with_empty_team(
+    make_manifest: Callable[..., GenericManifest],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A team-less supervisor still gets ``group:sessions`` + ``agents_list``.
+
+    Regression: these used to be granted only when the manifest carried at least one subagent.
+    OpenClaw hot-applies a changed ``allowAgents`` roster to the running gateway but never
+    re-derives a changed tool allow-list, so an agent that started with an empty team stayed
+    unable to list or spawn anyone — through a restart of the *chat*, not just the current
+    session. Enabling the first specialist therefore did nothing until the whole agent was
+    restarted. The roster is the gate (empty here); the tools are constant.
+    """
+    monkeypatch.setenv("AGENT_API_KEY", "unit-test-agent-key")
+    mapping = load_manifest_v2_mapping()
+    mapping["agents"] = {**mapping["agents"], "subagents": []}
+    manifest = make_manifest(overrides={"agents": mapping["agents"]})
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
+    cfg = json.loads(result.openclaw_config)
+    supervisor = _agent_payload(cfg, "supervisor")
+    assert "group:sessions" in supervisor["tools"]["allow"]
+    assert "agents_list" in supervisor["tools"]["allow"]
+    # Nobody to delegate to yet — and `requireAgentId` leaves no id `sessions_spawn` accepts,
+    # so the granted tools cannot spawn a clone of the supervisor either.
+    assert supervisor["subagents"] == {"allowAgents": [], "requireAgentId": True}
+    assert [a["id"] for a in cfg["agents"]["list"]] == ["supervisor"]
+
+
 def test_bundle_builder_supplier_thinking_off_from_manifest(
     make_manifest: Callable[..., GenericManifest],
     monkeypatch: pytest.MonkeyPatch,
@@ -402,28 +430,19 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
 
 
 @pytest.mark.parametrize(
-    ("is_entry_point", "has_subagents", "browser", "cron", "expected_allow", "expected_deny"),
+    ("is_entry_point", "browser", "cron", "expected_allow", "expected_deny"),
     [
         pytest.param(
-            True, True, True, True,
+            True, True, True,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
                 "message", "browser", "exec", "pdf", "cron", "process", *_MEMORY_TOOLS_EXPECTED,
             ],
             [],
-            id="entry-point-with-subagents",
+            id="entry-point",
         ),
         pytest.param(
-            True, False, True, True,
-            [
-                "group:fs", "group:web", "web_search", "message", "browser", "exec", "pdf",
-                "cron", "process", *_MEMORY_TOOLS_EXPECTED,
-            ],
-            [],
-            id="entry-point-no-subagents",
-        ),
-        pytest.param(
-            True, True, True, False,
+            True, True, False,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
                 "message", "browser", "exec", "pdf", "process", *_MEMORY_TOOLS_EXPECTED,
@@ -432,7 +451,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             id="entry-point-cron-disabled",
         ),
         pytest.param(
-            False, False, True, True,
+            False, True, True,
             [
                 "group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf",
                 *_MEMORY_TOOLS_EXPECTED,
@@ -441,7 +460,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             id="subagent-never-gets-cron",
         ),
         pytest.param(
-            False, False, False, True,
+            False, False, True,
             [
                 "group:fs", "exec", "process", "web_fetch", "web_search", "pdf",
                 *_MEMORY_TOOLS_EXPECTED,
@@ -453,7 +472,6 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
 )
 def test_derive_agent_tools(
     is_entry_point: bool,
-    has_subagents: bool,
     browser: bool,
     cron: bool,
     expected_allow: list[str],
@@ -461,7 +479,6 @@ def test_derive_agent_tools(
 ) -> None:
     allow, deny = derive_agent_tools(
         is_entry_point=is_entry_point,
-        has_subagents=has_subagents,
         browser_enabled=browser,
         cron_enabled=cron,
     )
@@ -476,7 +493,6 @@ def test_derive_agent_tools_grants_whatsapp_login_to_entry_point_when_enabled() 
     """The entry point gets the in-chat ``whatsapp_login`` QR tool only when WhatsApp is on."""
     allow, _ = derive_agent_tools(
         is_entry_point=True,
-        has_subagents=True,
         browser_enabled=True,
         cron_enabled=False,
         whatsapp_enabled=True,
@@ -487,7 +503,6 @@ def test_derive_agent_tools_grants_whatsapp_login_to_entry_point_when_enabled() 
 def test_derive_agent_tools_omits_whatsapp_login_when_disabled() -> None:
     allow, _ = derive_agent_tools(
         is_entry_point=True,
-        has_subagents=True,
         browser_enabled=True,
         cron_enabled=False,
         whatsapp_enabled=False,
@@ -499,7 +514,6 @@ def test_derive_agent_tools_never_grants_whatsapp_login_to_subagent() -> None:
     """Subagents never pair WhatsApp, even if the flag is set."""
     allow, _ = derive_agent_tools(
         is_entry_point=False,
-        has_subagents=False,
         browser_enabled=True,
         cron_enabled=True,
         whatsapp_enabled=True,
@@ -508,15 +522,13 @@ def test_derive_agent_tools_never_grants_whatsapp_login_to_subagent() -> None:
 
 
 @pytest.mark.parametrize(
-    ("is_entry_point", "has_subagents"),
+    "is_entry_point",
     [
-        pytest.param(True, True, id="entry-point"),
-        pytest.param(False, False, id="subagent"),
+        pytest.param(True, id="entry-point"),
+        pytest.param(False, id="subagent"),
     ],
 )
-def test_derive_agent_tools_grants_memory_tools_to_every_agent(
-    is_entry_point: bool, has_subagents: bool
-) -> None:
+def test_derive_agent_tools_grants_memory_tools_to_every_agent(is_entry_point: bool) -> None:
     """Both the supervisor and subagents get the mem0 read/write tools, never in ``deny``.
 
     Without these the injected triage protocol tells the agent to call ``memory_add`` but no such
@@ -524,7 +536,6 @@ def test_derive_agent_tools_grants_memory_tools_to_every_agent(
     """
     allow, deny = derive_agent_tools(
         is_entry_point=is_entry_point,
-        has_subagents=has_subagents,
         browser_enabled=True,
         cron_enabled=True,
     )

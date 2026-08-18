@@ -67,7 +67,6 @@ _MEMORY_TOOLS = [
 def derive_agent_tools(
     *,
     is_entry_point: bool,
-    has_subagents: bool,
     browser_enabled: bool,
     cron_enabled: bool,
     whatsapp_enabled: bool = False,
@@ -76,10 +75,11 @@ def derive_agent_tools(
 
     Returns ``(allow, deny)``. All capability tools are manifest-driven:
 
-    - Entry point (supervisor): broad allow including ``group:fs`` (file access, always) and
-      ``process`` (background long-running commands instead of blocking the turn). When it has
-      subagents it additionally gets ``group:sessions`` + ``agents_list`` to inspect and drive
-      its team. ``cron`` only here, and only when enabled.
+    - Entry point (supervisor): broad allow including ``group:fs`` (file access, always),
+      ``process`` (background long-running commands instead of blocking the turn) and
+      ``group:sessions`` + ``agents_list`` to inspect and drive its team — the last two
+      unconditionally, even with an empty team (see the note at the grant site).
+      ``cron`` only here, and only when enabled.
       ``whatsapp_login`` (in-chat QR pairing tool) only here, and only when WhatsApp is on.
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
     - Long-term memory tools (``_MEMORY_TOOLS``) are granted to every agent so the injected
@@ -90,9 +90,31 @@ def derive_agent_tools(
       generation, so adding them to ``allow`` only produces an "unknown tool" warning.
     """
     if is_entry_point:
-        # The supervisor gets file access (``group:fs``) unconditionally so it can read and
+        # ``agents_list`` lets the supervisor enumerate its available team alongside
+        # ``group:sessions`` (spawn/list/manage live child sessions). Granted whether or not a
+        # specialist is enabled right now: OpenClaw hot-applies a changed subagent roster
+        # (``allowAgents``) to the running gateway — new and already-open sessions alike — but it
+        # does NOT re-derive a changed per-agent tool allow-list. Gating these two on "the team
+        # is non-empty" therefore made the *first* specialist unusable until the whole agent
+        # restarted: the supervisor kept its empty-team tool set and could neither list nor spawn
+        # anyone, so it promised the owner a specialist and then silently did the work itself.
+        # Constant here, dynamic in ``allowAgents``: the roster stays the real gate, and that one
+        # does reload live. An empty roster is a safe resting state — ``agents_list`` returns
+        # nobody and ``sessions_spawn`` has no id it will accept (``requireAgentId``).
+        #
+        # The supervisor also gets file access (``group:fs``) unconditionally so it can read and
         # write workspace files itself, not only delegate.
-        allow = ["group:fs", "group:web", "web_search", "message", "browser", "exec", "pdf"]
+        allow = [
+            "group:sessions",
+            "agents_list",
+            "group:fs",
+            "group:web",
+            "web_search",
+            "message",
+            "browser",
+            "exec",
+            "pdf",
+        ]
         if cron_enabled:
             allow.append("cron")
         # WhatsApp links a personal account by QR; the agent runs ``whatsapp_login`` in the
@@ -107,10 +129,6 @@ def derive_agent_tools(
         # so without it here OpenClaw also strips ``process`` from the subagents ("inherited
         # tools"), leaving no agent able to run work in the background.
         allow.append("process")
-        if has_subagents:
-            # ``agents_list`` lets the supervisor enumerate its available team alongside
-            # ``group:sessions`` (spawn/list/manage live child sessions).
-            allow = ["group:sessions", "agents_list", *allow]
         deny: list[str] = []
     else:
         allow = [
@@ -398,7 +416,6 @@ class BundleBuilder:
     ) -> AssembledAgentConfig:
         tools_allow, tools_deny = derive_agent_tools(
             is_entry_point=agent.is_entry_point,
-            has_subagents=bool(agent.subagent_ids),
             browser_enabled=agent.browser_enabled,
             cron_enabled=manifest.cron_enabled,
             whatsapp_enabled=manifest.channels.whatsapp.enabled,
