@@ -918,8 +918,8 @@ describe("registerInboundRoute", () => {
 
   describe("readDeliverPayload", () => {
     it("returns empty fields for non-object payloads", () => {
-      expect(readDeliverPayload(null)).toEqual({ text: "", mediaUrls: [] });
-      expect(readDeliverPayload("nope")).toEqual({ text: "", mediaUrls: [] });
+      expect(readDeliverPayload(null)).toEqual({ text: "", mediaUrls: [], isError: false });
+      expect(readDeliverPayload("nope")).toEqual({ text: "", mediaUrls: [], isError: false });
     });
 
     it("merges mediaUrls and the legacy mediaUrl field, deduped and trimmed", () => {
@@ -929,13 +929,23 @@ describe("registerInboundRoute", () => {
           mediaUrls: [" /a.png ", "/b.png", "/a.png"],
           mediaUrl: "/b.png",
         }),
-      ).toEqual({ text: "caption", mediaUrls: ["/a.png", "/b.png"] });
+      ).toEqual({ text: "caption", mediaUrls: ["/a.png", "/b.png"], isError: false });
     });
 
     it("ignores non-string media entries", () => {
       expect(
         readDeliverPayload({ text: "", mediaUrls: [42, null, "/ok.png", ""] }),
-      ).toEqual({ text: "", mediaUrls: ["/ok.png"] });
+      ).toEqual({ text: "", mediaUrls: ["/ok.png"], isError: false });
+    });
+
+    it("reads the engine's error flag, and only when it is exactly true", () => {
+      // The flag is what separates "the agent answered" from "the engine gave up and wrote a
+      // notice"; a truthy-but-not-true value is not that signal.
+      expect(readDeliverPayload({ text: "LLM request timed out.", isError: true }).isError).toBe(
+        true,
+      );
+      expect(readDeliverPayload({ text: "hi", isError: "yes" }).isError).toBe(false);
+      expect(readDeliverPayload({ text: "hi" }).isError).toBe(false);
     });
   });
 

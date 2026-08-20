@@ -11,6 +11,14 @@ import {
 import { resolveSellerclawUiAccount } from "./channel.js";
 import { logDelivery, logError, logInfo, logWarn } from "./log.js";
 import {
+  claimContinuation,
+  consumeOwnerAbort,
+  markOwnerAbort,
+  MAX_CONTINUATIONS,
+  readRunOutcome,
+  resetContinuations,
+} from "./run-outcome.js";
+import {
   postScheduledTaskFeasibility,
   postScheduledTaskRun,
   postThought,
@@ -351,10 +359,15 @@ export function pickDeltaJoin(prevTail: string, nextHead: string): string {
  *
  * Exported for unit-testing without spinning up the HTTP route.
  */
-export function readDeliverPayload(raw: unknown): { text: string; mediaUrls: string[] } {
-  if (!raw || typeof raw !== "object") return { text: "", mediaUrls: [] };
+export function readDeliverPayload(raw: unknown): {
+  text: string;
+  mediaUrls: string[];
+  isError: boolean;
+} {
+  if (!raw || typeof raw !== "object") return { text: "", mediaUrls: [], isError: false };
   const p = raw as Record<string, unknown>;
   const text = typeof p.text === "string" ? p.text : "";
+  const isError = p.isError === true;
   const mediaUrls: string[] = [];
   const push = (value: unknown) => {
     if (typeof value !== "string") return;
@@ -365,7 +378,495 @@ export function readDeliverPayload(raw: unknown): { text: string; mediaUrls: str
     for (const entry of p.mediaUrls) push(entry);
   }
   push(p.mediaUrl);
-  return { text, mediaUrls };
+  return { text, mediaUrls, isError };
+}
+
+/**
+ * Prompt that resumes a turn the run budget cut short.
+ *
+ * Dispatched into the same (file-backed) session, so the agent still has its own context and can
+ * see what it already finished — the automated form of the owner asking "что случилось?", which
+ * is what actually rescued the 2026-08-19 incident.
+ */
+const CONTINUATION_PROMPT =
+  "[internal] Your previous turn hit the per-turn time limit and was cut off before it could " +
+  "reply. Continue from where you stopped: check what already completed before redoing " +
+  "anything, finish what is left, and report the result to the owner. The interruption was " +
+  "internal plumbing — no need to apologise for it or explain it.";
+
+/**
+ * Run one chat turn: dispatch it to the agent, stream its parts to the cloud, finalize it, and —
+ * when the run budget cut it short — resume it.
+ *
+ * Extracted from the inbound route so a self-recovery continuation can re-enter the same path
+ * (``continuationAttempt`` marks those runs and bounds them). Everything above this call is HTTP
+ * concern; everything here is the turn.
+ */
+function startInboundTurn(params: {
+  api: OpenClawPluginApi;
+  account: ScwUiAccount;
+  runtime: ReturnType<typeof getRuntime>;
+  payload: InboundPayload;
+  sessionKey: string;
+  /** Cloud message id held in the in-flight guard; empty for a continuation, which holds none. */
+  inboundMessageId: string;
+  /** 1-based attempt number when this turn is itself a self-recovery continuation. */
+  continuationAttempt?: number;
+}): void {
+  const { api, account, runtime, payload, sessionKey, inboundMessageId } = params;
+  // One streaming assistant message per turn, started lazily on the first delivered
+  // part (or eagerly at finish for an empty dispatch) and finalized after dispatch.
+  const partsMessageId = crypto.randomUUID();
+  /**
+   * Delivery timeline for this turn, logged at warn so it survives ``logging.level: warn``
+   * and reaches the shipped logs.
+   *
+   * A turn that runs for minutes while the owner watches an empty chat is the symptom we
+   * cannot currently explain: the engine is configured to stream (``blockStreamingDefault:
+   * on``, ``blockStreamingBreak: text_end``, a 200-char floor), yet the assistant message
+   * is created at the exact moment the run ends — so nothing arrived here before the final.
+   * This records what the dispatcher actually handed us and when, which tells us whether
+   * blocks are never emitted, emitted but empty, or emitted and dropped on our side.
+   */
+  const turnStartedAt = Date.now();
+  let deliveryCount = 0;
+  let partsTurnStarted = false;
+  /** Set when the engine handed us a failure notice instead of an answer (see ``deliver``). */
+  let sawErrorFinal = false;
+  /** How much engine error text was kept out of the chat, for the delivery timeline. */
+  let suppressedErrorChars = 0;
+  /**
+   * Whether anything real reached the chat this turn (committed text, preview delta, media).
+   * Separates "the run succeeded and the error payload was just a tool-failure warning riding
+   * along with the answer" from "the run 'succeeded' but the error text was all it produced"
+   * (e.g. a mid-turn rate limit after tool calls) — the first must not read as a failure.
+   */
+  let postedAnyContent = false;
+  /** Attempt number of the continuation ``finishTurn`` decided to start, if any. */
+  let pendingContinuationAttempt: number | null = null;
+  const ensurePartsTurn = async (): Promise<void> => {
+    if (partsTurnStarted) return;
+    partsTurnStarted = true;
+    try {
+      await postTurnStart(account, sessionKey, partsMessageId, payload.chat_id);
+    } catch (err) {
+      partsTurnStarted = false;
+      logError(api, `sellerclaw-ui: turn-start failed session_key=${sessionKey}: ${String(err)}`);
+    }
+  };
+
+  const dispatchPromise = (async () => {
+    const attachmentMarkers = await materializeAttachmentsForAgent(
+      api,
+      account,
+      payload.raw_content ?? [],
+    );
+    const rawBody = [payload.text.trim(), ...attachmentMarkers]
+      .filter((part) => part && part.length > 0)
+      .join("\n");
+
+    // Tail of the previously delivered preview delta. `pickDeltaJoin` needs
+    // enough suffix to recognise both a closing code fence and the full
+    // last line (for the ATX-heading check). 512 chars comfortably covers
+    // any realistic heading / fence while keeping per-session memory
+    // bounded.
+    let prevTail = "";
+    const TAIL_KEEP_CHARS = 512;
+    // Which sub-message the preview deltas so far belong to. A turn can hold several ("working
+    // on it…", then the answer), and `pickDeltaJoin` reads the gap between two of them as a
+    // chunk the chunker cut mid-sentence — so it glues them with a single space and the status
+    // note runs into the answer as one paragraph. The dispatcher labels every delivery with the
+    // sub-message it belongs to, so that boundary is known rather than guessed. `null` until the
+    // first block, and again after a final commits (which drops the preview buffer).
+    let previewMessageIndex: number | null = null;
+    // Whether this turn has already committed a sub-message, so the next one is separated
+    // from it by a blank line. Finals are whole sub-messages, so unlike preview deltas there
+    // is nothing to guess about the boundary between them.
+    let committedAnyText = false;
+    // Source paths/URLs already delivered as media this turn (same reason).
+    const sentMedia = new Set<string>();
+    // Monotonic counter for thought stream parts (per turn). Frontend dedupes by seq.
+    let thoughtSeq = 0;
+    const thoughtAgentId = payload.agent_id || "supervisor";
+
+    // Reasoning ("thinking") stream → transient /thought channel. OpenClaw streams the
+    // running CUMULATIVE reasoning text via ``replyOptions.onReasoningStream`` (NOT via the
+    // ``deliver`` reply channel) and closes each reasoning block with ``onReasoningEnd``. We
+    // diff the cumulative to a delta, accumulate it, and post one thought item per closed
+    // block. The frontend renders these as the collapsible "Thinking…" panel; nothing is
+    // persisted. ``reasoningPrior`` tracks the engine's cumulative (never reset mid-turn so
+    // cross-block diffing stays correct); ``reasoningBuf`` holds deltas since the last flush.
+    let reasoningPrior = "";
+    let reasoningBuf = "";
+    const REASONING_FLUSH_AT = 2000;
+    const postThoughtText = (raw: string): void => {
+      const text = raw.trim();
+      if (!text) return;
+      const seq = thoughtSeq++;
+      void postThought(account, sessionKey, payload.chat_id, {
+        message_id: partsMessageId,
+        agent_id: thoughtAgentId,
+        kind: "text",
+        text,
+        seq,
+      }).catch((err) => {
+        logError(
+          api,
+          `sellerclaw-ui: thought post failed session_key=${sessionKey}: ${String(err)}`,
+        );
+      });
+    };
+    const onReasoningStream = (evt: { text?: string }): void => {
+      const t = (evt?.text ?? "").trim();
+      if (!t || t === reasoningPrior) return;
+      reasoningBuf += t.startsWith(reasoningPrior) ? t.slice(reasoningPrior.length) : t;
+      reasoningPrior = t;
+      // Bound a single item's size if a block stays open unusually long; cut on a line
+      // boundary so we don't split mid-sentence.
+      if (reasoningBuf.length >= REASONING_FLUSH_AT) {
+        const nl = reasoningBuf.lastIndexOf("\n");
+        const cut = nl > 0 ? nl : reasoningBuf.length;
+        postThoughtText(reasoningBuf.slice(0, cut));
+        reasoningBuf = reasoningBuf.slice(cut);
+      }
+    };
+    const onReasoningEnd = (): void => {
+      const rest = reasoningBuf;
+      reasoningBuf = "";
+      postThoughtText(rest);
+    };
+
+    await dispatchInboundDirectDmWithReasoning({
+      cfg: api.config,
+      runtime,
+      channel: "sellerclaw-ui",
+      channelLabel: "SellerClaw UI",
+      accountId: "default",
+      peer: { kind: "direct", id: payload.chat_id },
+      senderId: payload.user_id,
+      senderAddress: `sellerclaw-ui:${payload.user_id}`,
+      recipientAddress: `sellerclaw-ui:direct:${payload.chat_id}`,
+      conversationLabel: payload.chat_id,
+      rawBody,
+      // A catch-up re-delivery dispatches as a fresh OpenClaw turn: a new MessageSid so
+      // any session-level dedup on the original id can't suppress the re-run. The cloud
+      // turn is paired to the still-PROCESSING user message by chat, not by this id, so
+      // the re-run correctly completes the stuck message.
+      messageId: payload.redelivery
+        ? crypto.randomUUID()
+        : (payload.message_id ?? crypto.randomUUID()),
+      timestamp: Date.now(),
+      commandAuthorized: true,
+      // Structured copy of the per-message effort level (also present as a
+      // `[request-effort: …]` line inside rawBody).
+      extraContext: payload.effort ? { Effort: payload.effort } : undefined,
+      // Reasoning stream → "Thinking…" panel. OpenClaw forwards these from ``replyOptions``
+      // into the run (``onReasoningStream``/``onReasoningEnd``); without them the agent's
+      // reasoning is produced but never reaches the chat.
+      replyOptions: { onReasoningStream, onReasoningEnd },
+      deliver: async (
+        replyPayload: unknown,
+        dispatchInfo?: { kind?: string; assistantMessageIndex?: number },
+      ) => {
+        const { text, mediaUrls, isError } = readDeliverPayload(replyPayload);
+        deliveryCount += 1;
+        logDelivery(
+          api,
+          `inbound delivery #${deliveryCount} kind=${dispatchInfo?.kind ?? "none"} ` +
+            `at=+${Math.round((Date.now() - turnStartedAt) / 1000)}s chars=${text.length} ` +
+            `media=${mediaUrls.length} idx=${dispatchInfo?.assistantMessageIndex ?? "-"} ` +
+            `${isError ? "isError=true " : ""}session_key=${sessionKey}`,
+        );
+
+        // An engine-synthesized failure notice, not the agent's answer. OpenClaw converts a
+        // terminal run state (run-budget timeout, provider failure) into reply text and marks
+        // it ``isError`` — posting that as a chat part is how "LLM request timed out." came to
+        // be stored as an assistant reply. Hold it back; ``finishTurn`` decides what the owner
+        // should see instead, and whether the turn resumes itself.
+        if (isError) {
+          sawErrorFinal = true;
+          suppressedErrorChars += text.length;
+          return;
+        }
+
+        // Reasoning blocks travel on a separate transient channel and are NOT
+        // appended as user-visible parts. The UI renders them as a collapsible
+        // "Thinking…" panel. ``isReasoningReplyPayload`` checks both the
+        // ``isReasoning`` flag and the legacy ``reasoning:`` / ``thinking…``
+        // text prefix used by the block-reply-pipeline.
+        if (
+          typeof replyPayload === "object" &&
+          replyPayload !== null &&
+          isReasoningReplyPayload(replyPayload as Record<string, unknown>) &&
+          text.trim()
+        ) {
+          try {
+            await postThought(account, sessionKey, payload.chat_id, {
+              message_id: partsMessageId,
+              agent_id: thoughtAgentId,
+              kind: "text",
+              text,
+              seq: thoughtSeq++,
+            });
+          } catch (err) {
+            logError(
+              api,
+              `sellerclaw-ui: thought post failed session_key=${sessionKey}: ${String(err)}`,
+            );
+          }
+          return;
+        }
+
+        // One ordered turn per dispatch: media and text become ordered parts.
+        // Media keeps its position relative to the streamed text (no separate
+        // road), and the streamed text is never orphaned by an out-of-band send.
+        for (const rawUrl of mediaUrls) {
+          if (sentMedia.has(rawUrl)) continue;
+          sentMedia.add(rawUrl);
+          try {
+            const { url, contentType } = await resolveOutboundMediaUrl(account, rawUrl);
+            await ensurePartsTurn();
+            await postTurnPart(
+              account,
+              sessionKey,
+              partsMessageId,
+              {
+                part_id: crypto.randomUUID(),
+                kind: resolveMediaKind(url, contentType),
+                url,
+                ...(contentType ? { content_type: contentType } : {}),
+              },
+              payload.chat_id,
+            );
+            postedAnyContent = true;
+          } catch (err) {
+            logError(
+              api,
+              `sellerclaw-ui: media part failed source=${rawUrl} session_key=${sessionKey}: ${String(err)}`,
+            );
+          }
+        }
+        if (text.trim()) {
+          // The engine streams a long reply block-by-block (``kind === "block"``) and then
+          // delivers the same sub-message once more, whole, as the model wrote it
+          // (``kind === "final"``). The two are not interchangeable: a block arrives with the
+          // whitespace the chunker cut on already dropped, so blocks re-glued are only
+          // approximately formatted, while the final carries the model's exact wording.
+          //
+          // So blocks feed the live preview — shown, then thrown away — and the final is what
+          // we persist. A short reply that never streamed still arrives as a final, so it
+          // takes the same road and needs no special case.
+          if (dispatchInfo?.kind === "block") {
+            // A preview that outlives its turn is what the user keeps: `end_turn` persists it
+            // when no final ever arrived. So the boundary between sub-messages has to be right
+            // here too, not only on the committed road below.
+            const messageIndex = dispatchInfo.assistantMessageIndex ?? null;
+            const startsNewSubMessage =
+              previewMessageIndex !== null && messageIndex !== previewMessageIndex;
+            previewMessageIndex = messageIndex;
+            const joiner = startsNewSubMessage ? "\n\n" : pickDeltaJoin(prevTail, text);
+            const outText = joiner + text;
+            prevTail = outText.slice(-TAIL_KEEP_CHARS);
+            try {
+              await ensurePartsTurn();
+              await postTurnPreview(account, sessionKey, partsMessageId, payload.chat_id, {
+                part_id: crypto.randomUUID(),
+                text: outText,
+              });
+              // Counts as content: the cloud persists an orphaned preview tail at turn end,
+              // so text the owner watched appear is real even if no final ever commits it.
+              postedAnyContent = true;
+            } catch (err) {
+              // A dropped preview delta costs a moment of live rendering, never the reply:
+              // the final still lands, and an interrupted turn keeps whatever preview the
+              // cloud did receive.
+              logError(
+                api,
+                `sellerclaw-ui: preview delta failed session_key=${sessionKey}: ${String(err)}`,
+              );
+            }
+          } else {
+            // Separate consecutive sub-messages (e.g. a "working on it…" status, then the
+            // answer) — each final is a complete message, so the boundary is known, not
+            // guessed.
+            const outText = committedAnyText ? `\n\n${text}` : text;
+            prevTail = "";
+            // Committing text drops the preview buffer cloud-side, so the next block starts a
+            // fresh preview with nothing before it to be separated from.
+            previewMessageIndex = null;
+            try {
+              await ensurePartsTurn();
+              await postTurnPart(
+                account,
+                sessionKey,
+                partsMessageId,
+                { part_id: crypto.randomUUID(), kind: "text", text: outText },
+                payload.chat_id,
+              );
+              committedAnyText = true;
+              postedAnyContent = true;
+            } catch (err) {
+              logError(
+                api,
+                `sellerclaw-ui: text part failed session_key=${sessionKey}: ${String(err)}`,
+              );
+            }
+          }
+        }
+      },
+      onRecordError: (err: unknown) => {
+        logError(api, `sellerclaw-ui: inbound session record error: ${String(err)}`);
+      },
+      onDispatchError: (err: unknown, info: { kind: string }) => {
+        logError(api, `sellerclaw-ui: inbound ${info.kind} reply error: ${String(err)}`);
+      },
+    });
+  })();
+
+  /**
+   * How this turn ends, once the dispatch has settled.
+   *
+   * A dispatch that *threw* is a crash: ``failed``, exactly as before. Everything else hinges on
+   * whether the engine handed us a failure notice instead of an answer:
+   *
+   *  - no notice → an ordinary turn;
+   *  - notice after the owner pressed stop → quiet close. A deliberate stop is not an error;
+   *  - notice from a run that aborted (no error family attached) → quiet close **and** resume,
+   *    while attempts remain. The owner keeps whatever was already streamed or sent through the
+   *    ``message`` tool, and the continuation delivers the finished work as its own reply;
+   *  - anything else — a failure family that needs a human (billing, auth, rate limit),
+   *    attempts spent, or no verdict recorded at all → ``failed``, so the owner is told rather
+   *    than left with silence.
+   *
+   * A ``completed`` end with no parts is the cloud's "release the paired user message" marker
+   * and leaves no bubble behind; ``failed`` keeps any partial text and attaches the retryable
+   * note. Both branches already exist server-side.
+   */
+  const resolveTurnEnd = (): { status: "completed" | "failed"; branch: string } => {
+    // Consumed unconditionally: a stop belongs to at most this turn. A run that raced the
+    // abort to a normal finish must still clear the mark, or it would silence the next turn's
+    // genuine failure.
+    const ownerStopped = consumeOwnerAbort(sessionKey);
+    if (!sawErrorFinal) {
+      resetContinuations(sessionKey);
+      return { status: "completed", branch: "normal" };
+    }
+    if (ownerStopped) {
+      resetContinuations(sessionKey);
+      return { status: "completed", branch: "owner_stop" };
+    }
+    const outcome = readRunOutcome(sessionKey);
+    if (!outcome) return { status: "failed", branch: "failed_no_outcome" };
+    if (outcome.success) {
+      // The run itself finished fine; the error payload was a tool-failure warning the engine
+      // appends BESIDE a real answer (``run/payloads.ts`` pushes those with ``isError: true``
+      // too). With content delivered, the turn is a success — the suppressed warning costs the
+      // owner an engine-worded "⚠️ tool failed" line, which the agent's own text covers. With
+      // nothing delivered (e.g. a mid-turn rate limit ate the reply), the error text was the
+      // whole outcome, and pretending success would leave a silent blank — surface it.
+      if (postedAnyContent) {
+        resetContinuations(sessionKey);
+        return { status: "completed", branch: "completed_warning_suppressed" };
+      }
+      return { status: "failed", branch: "failed_error_family" };
+    }
+    if (outcome.hasError) return { status: "failed", branch: "failed_error_family" };
+    const attempt = claimContinuation(sessionKey);
+    if (attempt === null) return { status: "failed", branch: "failed_recovery_exhausted" };
+    pendingContinuationAttempt = attempt;
+    return { status: "completed", branch: `recovering attempt=${attempt}/${MAX_CONTINUATIONS}` };
+  };
+
+  const finishTurn = async (forced?: "failed"): Promise<void> => {
+    // Always finalize via ``turn/end``. If the dispatch produced no parts, open an
+    // (empty) turn first so the paired user turn is completed rather than left
+    // PROCESSING.
+    // A rejected dispatch is a crash — except when the owner's stop caused the unwind: some
+    // abort paths reject rather than resolve, and a deliberate stop must not wear an error
+    // note. Consuming the mark here also keeps it from leaking into the next turn.
+    const { status, branch } = forced
+      ? consumeOwnerAbort(sessionKey)
+        ? { status: "completed" as const, branch: "owner_stop" }
+        : { status: "failed" as const, branch: "dispatch_error" }
+      : resolveTurnEnd();
+    await ensurePartsTurn();
+    // Closing line of the delivery timeline: how many pieces the turn produced, how it ended and
+    // how long it ran. One delivery on a multi-minute turn means the owner watched an empty chat;
+    // ``branch`` names which end-of-turn rule fired, and is the canary for engine drift — a
+    // budget abort that stops reaching ``recovering``/``failed_*`` means ``isError`` no longer
+    // arrives (see ``inbound-reply-with-reasoning.ts``).
+    logDelivery(
+      api,
+      `inbound turn ${status} branch=${branch} deliveries=${deliveryCount} ` +
+        `suppressed_chars=${suppressedErrorChars} ` +
+        `${params.continuationAttempt ? `continuation=${params.continuationAttempt} ` : ""}` +
+        `duration=${Math.round((Date.now() - turnStartedAt) / 1000)}s session_key=${sessionKey}`,
+    );
+    try {
+      await postTurnEnd(account, sessionKey, partsMessageId, payload.chat_id, status);
+    } catch (err) {
+      logError(api, `sellerclaw-ui: turn-end failed session_key=${sessionKey}: ${String(err)}`);
+    }
+  };
+
+  /**
+   * Resume a turn the run budget cut short, by re-entering this same path with a continuation
+   * prompt. Ordered strictly after ``turn/end`` and after the in-flight slot is freed, or the
+   * cloud would drop it as a duplicate delivery.
+   *
+   * A failure to even start the continuation is the one path that ends quiet with nobody coming
+   * back, so it is logged as an error rather than swallowed.
+   */
+  const startPendingContinuation = (): void => {
+    const attempt = pendingContinuationAttempt;
+    if (attempt === null) return;
+    pendingContinuationAttempt = null;
+    try {
+      startInboundTurn({
+        api,
+        account,
+        runtime,
+        payload: {
+          chat_id: payload.chat_id,
+          agent_id: payload.agent_id,
+          user_id: payload.user_id,
+          text: CONTINUATION_PROMPT,
+          // Attachments were materialized by the interrupted turn and are already in its
+          // session; re-sending them would upload them a second time.
+          effort: payload.effort,
+        },
+        sessionKey,
+        inboundMessageId: "",
+        continuationAttempt: attempt,
+      });
+      logDelivery(
+        api,
+        `inbound continuation started attempt=${attempt}/${MAX_CONTINUATIONS} ` +
+          `session_key=${sessionKey}`,
+      );
+    } catch (err) {
+      logError(
+        api,
+        `sellerclaw-ui: continuation dispatch failed attempt=${attempt} ` +
+          `session_key=${sessionKey}: ${String(err)}`,
+      );
+    }
+  };
+
+  void dispatchPromise
+    .then(() => finishTurn())
+    .catch(async (err: unknown) => {
+      logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
+      await finishTurn("failed");
+    })
+    .finally(() => {
+      // Free the in-flight slot only after the turn is finalized (turn/end posted or
+      // failed). Until then a catch-up re-delivery of this same message is dropped; once
+      // freed, a later re-delivery (e.g. the cloud was down when turn/end fired) re-runs.
+      if (inboundMessageId) inFlightInboundMessageIds.delete(inboundMessageId);
+      startPendingContinuation();
+    });
+
 }
 
 export function registerInboundRoute(api: OpenClawPluginApi): void {
@@ -446,320 +947,7 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
       res.statusCode = 202;
       res.end(JSON.stringify({ ok: true }));
 
-      // One streaming assistant message per turn, started lazily on the first delivered
-      // part (or eagerly at finish for an empty dispatch) and finalized after dispatch.
-      const partsMessageId = crypto.randomUUID();
-      /**
-       * Delivery timeline for this turn, logged at warn so it survives ``logging.level: warn``
-       * and reaches the shipped logs.
-       *
-       * A turn that runs for minutes while the owner watches an empty chat is the symptom we
-       * cannot currently explain: the engine is configured to stream (``blockStreamingDefault:
-       * on``, ``blockStreamingBreak: text_end``, a 200-char floor), yet the assistant message
-       * is created at the exact moment the run ends — so nothing arrived here before the final.
-       * This records what the dispatcher actually handed us and when, which tells us whether
-       * blocks are never emitted, emitted but empty, or emitted and dropped on our side.
-       */
-      const turnStartedAt = Date.now();
-      let deliveryCount = 0;
-      let partsTurnStarted = false;
-      const ensurePartsTurn = async (): Promise<void> => {
-        if (partsTurnStarted) return;
-        partsTurnStarted = true;
-        try {
-          await postTurnStart(account, sessionKey, partsMessageId, payload.chat_id);
-        } catch (err) {
-          partsTurnStarted = false;
-          logError(api, `sellerclaw-ui: turn-start failed session_key=${sessionKey}: ${String(err)}`);
-        }
-      };
-
-      const dispatchPromise = (async () => {
-        const attachmentMarkers = await materializeAttachmentsForAgent(
-          api,
-          account,
-          payload.raw_content ?? [],
-        );
-        const rawBody = [payload.text.trim(), ...attachmentMarkers]
-          .filter((part) => part && part.length > 0)
-          .join("\n");
-
-        // Tail of the previously delivered preview delta. `pickDeltaJoin` needs
-        // enough suffix to recognise both a closing code fence and the full
-        // last line (for the ATX-heading check). 512 chars comfortably covers
-        // any realistic heading / fence while keeping per-session memory
-        // bounded.
-        let prevTail = "";
-        const TAIL_KEEP_CHARS = 512;
-        // Which sub-message the preview deltas so far belong to. A turn can hold several ("working
-        // on it…", then the answer), and `pickDeltaJoin` reads the gap between two of them as a
-        // chunk the chunker cut mid-sentence — so it glues them with a single space and the status
-        // note runs into the answer as one paragraph. The dispatcher labels every delivery with the
-        // sub-message it belongs to, so that boundary is known rather than guessed. `null` until the
-        // first block, and again after a final commits (which drops the preview buffer).
-        let previewMessageIndex: number | null = null;
-        // Whether this turn has already committed a sub-message, so the next one is separated
-        // from it by a blank line. Finals are whole sub-messages, so unlike preview deltas there
-        // is nothing to guess about the boundary between them.
-        let committedAnyText = false;
-        // Source paths/URLs already delivered as media this turn (same reason).
-        const sentMedia = new Set<string>();
-        // Monotonic counter for thought stream parts (per turn). Frontend dedupes by seq.
-        let thoughtSeq = 0;
-        const thoughtAgentId = payload.agent_id || "supervisor";
-
-        // Reasoning ("thinking") stream → transient /thought channel. OpenClaw streams the
-        // running CUMULATIVE reasoning text via ``replyOptions.onReasoningStream`` (NOT via the
-        // ``deliver`` reply channel) and closes each reasoning block with ``onReasoningEnd``. We
-        // diff the cumulative to a delta, accumulate it, and post one thought item per closed
-        // block. The frontend renders these as the collapsible "Thinking…" panel; nothing is
-        // persisted. ``reasoningPrior`` tracks the engine's cumulative (never reset mid-turn so
-        // cross-block diffing stays correct); ``reasoningBuf`` holds deltas since the last flush.
-        let reasoningPrior = "";
-        let reasoningBuf = "";
-        const REASONING_FLUSH_AT = 2000;
-        const postThoughtText = (raw: string): void => {
-          const text = raw.trim();
-          if (!text) return;
-          const seq = thoughtSeq++;
-          void postThought(account, sessionKey, payload.chat_id, {
-            message_id: partsMessageId,
-            agent_id: thoughtAgentId,
-            kind: "text",
-            text,
-            seq,
-          }).catch((err) => {
-            logError(
-              api,
-              `sellerclaw-ui: thought post failed session_key=${sessionKey}: ${String(err)}`,
-            );
-          });
-        };
-        const onReasoningStream = (evt: { text?: string }): void => {
-          const t = (evt?.text ?? "").trim();
-          if (!t || t === reasoningPrior) return;
-          reasoningBuf += t.startsWith(reasoningPrior) ? t.slice(reasoningPrior.length) : t;
-          reasoningPrior = t;
-          // Bound a single item's size if a block stays open unusually long; cut on a line
-          // boundary so we don't split mid-sentence.
-          if (reasoningBuf.length >= REASONING_FLUSH_AT) {
-            const nl = reasoningBuf.lastIndexOf("\n");
-            const cut = nl > 0 ? nl : reasoningBuf.length;
-            postThoughtText(reasoningBuf.slice(0, cut));
-            reasoningBuf = reasoningBuf.slice(cut);
-          }
-        };
-        const onReasoningEnd = (): void => {
-          const rest = reasoningBuf;
-          reasoningBuf = "";
-          postThoughtText(rest);
-        };
-
-        await dispatchInboundDirectDmWithReasoning({
-          cfg: api.config,
-          runtime,
-          channel: "sellerclaw-ui",
-          channelLabel: "SellerClaw UI",
-          accountId: "default",
-          peer: { kind: "direct", id: payload.chat_id },
-          senderId: payload.user_id,
-          senderAddress: `sellerclaw-ui:${payload.user_id}`,
-          recipientAddress: `sellerclaw-ui:direct:${payload.chat_id}`,
-          conversationLabel: payload.chat_id,
-          rawBody,
-          // A catch-up re-delivery dispatches as a fresh OpenClaw turn: a new MessageSid so
-          // any session-level dedup on the original id can't suppress the re-run. The cloud
-          // turn is paired to the still-PROCESSING user message by chat, not by this id, so
-          // the re-run correctly completes the stuck message.
-          messageId: payload.redelivery
-            ? crypto.randomUUID()
-            : (payload.message_id ?? crypto.randomUUID()),
-          timestamp: Date.now(),
-          commandAuthorized: true,
-          // Structured copy of the per-message effort level (also present as a
-          // `[request-effort: …]` line inside rawBody).
-          extraContext: payload.effort ? { Effort: payload.effort } : undefined,
-          // Reasoning stream → "Thinking…" panel. OpenClaw forwards these from ``replyOptions``
-          // into the run (``onReasoningStream``/``onReasoningEnd``); without them the agent's
-          // reasoning is produced but never reaches the chat.
-          replyOptions: { onReasoningStream, onReasoningEnd },
-          deliver: async (
-            replyPayload: unknown,
-            dispatchInfo?: { kind?: string; assistantMessageIndex?: number },
-          ) => {
-            const { text, mediaUrls } = readDeliverPayload(replyPayload);
-            deliveryCount += 1;
-            logDelivery(
-              api,
-              `inbound delivery #${deliveryCount} kind=${dispatchInfo?.kind ?? "none"} ` +
-                `at=+${Math.round((Date.now() - turnStartedAt) / 1000)}s chars=${text.length} ` +
-                `media=${mediaUrls.length} idx=${dispatchInfo?.assistantMessageIndex ?? "-"} ` +
-                `session_key=${sessionKey}`,
-            );
-
-            // Reasoning blocks travel on a separate transient channel and are NOT
-            // appended as user-visible parts. The UI renders them as a collapsible
-            // "Thinking…" panel. ``isReasoningReplyPayload`` checks both the
-            // ``isReasoning`` flag and the legacy ``reasoning:`` / ``thinking…``
-            // text prefix used by the block-reply-pipeline.
-            if (
-              typeof replyPayload === "object" &&
-              replyPayload !== null &&
-              isReasoningReplyPayload(replyPayload as Record<string, unknown>) &&
-              text.trim()
-            ) {
-              try {
-                await postThought(account, sessionKey, payload.chat_id, {
-                  message_id: partsMessageId,
-                  agent_id: thoughtAgentId,
-                  kind: "text",
-                  text,
-                  seq: thoughtSeq++,
-                });
-              } catch (err) {
-                logError(
-                  api,
-                  `sellerclaw-ui: thought post failed session_key=${sessionKey}: ${String(err)}`,
-                );
-              }
-              return;
-            }
-
-            // One ordered turn per dispatch: media and text become ordered parts.
-            // Media keeps its position relative to the streamed text (no separate
-            // road), and the streamed text is never orphaned by an out-of-band send.
-            for (const rawUrl of mediaUrls) {
-              if (sentMedia.has(rawUrl)) continue;
-              sentMedia.add(rawUrl);
-              try {
-                const { url, contentType } = await resolveOutboundMediaUrl(account, rawUrl);
-                await ensurePartsTurn();
-                await postTurnPart(
-                  account,
-                  sessionKey,
-                  partsMessageId,
-                  {
-                    part_id: crypto.randomUUID(),
-                    kind: resolveMediaKind(url, contentType),
-                    url,
-                    ...(contentType ? { content_type: contentType } : {}),
-                  },
-                  payload.chat_id,
-                );
-              } catch (err) {
-                logError(
-                  api,
-                  `sellerclaw-ui: media part failed source=${rawUrl} session_key=${sessionKey}: ${String(err)}`,
-                );
-              }
-            }
-            if (text.trim()) {
-              // The engine streams a long reply block-by-block (``kind === "block"``) and then
-              // delivers the same sub-message once more, whole, as the model wrote it
-              // (``kind === "final"``). The two are not interchangeable: a block arrives with the
-              // whitespace the chunker cut on already dropped, so blocks re-glued are only
-              // approximately formatted, while the final carries the model's exact wording.
-              //
-              // So blocks feed the live preview — shown, then thrown away — and the final is what
-              // we persist. A short reply that never streamed still arrives as a final, so it
-              // takes the same road and needs no special case.
-              if (dispatchInfo?.kind === "block") {
-                // A preview that outlives its turn is what the user keeps: `end_turn` persists it
-                // when no final ever arrived. So the boundary between sub-messages has to be right
-                // here too, not only on the committed road below.
-                const messageIndex = dispatchInfo.assistantMessageIndex ?? null;
-                const startsNewSubMessage =
-                  previewMessageIndex !== null && messageIndex !== previewMessageIndex;
-                previewMessageIndex = messageIndex;
-                const joiner = startsNewSubMessage ? "\n\n" : pickDeltaJoin(prevTail, text);
-                const outText = joiner + text;
-                prevTail = outText.slice(-TAIL_KEEP_CHARS);
-                try {
-                  await ensurePartsTurn();
-                  await postTurnPreview(account, sessionKey, partsMessageId, payload.chat_id, {
-                    part_id: crypto.randomUUID(),
-                    text: outText,
-                  });
-                } catch (err) {
-                  // A dropped preview delta costs a moment of live rendering, never the reply:
-                  // the final still lands, and an interrupted turn keeps whatever preview the
-                  // cloud did receive.
-                  logError(
-                    api,
-                    `sellerclaw-ui: preview delta failed session_key=${sessionKey}: ${String(err)}`,
-                  );
-                }
-              } else {
-                // Separate consecutive sub-messages (e.g. a "working on it…" status, then the
-                // answer) — each final is a complete message, so the boundary is known, not
-                // guessed.
-                const outText = committedAnyText ? `\n\n${text}` : text;
-                prevTail = "";
-                // Committing text drops the preview buffer cloud-side, so the next block starts a
-                // fresh preview with nothing before it to be separated from.
-                previewMessageIndex = null;
-                try {
-                  await ensurePartsTurn();
-                  await postTurnPart(
-                    account,
-                    sessionKey,
-                    partsMessageId,
-                    { part_id: crypto.randomUUID(), kind: "text", text: outText },
-                    payload.chat_id,
-                  );
-                  committedAnyText = true;
-                } catch (err) {
-                  logError(
-                    api,
-                    `sellerclaw-ui: text part failed session_key=${sessionKey}: ${String(err)}`,
-                  );
-                }
-              }
-            }
-          },
-          onRecordError: (err: unknown) => {
-            logError(api, `sellerclaw-ui: inbound session record error: ${String(err)}`);
-          },
-          onDispatchError: (err: unknown, info: { kind: string }) => {
-            logError(api, `sellerclaw-ui: inbound ${info.kind} reply error: ${String(err)}`);
-          },
-        });
-      })();
-
-      const finishTurn = async (status: "completed" | "failed" = "completed"): Promise<void> => {
-        // Always finalize via ``turn/end``. If the dispatch produced no parts, open an
-        // (empty) turn first so the paired user turn is completed rather than left
-        // PROCESSING. A successful-but-empty turn is benign (intentional NO_REPLY or an
-        // out-of-band ``message`` send) and is suppressed by the UI. A ``failed`` end,
-        // however, marks the message so a crashed/aborted dispatch surfaces as a visible
-        // error the user can retry instead of a silently "completed" blank reply.
-        await ensurePartsTurn();
-        // Closing line of the delivery timeline: how many pieces the turn produced and how long
-        // it ran. One delivery on a multi-minute turn means the owner watched an empty chat.
-        logDelivery(
-          api,
-          `inbound turn ${status} deliveries=${deliveryCount} ` +
-            `duration=${Math.round((Date.now() - turnStartedAt) / 1000)}s session_key=${sessionKey}`,
-        );
-        try {
-          await postTurnEnd(account, sessionKey, partsMessageId, payload.chat_id, status);
-        } catch (err) {
-          logError(api, `sellerclaw-ui: turn-end failed session_key=${sessionKey}: ${String(err)}`);
-        }
-      };
-
-      void dispatchPromise
-        .then(() => finishTurn("completed"))
-        .catch(async (err: unknown) => {
-          logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
-          await finishTurn("failed");
-        })
-        .finally(() => {
-          // Free the in-flight slot only after the turn is finalized (turn/end posted or
-          // failed). Until then a catch-up re-delivery of this same message is dropped; once
-          // freed, a later re-delivery (e.g. the cloud was down when turn/end fired) re-runs.
-          if (inboundMessageId) inFlightInboundMessageIds.delete(inboundMessageId);
-        });
+      startInboundTurn({ api, account, runtime, payload, sessionKey, inboundMessageId });
 
       return true;
     },
@@ -1162,6 +1350,12 @@ export function registerAbortRoute(api: OpenClawPluginApi): void {
       const sessionKey = `agent:${payload.agent_id}:sellerclaw-ui:direct:${payload.chat_id}`;
       const sessionId = resolveActiveEmbeddedRunSessionId(sessionKey);
       if (sessionId) {
+        // Record the stop before aborting: the run unwinds into the same terminal state as a
+        // run-budget death and delivers the same engine failure notice, and ``agent_end`` cannot
+        // tell the two apart. We can, because we are the ones causing this one — and a stop must
+        // neither show an error nor resume itself. Marked only when a run was actually aborted,
+        // so a no-op stop leaves nothing behind to silence a later, genuine failure.
+        markOwnerAbort(sessionKey);
         abortAgentHarnessRun(sessionId);
         logInfo(api, `sellerclaw-ui: abort run session_key=${sessionKey} session_id=${sessionId}`);
       } else {

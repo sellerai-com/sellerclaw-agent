@@ -4,7 +4,12 @@ const { resolveRouteMock, createPipelineMock, runPreparedMock, normalizeMock } =
   resolveRouteMock: vi.fn(),
   createPipelineMock: vi.fn(),
   runPreparedMock: vi.fn(),
-  normalizeMock: vi.fn((p: unknown) => p),
+  // Like the real plugin-sdk normalizer, drops ``isError`` (it extracts text/media fields
+  // only) — the wrapper under test is what puts the flag back.
+  normalizeMock: vi.fn((p: Record<string, unknown>) => {
+    const { isError: _dropped, ...rest } = p;
+    return rest;
+  }),
 }));
 
 vi.mock("openclaw/plugin-sdk/inbound-envelope", () => ({
@@ -17,7 +22,7 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
   runPreparedInboundReply: (...a: unknown[]) => runPreparedMock(...a),
 }));
 vi.mock("openclaw/plugin-sdk/reply-payload", () => ({
-  normalizeOutboundReplyPayload: (p: unknown) => normalizeMock(p),
+  normalizeOutboundReplyPayload: (p: unknown) => normalizeMock(p as Record<string, unknown>),
 }));
 
 import { dispatchInboundDirectDmWithReasoning } from "../inbound-reply-with-reasoning.js";
@@ -132,5 +137,16 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
     await innerDeliver({ text: "done" }, info);
 
     expect(channelDeliver).toHaveBeenCalledWith({ text: "done" }, info);
+
+    // The engine's error flag survives normalization (plugin-sdk's normalizer strips it, so
+    // the wrapper re-attaches it) — and only exactly-true counts as the signal.
+    await innerDeliver({ text: "LLM request timed out.", isError: true }, { kind: "final" });
+    expect(channelDeliver).toHaveBeenLastCalledWith(
+      { text: "LLM request timed out.", isError: true },
+      { kind: "final" },
+    );
+    await innerDeliver({ text: "quoting isError: true here", isError: "true" }, { kind: "final" });
+    const lastPayload = channelDeliver.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect("isError" in lastPayload && lastPayload.isError === true).toBe(false);
   });
 });

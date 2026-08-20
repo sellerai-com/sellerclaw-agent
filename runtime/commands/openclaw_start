@@ -89,12 +89,10 @@ monitor_gateway_process_memory() {
 }
 
 monitor_session_logs() {
-    local state_dir="${STATE_DIR}"
-    local interval_seconds="${OPENCLAW_SESSION_LOG_SCAN_INTERVAL_SECONDS:-1}"
+    local reconnect_delay="${OPENCLAW_SESSION_LOG_RECONNECT_DELAY_SECONDS:-2}"
 
     python -m openclaw_diagnostics monitor-sessions \
-        --state-dir "${state_dir}" \
-        --interval "${interval_seconds}"
+        --reconnect-delay "${reconnect_delay}"
 }
 
 rotate_log_if_oversize() {
@@ -245,7 +243,7 @@ start_gateway() {
     fi
 
     if [ "${OPENCLAW_SESSION_STDOUT_LOGS:-1}" = "1" ]; then
-        log "Session stdout logs enabled (interval=${OPENCLAW_SESSION_LOG_SCAN_INTERVAL_SECONDS:-1}s)"
+        log "Session stdout logs enabled (gateway subscription, reconnect=${OPENCLAW_SESSION_LOG_RECONNECT_DELAY_SECONDS:-2}s)"
         monitor_session_logs &
         bg_pids+=("$!")
     fi

@@ -6,28 +6,6 @@ import tarfile
 from pathlib import Path
 
 
-def _is_session_file(path: Path, state_dir: Path) -> bool:
-    """Session transcripts plus the index that makes them reachable.
-
-    ``sessions.json`` maps a session key to its transcript. Without it the restored
-    ``.jsonl`` files are dead weight: OpenClaw does not recognise the old session key,
-    starts an empty session, and the transcripts are never read again. It sits in the
-    same directory but ends in ``.json``, so a plain suffix check silently drops it.
-    """
-    try:
-        rel = path.relative_to(state_dir).as_posix()
-    except ValueError:
-        return False
-    parts = rel.split("/")
-    if len(parts) != 4:
-        return False
-    if parts[0] != "agents" or parts[2] != "sessions":
-        return False
-    if path.name == "sessions.json":
-        return True
-    return path.suffix == ".jsonl" and not path.name.endswith(".lock")
-
-
 # Chrome scatters sign-in state across a handful of small files; the rest of a profile is
 # cache — 115 MB of the 127 MB measured on a real agent — and must never travel. Two roots
 # are covered: the profile the browser plugin actually drives, and the legacy fallback used
@@ -64,12 +42,14 @@ def _is_browser_login_state(path: Path, state_dir: Path) -> bool:
     return False
 
 
-def iter_state_backup_files(state_dir: Path, *, include_browser_profile: bool) -> list[Path]:
-    """List files to include in an edge state backup (sessions + optional browser logins).
+def iter_state_backup_files(state_dir: Path) -> list[Path]:
+    """List files to include in an edge state backup: browser sign-in state only.
 
-    Workspace ``MEMORY.md`` / ``memory/`` are deliberately absent: durable facts live in
-    long-term memory (cloud-side), the agent is instructed never to write them to workspace
-    files, and in practice these are untouched stubs.
+    Everything else the agent keeps on disk is reproducible from the cloud. Chats live in
+    SellerClaw's database, durable facts in long-term memory, and configs arrive in the
+    bundle on every start — so restoring any of them from a tar would at best duplicate
+    what the cloud already holds and at worst resurrect a stale copy of it. Browser logins
+    are the one exception: nothing outside this machine knows them.
     """
     if not state_dir.is_dir():
         return []
@@ -77,16 +57,22 @@ def iter_state_backup_files(state_dir: Path, *, include_browser_profile: bool) -
     for path in state_dir.rglob("*"):
         if not path.is_file():
             continue
-        if _is_session_file(path, state_dir):
-            out.append(path)
-        elif include_browser_profile and _is_browser_login_state(path, state_dir):
+        if _is_browser_login_state(path, state_dir):
             out.append(path)
     return sorted(out)
 
 
-def build_state_backup_archive(state_dir: Path, *, include_browser_profile: bool) -> bytes:
-    """Build a gzip-compressed tar of allowlisted paths under ``state_dir``."""
-    paths = iter_state_backup_files(state_dir, include_browser_profile=include_browser_profile)
+def build_state_backup_archive(state_dir: Path) -> bytes | None:
+    """Build a gzip tar of allowlisted paths, or ``None`` when there is nothing to back up.
+
+    The cloud keeps exactly one archive per user (``latest.tar.gz``), so an empty tar is
+    not a harmless no-op: uploaded, it would overwrite the archive that still holds the
+    browser sign-ins — and "no sign-in files on disk yet" is the normal condition of a
+    freshly recreated machine whose restore has not run or whose Chrome has not launched.
+    """
+    paths = iter_state_backup_files(state_dir)
+    if not paths:
+        return None
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for file_path in paths:
@@ -115,17 +101,18 @@ def restore_state_backup(state_dir: Path, archive: bytes) -> None:
 
 
 def state_dir_has_restoreable_data(state_dir: Path) -> bool:
-    """Return True if local state already has sessions (skip cloud restore).
+    """Return True if local state already carries browser sign-in files (skip cloud restore).
 
-    Sessions only: a browser profile is created by Chrome on first launch, so treating it
-    as "local state exists" would make a cold start skip the restore it needs.
+    The restore runs from the entrypoint before Chrome has ever launched, so on a genuine
+    cold start none of these files exist yet and the download proceeds. Once Chrome has run,
+    the profile on disk is newer than any backup and must win.
     """
     if not state_dir.is_dir():
         return False
     for path in state_dir.rglob("*"):
         if not path.is_file():
             continue
-        if _is_session_file(path, state_dir):
+        if _is_browser_login_state(path, state_dir):
             return True
     return False
 

@@ -9,6 +9,7 @@ import {
   registerInboundRoute,
   registerScheduledRunRoute,
 } from "./src/inbound.js";
+import { registerRunOutcomeTracker } from "./src/run-outcome.js";
 import { setRuntime } from "./src/runtime-store.js";
 
 export default defineChannelPluginEntry({
@@ -24,5 +25,6 @@ export default defineChannelPluginEntry({
     registerScheduledRunRoute(api);
     registerFeasibilityCheckRoute(api);
     registerCompletionDeliveryGuard(api);
+    registerRunOutcomeTracker(api);
   },
 });

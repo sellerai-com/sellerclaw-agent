@@ -13,13 +13,25 @@ from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 pytestmark = pytest.mark.unit
 
 
-async def test_periodic_state_backup_triggers_upload(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+@pytest.mark.parametrize(
+    "with_sign_ins",
+    [
+        pytest.param(True, id="sign-ins-present"),
+        # No browser sign-ins on disk yet: uploading the resulting empty tar would
+        # overwrite the cloud's only archive, so the cycle must skip the upload.
+        pytest.param(False, id="nothing-to-back-up"),
+    ],
+)
+async def test_periodic_state_backup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, with_sign_ins: bool
+) -> None:
     monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
     state_root = tmp_path / "oc"
     state_root.mkdir(parents=True)
     monkeypatch.setenv("OPENCLAW_STATE_DIR", str(state_root))
-    (state_root / "agents" / "sup" / "sessions").mkdir(parents=True)
-    (state_root / "agents" / "sup" / "sessions" / "chat.jsonl").write_text("{}\n", encoding="utf-8")
+    if with_sign_ins:
+        (state_root / "chrome-profile" / "Default").mkdir(parents=True)
+        (state_root / "chrome-profile" / "Default" / "Cookies").write_text("jar", encoding="utf-8")
 
     monkeypatch.setattr("sellerclaw_agent.server.ping_loop._PERIODIC_STATE_BACKUP_SECONDS", 0)
 
@@ -78,14 +90,23 @@ async def test_periodic_state_backup_triggers_upload(monkeypatch: pytest.MonkeyP
     )
 
     try:
-        for _ in range(500):
-            await asyncio.sleep(0.01)
-            if mock_client.upload_state_backup.await_count >= 1:
-                break
-        assert mock_client.upload_state_backup.await_count >= 1
-        first_archive = mock_client.upload_state_backup.await_args.args[0]
-        assert isinstance(first_archive, bytes)
-        assert first_archive[:2] == b"\x1f\x8b"
+        if with_sign_ins:
+            for _ in range(500):
+                await asyncio.sleep(0.01)
+                if mock_client.upload_state_backup.await_count >= 1:
+                    break
+            assert mock_client.upload_state_backup.await_count >= 1
+            first_archive = mock_client.upload_state_backup.await_args.args[0]
+            assert isinstance(first_archive, bytes)
+            assert first_archive[:2] == b"\x1f\x8b"
+        else:
+            # Let the loop pass the backup branch several times before concluding.
+            for _ in range(500):
+                await asyncio.sleep(0.01)
+                if mock_client.ping.await_count >= 3:
+                    break
+            assert mock_client.ping.await_count >= 3
+            assert mock_client.upload_state_backup.await_count == 0
     finally:
         stop.set()
         await asyncio.wait_for(ping_task, timeout=2.0)

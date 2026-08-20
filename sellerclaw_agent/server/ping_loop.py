@@ -158,11 +158,7 @@ async def run_edge_ping_loop(
             container_mgr.probe_browser_status,
         )
         browser_payload = _browser_ping_payload(browser_probe)
-        activity_probe = await loop.run_in_executor(
-            supervisor_executor,
-            activity_reader.probe,
-        )
-        activity_payload = agent_activity_ping_payload(activity_probe)
+        activity_payload = agent_activity_ping_payload(await activity_reader.probe())
 
         sess = session_storage.load()
         instance_id: UUID
@@ -241,20 +237,24 @@ async def run_edge_ping_loop(
         if time.monotonic() - last_backup_at >= _PERIODIC_STATE_BACKUP_SECONDS:
             state_dir = Path(os.environ.get("OPENCLAW_STATE_DIR", "/home/node/.openclaw"))
 
-            # The browser profile is included here too: the allowlist keeps it to a few
-            # hundred KB (cookies + local storage, no cache), and a machine lost abruptly
-            # never reaches the backup-after-stop path — which used to be the only place
-            # browser sign-ins were captured.
-            def _light_backup(sd: Path = state_dir) -> bytes:
+            # Periodic as well as after-stop: a machine lost abruptly never reaches the
+            # backup-after-stop path, which would otherwise be the only place browser
+            # sign-ins were captured.
+            def _light_backup(sd: Path = state_dir) -> bytes | None:
                 from sellerclaw_agent.cloud.state_backup import build_state_backup_archive
 
-                return build_state_backup_archive(sd, include_browser_profile=True)
+                return build_state_backup_archive(sd)
 
             try:
                 archive = await loop.run_in_executor(supervisor_executor, _light_backup)
-                ok = await client.upload_state_backup(archive)
-                if ok:
+                if archive is None:
+                    # Nothing to send is not a failure: count the cycle as done so the
+                    # state-dir scan does not rerun on every ping until sign-ins appear.
                     last_backup_at = time.monotonic()
+                else:
+                    ok = await client.upload_state_backup(archive)
+                    if ok:
+                        last_backup_at = time.monotonic()
             except Exception as exc:  # noqa: BLE001
                 _log.warning("edge_state_backup_periodic_failed", error=str(exc)[:500])
 
@@ -305,11 +305,7 @@ async def _flush_command_ack(
         container_mgr.probe_browser_status,
     )
     browser_payload = _browser_ping_payload(browser_probe)
-    activity_probe = await loop.run_in_executor(
-        supervisor_executor,
-        activity_reader.probe,
-    )
-    activity_payload = agent_activity_ping_payload(activity_probe)
+    activity_payload = agent_activity_ping_payload(await activity_reader.probe())
     result_payload = {
         "command_id": str(pending_ack.work.command_id),
         "outcome": pending_ack.outcome,

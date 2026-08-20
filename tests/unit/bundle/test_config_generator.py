@@ -683,11 +683,19 @@ def test_generate_openclaw_config_subagent_run_timeout_in_defaults(
     dropped (NO_REPLY became the run's final). Must stay above ``timeoutSeconds`` so a hung
     turn is aborted by its own cap before the announce window ever binds.
     See https://docs.openclaw.ai/tools/subagents.
+
+    The turn cap was raised 600 -> 1200 after staging chat b76fd17a (2026-08-19), where three
+    turns of ordinary supervisor work were cut at exactly 600s and the owner saw "LLM request
+    timed out." instead of finished work. It must stay below the total-run cap so a delegated
+    subagent still gets more than one turn, and below the gateway proxy read timeout (1800s).
     """
     defaults = json.loads(_generate(_supervisor_only(make_assembled_agent)))["agents"]["defaults"]
-    assert defaults["timeoutSeconds"] == 600
-    assert defaults["subagents"] == {"runTimeoutSeconds": 3600, "announceTimeoutMs": 630_000}
+    assert defaults["timeoutSeconds"] == 1200
+    assert defaults["subagents"] == {"runTimeoutSeconds": 3600, "announceTimeoutMs": 1_230_000}
     assert defaults["subagents"]["announceTimeoutMs"] > defaults["timeoutSeconds"] * 1000
+    # A subagent's whole run must still fit more than one turn, or the total-run cap would
+    # effectively become a per-turn cap.
+    assert defaults["subagents"]["runTimeoutSeconds"] > defaults["timeoutSeconds"] * 2
 
 
 def test_generate_openclaw_config_suppresses_tool_error_warnings(

@@ -356,7 +356,18 @@ def generate_openclaw_config(
         # aborted. Applies to every agent, including each individual turn of a spawned subagent.
         # It does NOT bound a subagent's total delegated run — that is `subagents.runTimeoutSeconds`
         # below. See https://docs.openclaw.ai/gateway/config-agents (`agents.defaults.timeoutSeconds`).
-        "timeoutSeconds": 600,
+        #
+        # An aborted turn is not a graceful stop: OpenClaw delivers a bare "LLM request timed
+        # out." as the run's final text, so whatever the turn had already accomplished is
+        # reported to the owner as a failure. At 600s that fired three times in one staging chat
+        # (b76fd17a, 2026-08-19) on a supervisor doing ordinary work — the reasoning-heavy model
+        # spent ~285s thinking before its first tool call, and each turn was cut mid-flight:
+        # once just before the build was delegated (the job only started because the owner asked
+        # "что случилось?"), once 40s after 626 listings had been shelved and verified, so the
+        # finished result was announced as an error. 1200s doubles the headroom while staying
+        # under both the subagent total-run cap (3600s) and the gateway proxy's read timeout
+        # (1800s, runtime/nginx/openclaw-proxy.conf), so neither of those binds first.
+        "timeoutSeconds": 1200,
         # Total-run cap for a spawned subagent session: max seconds a delegated subagent may run
         # across all its turns before OpenClaw aborts the run. This is the default when the entry
         # point calls `sessions_spawn` without an explicit `runTimeoutSeconds`. Without this key
@@ -372,12 +383,14 @@ def generate_openclaw_config(
         # duplicate drew a NO_REPLY, and — because only a run's final text is delivered — the
         # already-written owner report was silently discarded (staging chat 4ed0228a, 2026-07-27).
         # There is no total-run bound to align with (`timeoutSeconds` above caps one *turn*), so no
-        # value removes the race outright; this one is chosen to sit above the single-turn cap
-        # (600s): a run that stalls inside one turn is aborted by that cap first — the fallback
-        # then proceeds off the error — while a run still making progress across turns is left
-        # alone instead of being interrupted. Upstream has no dedup before the steer fallback
-        # (openclaw#41235 fixed a different sub-case), so the window is our only lever.
-        "subagents": {"runTimeoutSeconds": 3600, "announceTimeoutMs": 630_000},
+        # value removes the race outright; this one is chosen to sit 30s above the single-turn cap:
+        # a run that stalls inside one turn is aborted by that cap first — the fallback then
+        # proceeds off the error — while a run still making progress across turns is left alone
+        # instead of being interrupted. Upstream has no dedup before the steer fallback
+        # (openclaw#41235 fixed a different sub-case), so the window is our only lever. It tracks
+        # `timeoutSeconds` by construction: raising the turn cap without raising this would put
+        # the announce window *below* it and reopen the dropped-report race.
+        "subagents": {"runTimeoutSeconds": 3600, "announceTimeoutMs": 1_230_000},
         "bootstrapMaxChars": OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
         "model": model_defaults.model,
         "thinkingDefault": thinking_default,

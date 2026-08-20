@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from pathlib import Path
 
 from openclaw_diagnostics.cgroup import cgroup_limits_lines
@@ -50,15 +51,19 @@ def main(argv: list[str] | None = None) -> int:
     p_nr = sub.add_parser("node-report", help="Summarize Node diagnostic JSON reports")
     p_nr.add_argument("diagnostic_dir", type=Path)
 
-    p_ms = sub.add_parser("monitor-sessions", help="Mirror agent session JSONL events into stdout")
-    p_ms.add_argument("--state-dir", type=Path, required=True)
-    p_ms.add_argument("--interval", type=float, default=1.0)
+    p_ms = sub.add_parser("monitor-sessions", help="Mirror agent session events into stdout")
     p_ms.add_argument(
-        "--max-scans",
+        "--reconnect-delay",
+        type=float,
+        default=2.0,
+        help="Seconds to wait before reconnecting to the gateway",
+    )
+    p_ms.add_argument(
+        "--max-events",
         type=int,
         default=None,
         metavar="N",
-        help="Stop after N scans (default: run forever)",
+        help="Stop after N events (default: run forever)",
     )
 
     args = parser.parse_args(argv)
@@ -106,11 +111,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "monitor-sessions":
-        max_scans = args.max_scans if args.max_scans and args.max_scans > 0 else None
-        monitor_session_logs(
-            state_dir=args.state_dir,
-            interval_seconds=args.interval,
-            max_scans=max_scans,
+        max_events = args.max_events if args.max_events and args.max_events > 0 else None
+        asyncio.run(
+            monitor_session_logs(
+                reconnect_delay_seconds=args.reconnect_delay,
+                max_events=max_events,
+            )
         )
         return 0
 
