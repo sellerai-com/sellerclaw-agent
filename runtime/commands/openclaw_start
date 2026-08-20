@@ -234,6 +234,16 @@ start_gateway() {
     monitor_gateway_readiness "${openclaw_pid}" &
     bg_pids+=("$!")
 
+    # Pre-warm the browser display (KasmVNC) once the gateway reports ready.
+    # The script waits for /ready itself, so it never competes with the gateway
+    # during boot; see openclaw_browser_warm for rationale and the kill switch
+    # (OPENCLAW_BROWSER_WARM_START=0). Fire-and-forget: it exits on its own and
+    # a failure never touches the gateway.
+    if command -v openclaw_browser_warm >/dev/null 2>&1; then
+        openclaw_browser_warm &
+        bg_pids+=("$!")
+    fi
+
     if [ "${OPENCLAW_SESSION_STDOUT_LOGS:-1}" = "1" ]; then
         log "Session stdout logs enabled (interval=${OPENCLAW_SESSION_LOG_SCAN_INTERVAL_SECONDS:-1}s)"
         monitor_session_logs &
