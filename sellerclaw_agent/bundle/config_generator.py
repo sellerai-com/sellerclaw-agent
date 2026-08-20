@@ -4,7 +4,6 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from uuid import UUID
 
 from sellerclaw_agent.bundle.protocols import AssembledAgentLike
@@ -30,10 +29,11 @@ class ModelDefaults:
     pdf_model: dict[str, object] | None = field(default=None)
 
 
-# OpenClaw gateway logging in generated config (not user/manifest input).
+# OpenClaw gateway logging in generated config (not user/manifest input). Secret redaction
+# is not configurable: since OpenClaw 2026.8 it is always on and `logging.redactSensitive`
+# is rejected as an unknown key.
 OPENCLAW_BUNDLE_LOG_LEVEL = "warn"
 OPENCLAW_BUNDLE_CONSOLE_STYLE = "pretty"
-OPENCLAW_BUNDLE_REDACT_SENSITIVE = "tools"
 
 # Per-file truncation limit for workspace bootstrap files (AGENTS.md, SOUL.md, …). The
 # supervisor's assembled AGENTS.md (full roster + owner rules appended by the cloud) is the
@@ -67,6 +67,15 @@ OPENCLAW_PLUGIN_PATH_MEM0 = "/opt/openclaw-plugins/openclaw-mem0"
 # enable the document-extract plugin to process application/pdf files`. Bundled with
 # the OpenClaw runtime, so no load path needed — just allow + enable.
 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID = "document-extract"
+
+# The bundled telegram/whatsapp channel plugins are deliberately NOT in ``plugins.allow``. Every
+# boot warns that a configured channel's plugin is "omitted from plugins.allow" and auto-enables it
+# for that run, which reads like an oversight — it is not. Allow-listing whatsapp promotes its
+# channel to one the gateway's readiness probe waits for, and an unpaired WhatsApp (no QR session
+# yet, which is the normal state until the owner scans one) then reports "stopped" forever: /ready
+# stayed 503 with failing=["whatsapp"], the health monitor restarted the channel in a loop, and the
+# cloud kept treating a perfectly healthy agent as still starting — chat included. The warning is
+# the cheaper of the two.
 
 
 def _build_telegram_groups(*, group_ids: list[str]) -> dict[str, dict[str, bool]]:
@@ -120,7 +129,7 @@ def generate_openclaw_config(
     sellerclaw_api_url: str,
     sellerclaw_agent_api_base_url: str | None = None,
     providers: dict[str, object],
-    created_at: datetime | None = None,
+    openclaw_version: str | None = None,
     telegram_enabled: bool,
     telegram_bot_token: str,
     telegram_allowed_user_ids: tuple[str, ...],
@@ -301,10 +310,11 @@ def generate_openclaw_config(
     else:
         web_search_tools = {"enabled": False}
 
-    agents_list: list[dict[str, object]] = []
+    # Keyed by agent id: OpenClaw 2026.8 replaced the `agents.list` array with the
+    # `agents.entries` mapping, where the key IS the id (no `id` field inside the entry).
+    agents_entries: dict[str, dict[str, object]] = {}
     for agent in assembled_agents:
         payload: dict[str, object] = {
-            "id": agent.agent_id,
             "name": agent.name,
             "workspace": f"/home/node/.openclaw/workspace-{agent.agent_id}",
             "model": agent.model_ref,
@@ -321,7 +331,8 @@ def generate_openclaw_config(
             },
         }
         if agent.is_entry_point:
-            payload["default"] = True
+            # No `default: true` marker — it is retired in 2026.8. The entry point is now
+            # designated per surface by the `bindings` below (one per enabled channel).
             # Only the entry point orchestrates subagents. Block `sessions_spawn` without
             # an `agentId`: otherwise OpenClaw spawns a clone of the requester (a workspace
             # without platform skills, rediscovering CLI commands via --help until timeout).
@@ -333,7 +344,7 @@ def generate_openclaw_config(
         agent_thinking = getattr(agent, "thinking_default", None)
         if isinstance(agent_thinking, str) and agent_thinking.strip():
             payload["thinkingDefault"] = agent_thinking.strip()
-        agents_list.append(payload)
+        agents_entries[agent.agent_id] = payload
 
     sellerclaw_ui_plugin_config: dict[str, object] = {
         "apiBaseUrl": sellerclaw_api_url.strip().rstrip("/"),
@@ -344,11 +355,20 @@ def generate_openclaw_config(
         "localAgentBaseUrl": OPENCLAW_LOCAL_AGENT_BASE_URL,
     }
 
-    # OpenClaw treats `meta` as the marker that the file came from a trusted writer:
-    # if `lastKnownGood` had `lastTouchedVersion`/`lastTouchedAt` but our new file
-    # doesn't, OpenClaw flags `missing-meta-vs-last-good` and silently restores the
-    # previous backup, dropping every fresh value (including the rotated agentApiKey).
-    last_touched_at = (created_at or datetime.now(tz=UTC)).astimezone(UTC).isoformat().replace("+00:00", "Z")
+    # OpenClaw treats `meta` as the marker that the file came from a trusted writer: if
+    # `lastKnownGood` carried a `meta` object and our new file doesn't, OpenClaw flags
+    # `missing-meta-vs-last-good` and silently restores the previous backup, dropping every
+    # fresh value (including the rotated agentApiKey). The guard only checks that `meta` is
+    # an object, so an empty one is enough when the runtime version is unknown.
+    #
+    # `lastTouchedAt` moved into OpenClaw's own SQLite state in 2026.8 and is now rejected
+    # here; `lastTouchedVersion` is the remaining stamp. It also drives OpenClaw's downgrade
+    # guard (an older binary refuses to mutate a config written by a newer one), so it must
+    # name the runtime that actually ships in this image, never a value we invent.
+    meta_block: dict[str, object] = {}
+    runtime_version = (openclaw_version or "").strip()
+    if runtime_version:
+        meta_block["lastTouchedVersion"] = runtime_version
 
     agents_defaults: dict[str, object] = {
         "skipBootstrap": True,
@@ -417,7 +437,9 @@ def generate_openclaw_config(
             "breakPreference": "newline",
         },
         "compaction": {
-            "reserveTokensFloor": 20000,
+            # No `reserveTokensFloor`: OpenClaw 2026.8 computes the compaction reserve itself
+            # and caps it against the active model's context window, so the old fixed 20000
+            # floor is gone from the schema (it starved small-context models).
             "model": model_defaults.compaction_model,
             "memoryFlush": {
                 "enabled": True,
@@ -444,13 +466,34 @@ def generate_openclaw_config(
     # with high thinking. We reuse the simple-tier group already resolved for memory-flush.
     agents_defaults["heartbeat"] = {"every": heartbeat_every, "model": model_defaults.memory_flush_model}
 
+    # A multi-agent fleet has no default agent in 2026.8: every ambient surface (channels,
+    # heartbeat, cron, bare CLI) must resolve an explicit owner or fail closed. OpenClaw
+    # stamps this marker itself when it migrates such a config; a sole agent stays its own
+    # implicit owner and the docs say to omit the marker there.
+    agents_block: dict[str, object] = {
+        "defaults": agents_defaults,
+        "entries": agents_entries,
+    }
+    if len(agents_entries) > 1:
+        agents_block["ownership"] = "explicit"
+        # Companion to the marker above. Durable session rows that predate it (the retired
+        # `agent:main:*` keys) are migrated only when their replacement owner is unambiguous,
+        # which a fleet never is on its own: without this, OpenClaw preserves those rows but
+        # leaves them unowned, stranding the chat history they hold. Naming the entry point
+        # keeps the pre-2026.8 outcome, where it was the config's default agent.
+        agents_defaults["sessionStore"] = {"agentId": entry_point}
+        # Same problem for work the runtime itself schedules. Cron jobs created without an
+        # explicit `--agent` (the memory plugin's nightly "dreaming" reconciliation is one)
+        # have no owner to fall back to in a fleet, so they refuse to run: "Agent-less cron
+        # job has no resolvable owner ... or set agents.defaults.systemAgent.agentId".
+        agents_defaults["systemAgent"] = {"agentId": entry_point}
+
     config_payload = {
-        "meta": {"lastTouchedAt": last_touched_at},
+        "meta": meta_block,
         "logging": {
             "level": OPENCLAW_BUNDLE_LOG_LEVEL,
             "consoleLevel": OPENCLAW_BUNDLE_LOG_LEVEL,
             "consoleStyle": OPENCLAW_BUNDLE_CONSOLE_STYLE,
-            "redactSensitive": OPENCLAW_BUNDLE_REDACT_SENSITIVE,
         },
         "gateway": {
             "mode": "local",
@@ -475,10 +518,7 @@ def generate_openclaw_config(
             "allowedAgentIds": agent_ids,
         },
         "models": {"providers": providers},
-        "agents": {
-            "defaults": agents_defaults,
-            "list": agents_list,
-        },
+        "agents": agents_block,
         "messages": {
             "visibleReplies": "automatic",
             "queue": {"mode": "steer"},
@@ -502,10 +542,12 @@ def generate_openclaw_config(
                 "match": {"channel": "sellerclaw-ui"},
             },
         ],
+        # No `session.agentToAgent`: cross-agent messaging is configured solely under
+        # `tools.agentToAgent` since 2026.8, and the old `maxPingPongTurns` cap is now a
+        # built-in limit with no config surface.
         "session": {
             "dmScope": "per-channel-peer",
             "reset": {"mode": "idle"},
-            "agentToAgent": {"maxPingPongTurns": 5},
         },
         "channels": _merge_openclaw_channels(
             telegram_channel=telegram_channel,
@@ -555,8 +597,6 @@ def generate_openclaw_config(
             "headless": False,
             "noSandbox": True,
             "executablePath": "/usr/local/bin/openclaw_chrome",
-            "remoteCdpTimeoutMs": 10000,
-            "remoteCdpHandshakeTimeoutMs": 30000,
             # Disable in-page JS execution (browser ``evaluate``). Agents drive pages via
             # snapshot/click/type; running arbitrary JS against untrusted pages is an
             # injection/abuse surface we don't need.
@@ -566,20 +606,29 @@ def generate_openclaw_config(
             "snapshotDefaults": {"mode": "efficient"},
             "profiles": {},
         },
-        "media": {
+        "attachments": {
             # Auto-clean persisted media (inbound uploads, browser captures, outbound
-            # files) after 7 days so the local media tree doesn't grow unbounded.
+            # files) after 7 days so the local media tree doesn't grow unbounded. The block
+            # was the root `media` object before OpenClaw 2026.8 renamed it.
             "ttlHours": 168,
         },
         "cron": {
             "enabled": cron_enabled,
             # Redirect cron failure notifications to the cloud error sink instead of
             # announcing "Cron job … failed" as a chat message to the seller. The
-            # runtime POSTs the failure payload to ``failureDestination.to`` with
+            # runtime POSTs the failure payload to ``failureAlert.to`` with
             # ``Authorization: Bearer <webhookToken>``; the cloud authenticates that
             # token via ``get_agent_user_id`` (same agent API key the channel uses).
             "webhookToken": (agent_api_key or "").strip(),
-            "failureDestination": {
+            # OpenClaw 2026.8 folded the retired ``failureDestination`` block into
+            # ``failureAlert``, which also owns the alert threshold. Its defaults would
+            # change behaviour silently — alerts are off unless ``enabled``, and would then
+            # skip the first failure (``after: 2``) and mute repeats for an hour
+            # (``cooldownMs``). This sink must see every failed run, so all three are pinned.
+            "failureAlert": {
+                "enabled": True,
+                "after": 1,
+                "cooldownMs": 0,
                 "mode": "webhook",
                 "to": f"{sellerclaw_api_url.strip().rstrip('/')}/internal/openclaw/errors",
             },
@@ -589,7 +638,9 @@ def generate_openclaw_config(
                 "fetch": {"enabled": web_fetch_enabled},
                 "search": web_search_tools,
             },
-            "exec": {"security": "full", "ask": "off"},
+            # `full` is the 2026.8 spelling of the retired `security: "full"` + `ask: "off"`
+            # pair: run host commands without approval prompts.
+            "exec": {"mode": "full"},
             "sessions": {"visibility": "all"},
             "agentToAgent": {"enabled": True},
         },

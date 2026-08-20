@@ -12,6 +12,16 @@ def get_sellerclaw_api_url() -> str:
     return raw.strip().rstrip("/")
 
 
+def get_openclaw_version() -> str | None:
+    """Version of the OpenClaw runtime shipped in this image, or ``None`` if unknown.
+
+    Baked in at build time (``runtime/Dockerfile`` -> ``ENV OPENCLAW_VERSION``). Reported to
+    the cloud on every ping and stamped into the generated config as ``meta.lastTouchedVersion``.
+    """
+    raw = (os.environ.get("OPENCLAW_VERSION") or "").strip()
+    return raw or None
+
+
 def get_sellerclaw_web_url() -> str:
     """Base URL of the SellerClaw website (hosts ``/auth/device`` page).
 

@@ -3,7 +3,7 @@ import {
   normalizeResolvedSecretInputString,
   normalizeSecretInput,
 } from "openclaw/plugin-sdk/secret-input";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 export const SELLERCLAW_WEB_SEARCH_PLUGIN_ID = "sellerclaw-web-search" as const;
 

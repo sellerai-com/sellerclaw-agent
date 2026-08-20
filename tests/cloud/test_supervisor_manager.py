@@ -547,6 +547,44 @@ def test_bundle_on_disk_matches_detects_workspace_drift(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("on_disk", "generated", "expected_match"),
+    [
+        pytest.param(
+            '{"meta": {"lastTouchedVersion": "2026.8.1", "migrations": {"x": true}}, "a": 1}',
+            '{"meta": {"lastTouchedVersion": "2026.7.1"}, "a": 1}',
+            True,
+            id="openclaw-bookkeeping-ignored",
+        ),
+        pytest.param('{"meta": {}, "a": 1}', '{"meta": {}, "a": 1}', True, id="both-empty-meta"),
+        pytest.param('{"a": 1}', '{"meta": {}, "a": 1}', False, id="on-disk-lost-meta"),
+        pytest.param(
+            '{"meta": {}, "a": 1}', '{"meta": {}, "a": 2}', False, id="real-edit-still-detected"
+        ),
+    ],
+)
+def test_bundle_on_disk_matches_ignores_openclaw_meta_bookkeeping(
+    tmp_path: Path, on_disk: str, generated: str, expected_match: bool
+) -> None:
+    """The gateway rewrites `meta` whenever it touches the config (version stamp, migration
+    markers). Treating that as an edit would rewrite the file on every apply and retrigger
+    OpenClaw's config watcher — but a config that lost `meta` entirely must be rewritten."""
+    bundle = tmp_path / "bundle"
+    (bundle / "openclaw").mkdir(parents=True)
+    (bundle / "openclaw" / "openclaw.json").write_text(on_disk, encoding="utf-8")
+    (bundle / "workspaces" / "supervisor").mkdir(parents=True)
+    (bundle / "workspaces" / "supervisor" / "AGENTS.md").write_text("hello", encoding="utf-8")
+
+    assert (
+        bundle_on_disk_matches(
+            bundle,
+            openclaw_config=generated,
+            workspaces={"supervisor/AGENTS.md": "hello"},
+        )
+        is expected_match
+    )
+
+
 def test_read_proxy_url_from_runtime_env_round_trips(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     write_runtime_env(bundle, proxy_url="http://o'neil:x@proxy:3128")

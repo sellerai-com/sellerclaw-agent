@@ -402,7 +402,7 @@ const CONTINUATION_PROMPT =
  * (``continuationAttempt`` marks those runs and bounds them). Everything above this call is HTTP
  * concern; everything here is the turn.
  */
-function startInboundTurn(params: {
+async function startInboundTurn(params: {
   api: OpenClawPluginApi;
   account: ScwUiAccount;
   runtime: ReturnType<typeof getRuntime>;
@@ -412,7 +412,7 @@ function startInboundTurn(params: {
   inboundMessageId: string;
   /** 1-based attempt number when this turn is itself a self-recovery continuation. */
   continuationAttempt?: number;
-}): void {
+}): Promise<void> {
   const { api, account, runtime, payload, sessionKey, inboundMessageId } = params;
   // One streaming assistant message per turn, started lazily on the first delivered
   // part (or eagerly at finish for an empty dispatch) and finalized after dispatch.
@@ -817,12 +817,12 @@ function startInboundTurn(params: {
    * A failure to even start the continuation is the one path that ends quiet with nobody coming
    * back, so it is logged as an error rather than swallowed.
    */
-  const startPendingContinuation = (): void => {
+  const startPendingContinuation = async (): Promise<void> => {
     const attempt = pendingContinuationAttempt;
     if (attempt === null) return;
     pendingContinuationAttempt = null;
     try {
-      startInboundTurn({
+      await startInboundTurn({
         api,
         account,
         runtime,
@@ -853,20 +853,21 @@ function startInboundTurn(params: {
     }
   };
 
-  void dispatchPromise
-    .then(() => finishTurn())
-    .catch(async (err: unknown) => {
+  try {
+    try {
+      await dispatchPromise;
+      await finishTurn();
+    } catch (err: unknown) {
       logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
       await finishTurn("failed");
-    })
-    .finally(() => {
-      // Free the in-flight slot only after the turn is finalized (turn/end posted or
-      // failed). Until then a catch-up re-delivery of this same message is dropped; once
-      // freed, a later re-delivery (e.g. the cloud was down when turn/end fired) re-runs.
-      if (inboundMessageId) inFlightInboundMessageIds.delete(inboundMessageId);
-      startPendingContinuation();
-    });
-
+    }
+  } finally {
+    // Free the in-flight slot only after the turn is finalized (turn/end posted or
+    // failed). Until then a catch-up re-delivery of this same message is dropped; once
+    // freed, a later re-delivery (e.g. the cloud was down when turn/end fired) re-runs.
+    if (inboundMessageId) inFlightInboundMessageIds.delete(inboundMessageId);
+    await startPendingContinuation();
+  }
 }
 
 export function registerInboundRoute(api: OpenClawPluginApi): void {
@@ -947,7 +948,12 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
       res.statusCode = 202;
       res.end(JSON.stringify({ ok: true }));
 
-      startInboundTurn({ api, account, runtime, payload, sessionKey, inboundMessageId });
+      // The turn runs to completion INSIDE this handler, after the 202 is already flushed.
+      // Since OpenClaw 2026.8 a plugin route runs under a Gateway root-work admission that is
+      // released the moment the handler returns; work that outlives it is refused with
+      // `GatewayDrainingError: Gateway is draining` — the whole chat went silent that way.
+      // Staying inside the handler also keeps the request's operator scope, which the run needs.
+      await startInboundTurn({ api, account, runtime, payload, sessionKey, inboundMessageId });
 
       return true;
     },
@@ -1089,7 +1095,9 @@ export function registerScheduledRunRoute(api: OpenClawPluginApi): void {
         }
       };
 
-      void dispatchInboundDirectDmWithReasoning({
+      // Awaited inside the handler for the same reason as the inbound route: work that outlives
+      // it loses the Gateway root-work admission and is refused as "gateway is draining".
+      await dispatchInboundDirectDmWithReasoning({
         cfg: api.config,
         runtime,
         channel: "sellerclaw-ui",
@@ -1251,7 +1259,9 @@ export function registerFeasibilityCheckRoute(api: OpenClawPluginApi): void {
           .filter(Boolean)
           .join("\n\n");
 
-      void dispatchInboundDirectDmWithReasoning({
+      // Awaited inside the handler for the same reason as the inbound route: work that outlives
+      // it loses the Gateway root-work admission and is refused as "gateway is draining".
+      await dispatchInboundDirectDmWithReasoning({
         cfg: api.config,
         runtime,
         channel: "sellerclaw-ui",

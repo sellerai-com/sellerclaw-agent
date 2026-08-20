@@ -40,10 +40,10 @@ def _config_from_llm(mutate_llm: Callable[[dict[str, Any]], Any] | None = None) 
 
 
 def _agent_payload(cfg: dict, agent_id: str) -> dict:
-    for agent in cfg["agents"]["list"]:
-        if agent["id"] == agent_id:
-            return agent
-    raise AssertionError(f"agent {agent_id!r} not in config")
+    entries = cfg["agents"]["entries"]
+    if agent_id not in entries:
+        raise AssertionError(f"agent {agent_id!r} not in config")
+    return entries[agent_id]
 
 
 def test_bundle_builder_produces_config_and_workspaces(
@@ -179,7 +179,7 @@ def test_per_agent_model_from_manifest_text_refs_and_heartbeat_disabled() -> Non
     assert _agent_payload(cfg, "marketing")["model"] == "litellm/u:5fdc144e/complex"
     assert _agent_payload(cfg, "supplier")["model"] == "litellm/u:5fdc144e/simple"
 
-    for agent in cfg["agents"]["list"]:
+    for agent in cfg["agents"]["entries"].values():
         assert "heartbeat" not in agent
 
 
@@ -235,7 +235,11 @@ def test_bundle_builder_entry_point_tools_and_subagents(
     result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
     cfg = json.loads(result.openclaw_config)
     supervisor = _agent_payload(cfg, "supervisor")
-    assert supervisor["default"] is True
+    # The retired per-agent `default` marker is gone: in a fleet every surface resolves its
+    # owner explicitly, so the entry point is designated by the channel bindings instead.
+    assert "default" not in supervisor
+    assert cfg["agents"]["ownership"] == "explicit"
+    assert {"agentId": "supervisor", "match": {"channel": "sellerclaw-ui"}} in cfg["bindings"]
     assert "group:sessions" in supervisor["tools"]["allow"]
     assert supervisor["subagents"]["allowAgents"] == ["scout", "supplier", "marketing"]
     # The roster (`allowAgents`) is emitted ONLY for the entry point. `defaults.subagents` carries
@@ -270,7 +274,9 @@ def test_bundle_builder_entry_point_keeps_delegation_tools_with_empty_team(
     # Nobody to delegate to yet — and `requireAgentId` leaves no id `sessions_spawn` accepts,
     # so the granted tools cannot spawn a clone of the supervisor either.
     assert supervisor["subagents"] == {"allowAgents": [], "requireAgentId": True}
-    assert [a["id"] for a in cfg["agents"]["list"]] == ["supervisor"]
+    assert list(cfg["agents"]["entries"]) == ["supervisor"]
+    # A sole agent stays its own implicit owner, so the fleet marker must not appear.
+    assert "ownership" not in cfg["agents"]
 
 
 def test_bundle_builder_supplier_thinking_off_from_manifest(

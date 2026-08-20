@@ -27,6 +27,7 @@ from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.state_backup import read_applied_config_version
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.settings import get_openclaw_version
 from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
     CloudAuthError,
@@ -53,7 +54,7 @@ AGENT_PROTOCOL_VERSION = 3
 # Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
 # build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the
 # agent-info UI can show which OpenClaw build is running. None on images without it.
-OPENCLAW_VERSION = os.environ.get("OPENCLAW_VERSION") or None
+OPENCLAW_VERSION = get_openclaw_version()
 
 
 def _browser_ping_payload(probe: BrowserStatusProbe) -> dict[str, object]:

@@ -4,7 +4,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
  * Plugin logging that survives the gateway's own logger being unavailable.
  *
  * Two independent things can silence `api.logger`: the plugin may be loaded without one at
- * all, and `redactSensitive: "tools"` (what the bundle generates) strips individual methods.
+ * all, and the gateway's secret redaction (always on since 2026.8) strips individual methods.
  * Optional chaining then swallows the call, so a diagnostic that was written never reaches
  * anyone — which is exactly how the completion-delivery guard came to look like it had never
  * fired in fourteen days of production logs. Falling back to `console.*` keeps the line on

@@ -12,6 +12,7 @@ from sellerclaw_agent.bundle.manifest import AgentSpec, GenericManifest, ModelGr
 from sellerclaw_agent.bundle.result import BundleResult
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
 from sellerclaw_agent.cloud.settings import (
+    get_openclaw_version,
     get_sellerclaw_api_url,
     get_sellerclaw_web_url,
 )
@@ -363,7 +364,7 @@ class BundleBuilder:
             sellerclaw_api_url=sellerclaw_api_url,
             sellerclaw_agent_api_base_url=agent_api_base_url,
             providers=build_providers(manifest),
-            created_at=ts,
+            openclaw_version=get_openclaw_version(),
             telegram_enabled=manifest.channels.telegram.enabled,
             telegram_bot_token=manifest.channels.telegram.bot_token,
             telegram_allowed_user_ids=manifest.channels.telegram.allowed_user_ids,

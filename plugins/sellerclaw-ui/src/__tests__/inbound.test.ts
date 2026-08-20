@@ -1314,7 +1314,12 @@ describe("registerInboundRoute catch-up re-delivery", () => {
     const handler = getHandler(registerHttpRoute);
 
     const end1 = vi.fn();
-    await handler(makeReq(), { statusCode: 0, end: end1 } as unknown as ServerResponse);
+    // The handler stays open for the whole turn (it holds the Gateway work admission the run
+    // needs), so the first call can only be awaited once the gated dispatch is released.
+    const firstTurn = handler(
+      makeReq(),
+      { statusCode: 0, end: end1 } as unknown as ServerResponse,
+    );
     await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
 
     const end2 = vi.fn();
@@ -1328,9 +1333,8 @@ describe("registerInboundRoute catch-up re-delivery", () => {
 
     // Let the original turn finish so its dangling promises settle before the test ends.
     release();
-    await vi.waitFor(() =>
-      expect(globalThis.fetch as ReturnType<typeof vi.fn>).toHaveBeenCalled(),
-    );
+    await firstTurn;
+    expect(globalThis.fetch as ReturnType<typeof vi.fn>).toHaveBeenCalled();
   });
 
   it("dispatches a re-delivery with a FRESH MessageSid (defeats session-level dedup)", async () => {

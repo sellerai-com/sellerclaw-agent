@@ -11,7 +11,6 @@ from sellerclaw_agent.bundle.config_generator import (
     OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
     OPENCLAW_BUNDLE_CONSOLE_STYLE,
     OPENCLAW_BUNDLE_LOG_LEVEL,
-    OPENCLAW_BUNDLE_REDACT_SENSITIVE,
     OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
     OPENCLAW_LOCAL_AGENT_BASE_URL,
     OPENCLAW_PLUGIN_PATH_MEM0,
@@ -149,20 +148,19 @@ def test_generate_openclaw_config_has_gateway_and_models(
         sellerclaw_api_url="http://api/",
     )
     payload = json.loads(raw)
-    # OpenClaw refuses to load configs without `meta.lastTouched*`: it flags them
-    # as "missing-meta-vs-last-good" and silently restores the previous backup.
-    assert isinstance(payload["meta"]["lastTouchedAt"], str)
-    assert payload["meta"]["lastTouchedAt"].endswith("Z")
-    # `meta` must stay a closed set OpenClaw accepts — no extra keys (it rejects unknowns
-    # with "meta: Invalid input"). The applied config_version lives in a sidecar, not here.
-    assert set(payload["meta"]) == {"lastTouchedAt"}
+    # OpenClaw refuses to load a config whose `meta` block vanished while the previous
+    # known-good file had one: it flags "missing-meta-vs-last-good" and silently restores
+    # the previous backup. The block must therefore always be an object.
+    assert payload["meta"] == {}
     assert payload["gateway"]["auth"]["token"] == "g"
     assert "litellm" in payload["models"]["providers"]
-    assert payload["agents"]["list"][0]["id"] == "supervisor"
+    assert set(payload["agents"]["entries"]) == {"supervisor"}
     assert payload["logging"]["level"] == OPENCLAW_BUNDLE_LOG_LEVEL
     assert payload["logging"]["consoleLevel"] == OPENCLAW_BUNDLE_LOG_LEVEL
     assert payload["logging"]["consoleStyle"] == OPENCLAW_BUNDLE_CONSOLE_STYLE
-    assert payload["logging"]["redactSensitive"] == OPENCLAW_BUNDLE_REDACT_SENSITIVE
+    # Secret redaction is no longer configurable (always on); the retired
+    # `logging.redactSensitive` key would now be rejected as unknown.
+    assert "redactSensitive" not in payload["logging"]
     assert payload["channels"]["sellerclaw-ui"]["apiBaseUrl"] == "http://api"
     assert (
         payload["plugins"]["entries"]["sellerclaw-ui"]["config"]["apiBaseUrl"] == "http://api"
@@ -189,6 +187,97 @@ def test_generate_openclaw_config_has_gateway_and_models(
     )
 
 
+def test_generate_openclaw_config_stamps_runtime_version_in_meta(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """The stamp names the OpenClaw build shipped in this image — it drives OpenClaw's
+    downgrade guard, so it is never invented and simply absent when the version is unknown."""
+    payload = json.loads(
+        _generate(_supervisor_only(make_assembled_agent), openclaw_version="2026.8.1-beta.2")
+    )
+    assert payload["meta"] == {"lastTouchedVersion": "2026.8.1-beta.2"}
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        pytest.param(None, id="unknown"),
+        pytest.param("", id="empty"),
+        pytest.param("   ", id="blank"),
+    ],
+)
+def test_generate_openclaw_config_meta_stays_an_object_without_version(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+    version: str | None,
+) -> None:
+    """Dropping `meta` entirely would trip OpenClaw's `missing-meta-vs-last-good` guard and
+    silently restore the previous config, so the block survives even with nothing to stamp."""
+    payload = json.loads(_generate(_supervisor_only(make_assembled_agent), openclaw_version=version))
+    assert payload["meta"] == {}
+
+
+def test_generate_openclaw_config_agents_are_keyed_by_id_without_default_marker(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Agents live in a mapping keyed by id: no `id` field inside an entry, and the fleet
+    marker replaces the retired per-agent `default` flag."""
+    assembled = [
+        make_assembled_agent(
+            agent_id="scout",
+            name="Scout",
+            model_ref="litellm/u:abc/simple",
+            is_entry_point=False,
+            subagent_ids=[],
+            tools_allow=[],
+            tools_deny=[],
+            agents_md="# scout",
+            memory_md="# m-scout",
+            soul_md=None,
+            user_md=None,
+            skills={},
+        ),
+        make_assembled_agent(
+            model_ref="litellm/u:abc/complex",
+            subagent_ids=["scout"],
+            tools_allow=["browser"],
+            agents_md="# hi",
+            memory_md="# m",
+            soul_md=None,
+            user_md=None,
+            skills={},
+        ),
+    ]
+    payload = json.loads(_generate(assembled))
+    entries = payload["agents"]["entries"]
+    assert set(entries) == {"scout", "supervisor"}
+    assert entries["supervisor"]["name"] == "Supervisor"
+    assert "id" not in entries["supervisor"]
+    assert "default" not in entries["supervisor"]
+    assert payload["agents"]["ownership"] == "explicit"
+    defaults = payload["agents"]["defaults"]
+    assert defaults["sessionStore"] == {"agentId": "supervisor"}
+    assert defaults["systemAgent"] == {"agentId": "supervisor"}
+
+
+def test_generate_openclaw_config_sole_agent_has_no_ownership_marker(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """A sole agent is its own implicit owner; stamping the fleet marker would make every
+    ambient surface fail closed instead."""
+    payload = json.loads(_generate(_supervisor_only(make_assembled_agent)))
+    assert "ownership" not in payload["agents"]
+    assert "sessionStore" not in payload["agents"]["defaults"]
+    assert "systemAgent" not in payload["agents"]["defaults"]
+
+
+def test_generate_openclaw_config_exec_runs_without_approval_prompts(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """`mode: "full"` replaces the retired `security` / `ask` pair."""
+    payload = json.loads(_generate(_supervisor_only(make_assembled_agent)))
+    assert payload["tools"]["exec"] == {"mode": "full"}
+
+
 def test_generate_openclaw_config_allowlists_only_healthcheck_bundled_skill(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
@@ -211,7 +300,12 @@ def test_generate_openclaw_config_cron_failures_redirect_to_cloud_error_sink(
     assert cron["enabled"] is True
     # Authenticated with the agent API key (cloud resolves the user via get_agent_user_id).
     assert cron["webhookToken"] == _AGENT_API_KEY
-    assert cron["failureDestination"] == {
+    # Every failed run must reach the sink: alerts on (default off), from the very first
+    # failure (default: only after 2) and with no repeat cooldown (default: one hour).
+    assert cron["failureAlert"] == {
+        "enabled": True,
+        "after": 1,
+        "cooldownMs": 0,
         "mode": "webhook",
         "to": "http://api/internal/openclaw/errors",
     }
@@ -326,6 +420,28 @@ def test_generate_openclaw_config_whatsapp_absent_when_disabled(
     assert not any(b.get("match") == {"channel": "whatsapp"} for b in payload["bindings"])
 
 
+def test_generate_openclaw_config_channel_plugins_stay_out_of_allow(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Allow-listing whatsapp makes an unpaired channel block gateway readiness: /ready answers
+    503 with failing=["whatsapp"] until someone scans a QR, and the cloud reads the agent as still
+    starting. The runtime auto-enables the plugin for the boot anyway, so the config leaves it out.
+    """
+    raw = _generate(
+        _supervisor_only(make_assembled_agent),
+        telegram_enabled=True,
+        telegram_bot_token="bot-secret",
+        whatsapp_enabled=True,
+        whatsapp_allowed_numbers=("+14155550123",),
+    )
+    payload = json.loads(raw)
+    allow = payload["plugins"]["allow"]
+    assert payload["channels"]["whatsapp"]["enabled"] is True
+    assert payload["channels"]["telegram"]["enabled"] is True
+    assert "whatsapp" not in allow
+    assert "telegram" not in allow
+
+
 def test_generate_openclaw_config_web_search_enabled_wires_sellerclaw_plugin(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
@@ -433,7 +549,9 @@ def test_generate_openclaw_config_browser_hardening_and_media_ttl(
     payload = json.loads(_generate(_supervisor_only(make_assembled_agent)))
     assert payload["browser"]["evaluateEnabled"] is False
     assert payload["browser"]["snapshotDefaults"] == {"mode": "efficient"}
-    assert payload["media"]["ttlHours"] == 168
+    # Stored media TTL lives under `attachments` (the retired root `media` block).
+    assert payload["attachments"]["ttlHours"] == 168
+    assert "media" not in payload
 
 
 def test_generate_openclaw_config_allowed_origins_in_control_ui(
@@ -508,8 +626,7 @@ def test_generate_openclaw_config_agent_model_comes_from_model_ref(
     ]
     raw = _generate(assembled)
     payload = json.loads(raw)
-    by_id = {a["id"]: a for a in payload["agents"]["list"]}
-    assert by_id["worker"]["model"] == expected
+    assert payload["agents"]["entries"]["worker"]["model"] == expected
 
 
 def test_generate_openclaw_config_heartbeat_disabled_for_all_agents(
@@ -533,7 +650,7 @@ def test_generate_openclaw_config_heartbeat_disabled_for_all_agents(
     assert defaults["heartbeat"] == {"every": "0m", "model": "litellm/u:abc/simple"}
     assert defaults["compaction"]["model"] == "litellm/u:abc/simple"
     assert defaults["compaction"]["memoryFlush"]["model"] == "litellm/u:abc/simple"
-    for agent in payload["agents"]["list"]:
+    for agent in payload["agents"]["entries"].values():
         assert "heartbeat" not in agent
 
 
@@ -636,7 +753,7 @@ def test_generate_openclaw_config_per_agent_thinking_from_assembled_agent(
         ),
     ]
     payload = json.loads(_generate(assembled))
-    by_id = {a["id"]: a for a in payload["agents"]["list"]}
+    by_id = payload["agents"]["entries"]
     assert by_id["supplier"]["thinkingDefault"] == "off"
     assert "thinkingDefault" not in by_id["scout"]
     assert "thinkingDefault" not in by_id["supervisor"]
@@ -771,8 +888,8 @@ def test_generate_openclaw_config_denies_builtin_media_tools(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
     """Builtin image/video/music generate tools are denied (replaced by sellerclaw-cli media)."""
-    agents = json.loads(_generate(_supervisor_only(make_assembled_agent)))["agents"]["list"]
-    deny = agents[0]["tools"]["deny"]
+    entries = json.loads(_generate(_supervisor_only(make_assembled_agent)))["agents"]["entries"]
+    deny = entries["supervisor"]["tools"]["deny"]
     assert "image_generate" in deny
     assert "video_generate" in deny
     assert "music_generate" in deny
