@@ -646,6 +646,13 @@ def generate_openclaw_config(
         },
         "skills": {
             "allowBundled": list(OPENCLAW_BUNDLE_ALLOWED_SKILLS),
+            # OpenClaw defaults workshop.autonomous.mode to "auto": a daily
+            # collection-review session plus post-run self-learning. We pin "off"
+            # because per-agent tools.allow does not include skill_workshop, so
+            # auto review fails closed and spams gateway health; we also do not
+            # want unattended skill rewrites. Manual /learn and Workshop UI still
+            # work. "propose" would still spawn background capture runs.
+            "workshop": {"autonomous": {"mode": "off"}},
         },
     }
     return json.dumps(config_payload, indent=2)

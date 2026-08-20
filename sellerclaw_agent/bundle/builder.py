@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from sellerclaw_agent.assembly import AssembledAgentConfig
 from sellerclaw_agent.bundle.archive import build_gateway_version, build_workspaces_from_assembled
@@ -244,7 +245,44 @@ def _build_provider_models(
     return models
 
 
-def build_providers(manifest: GenericManifest) -> dict[str, object]:
+# Path the cloud API mounts its LiteLLM proxy on (src/litellm_proxy in the monolith).
+_CLOUD_LITELLM_PROXY_PREFIX = "/litellm"
+
+
+def _localize_cloud_proxy_url(base_url: str, *, sellerclaw_api_url: str) -> str:
+    """Reach the cloud's ``/litellm`` proxy over the host we already talk to it on.
+
+    The manifest carries whatever public URL the cloud advertises for itself. In local
+    development that is an ngrok tunnel, so a box sitting next to the cloud API would send
+    every model token out to the public internet and back — and a long streamed answer that
+    loses that round trip dies mid-sentence ("terminated"), which the user sees as a turn
+    that never finished.
+
+    ``SELLERCLAW_API_URL`` is the address this agent already uses for every other cloud call
+    (manifest pull, memory, web search), so borrowing its scheme+host keeps the request on the
+    short path while still going THROUGH the cloud proxy — the path is preserved, so the
+    request-shaping that route does (e.g. injecting Gemini's ``/v1beta`` segment) still applies.
+
+    Only ``/litellm`` URLs are rewritten: a group pointed straight at LiteLLM (staging and
+    production do that) is not proxied by the cloud API and must keep its own host. Same-host
+    URLs come out unchanged, so this is a no-op everywhere the two already agree.
+    """
+    api_base = (sellerclaw_api_url or "").strip().rstrip("/")
+    if not api_base:
+        return base_url
+    parsed = urlsplit(base_url)
+    path = parsed.path.rstrip("/")
+    if path != _CLOUD_LITELLM_PROXY_PREFIX and not path.startswith(f"{_CLOUD_LITELLM_PROXY_PREFIX}/"):
+        return base_url
+    api_parsed = urlsplit(api_base)
+    if not api_parsed.scheme or not api_parsed.netloc:
+        return base_url
+    return urlunsplit(
+        (api_parsed.scheme, api_parsed.netloc, f"{api_parsed.path.rstrip('/')}{parsed.path}", "", "")
+    )
+
+
+def build_providers(manifest: GenericManifest, *, sellerclaw_api_url: str = "") -> dict[str, object]:
     """Build the OpenClaw ``models.providers`` mapping from ``manifest.llm.groups``.
 
     Each provider is built strictly from its own group: ``baseUrl`` / ``apiKey`` come from
@@ -255,7 +293,7 @@ def build_providers(manifest: GenericManifest) -> dict[str, object]:
     providers: dict[str, object] = {}
     for name, group in manifest.llm.groups.items():
         entry: dict[str, object] = {
-            "baseUrl": group.base_url,
+            "baseUrl": _localize_cloud_proxy_url(group.base_url, sellerclaw_api_url=sellerclaw_api_url),
             "apiKey": group.api_key,
         }
         if group.api is not None:
@@ -363,7 +401,7 @@ class BundleBuilder:
             user_id=manifest.user_id,
             sellerclaw_api_url=sellerclaw_api_url,
             sellerclaw_agent_api_base_url=agent_api_base_url,
-            providers=build_providers(manifest),
+            providers=build_providers(manifest, sellerclaw_api_url=sellerclaw_api_url),
             openclaw_version=get_openclaw_version(),
             telegram_enabled=manifest.channels.telegram.enabled,
             telegram_bot_token=manifest.channels.telegram.bot_token,

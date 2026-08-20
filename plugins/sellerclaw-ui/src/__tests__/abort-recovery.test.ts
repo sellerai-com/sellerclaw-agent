@@ -253,17 +253,52 @@ describe("aborted turn recovery", () => {
     expect(turn.continuationPrompts()).toHaveLength(0);
   });
 
-  it("surfaces the failure when no run outcome was recorded", async () => {
+  it("resumes a dropped connection even when no run outcome was recorded", async () => {
     const { api, routes } = buildHarness();
     registerRunOutcomeTracker(api);
     registerInboundRoute(api);
 
-    // The hook is fire-and-forget upstream, so it may not have landed. Recovery must not be
-    // guessed at: no verdict means no retry.
+    // No verdict is the norm, not an edge case: on the deployed runtime the agent run loads its
+    // own plugin set and our ``agent_end`` subscription never fires. The engine's wording is
+    // then the only evidence, and "timed out" is the pipe breaking — worth one more try.
     const turn = await runTurn(api, routes, deliverTimeoutNotice);
+
+    await vi.waitFor(() => expect(turn.endStatuses()[0]).toBe("completed"));
+    await vi.waitFor(() => expect(turn.continuationPrompts()).toHaveLength(1));
+  });
+
+  it("still surfaces a failure it cannot attribute to the connection", async () => {
+    const { api, routes } = buildHarness();
+    registerRunOutcomeTracker(api);
+    registerInboundRoute(api);
+
+    const turn = await runTurn(api, routes, async (deliver) => {
+      await deliver({ text: "Model refused the request.", isError: true }, { kind: "final" });
+    });
 
     await vi.waitFor(() => expect(turn.endStatuses()).toEqual(["failed"]));
     expect(turn.continuationPrompts()).toHaveLength(0);
+  });
+
+  it("resumes a provider connection that died mid-answer", async () => {
+    const { api, routes, hooks } = buildHarness();
+    registerRunOutcomeTracker(api);
+    registerInboundRoute(api);
+
+    const turn = await runTurn(api, routes, async (deliver) => {
+      // The runtime does attribute this one — but it is still the connection, not the request.
+      reportRunEnd(hooks, { success: false, error: "APIConnectionError" });
+      await deliver(
+        {
+          text: "LLM request failed. rawError=litellm.APIConnectionError: Response payload is not completed",
+          isError: true,
+        },
+        { kind: "final" },
+      );
+    });
+
+    await vi.waitFor(() => expect(turn.endStatuses()[0]).toBe("completed"));
+    await vi.waitFor(() => expect(turn.continuationPrompts()).toHaveLength(1));
   });
 
   it("treats an owner stop as neither an error nor something to resume", async () => {
@@ -378,9 +413,10 @@ describe("aborted turn recovery", () => {
 
     const turn = await runTurn(api, routes, async (deliver) => {
       // A subagent-completion run finishing at the same moment must not become this turn's
-      // verdict — otherwise recovery would be decided by an unrelated run.
+      // verdict — otherwise recovery would be decided by an unrelated run. The failure text is
+      // deliberately not a transport one, so a retry here could only come from that verdict.
       reportRunEnd(hooks, { success: false, runId: "announce:v1:agent:sellercart:subagent:x" });
-      await deliverTimeoutNotice(deliver);
+      await deliver({ text: "Model refused the request.", isError: true }, { kind: "final" });
     });
 
     await vi.waitFor(() => expect(turn.endStatuses()).toEqual(["failed"]));

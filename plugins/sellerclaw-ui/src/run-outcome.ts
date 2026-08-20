@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { extractTargetFromSessionKey } from "./channel.js";
+import { logInfo, logWarn } from "./log.js";
 
 /**
  * Per-session bookkeeping that lets a chat turn tell *how* it ended, so an aborted turn can
@@ -102,7 +103,14 @@ interface HookContext {
  * was recorded at ``finishTurn`` and treats a missing record as "cannot vouch for this run".
  */
 export function registerRunOutcomeTracker(api: OpenClawPluginApi): void {
-  if (typeof api.on !== "function") return;
+  if (typeof api.on !== "function") {
+    // Without this subscription every failed turn reads as "no verdict" and takes the
+    // conservative no-recovery branch, so an interrupted turn dies where it could have
+    // resumed. Silent degradation is the worst outcome here — say it out loud.
+    logWarn(api, "sellerclaw-ui: run outcome tracker not installed (api.on unavailable)");
+    return;
+  }
+  logInfo(api, "sellerclaw-ui: run outcome tracker installed");
   api.on("agent_end", (event: AgentEndEvent, ctx?: HookContext) => {
     const sessionKey = asString(ctx?.sessionKey);
     if (!sessionKey || !extractTargetFromSessionKey(sessionKey)) return undefined;
@@ -171,6 +179,71 @@ export function claimContinuation(sessionKey: string): number | null {
  */
 export function resetContinuations(sessionKey: string): void {
   continuations.delete(sessionKey);
+}
+
+/**
+ * Failures whose cause is the pipe, not the request: the model was reachable, started (or was
+ * about to start) answering, and the connection died. Re-asking is the correct response — the
+ * work already done is in the session, so a continuation picks up where the stream broke.
+ *
+ * Everything not listed here is treated as needing a human, which is the safe default: a retry
+ * on a billing, auth, quota or context-size failure burns the owner's credits to reproduce the
+ * same message. Ordinary tool failures never reach this classifier — the engine reports those
+ * beside a real answer, and that path completes normally.
+ */
+const TRANSPORT_FAILURE_PATTERNS: readonly RegExp[] = [
+  // Nothing came back in time, or the stream stopped mid-answer (undici reports the latter as
+  // a bare "terminated"). Both are our most common real-world failure.
+  /\btimed out\b/i,
+  /\btimeout\b/i,
+  /\bterminated\b/i,
+  // The connection itself failed: DNS, refused, reset, TLS dropped mid-stream. LiteLLM wraps
+  // the last one as APIConnectionError + "Response payload is not completed".
+  /\bAPIConnectionError\b/i,
+  /\bnetwork connection error\b/i,
+  /\bconnection error\b/i,
+  /\bECONNRESET\b/i,
+  /\bECONNREFUSED\b/i,
+  /\bEPIPE\b/i,
+  /\bsocket hang up\b/i,
+  /\bpayload is not completed\b/i,
+  /\bpremature close\b/i,
+  // A gateway in front of the model was momentarily unable to serve the request.
+  /\b50[234]\b/,
+  /\bbad gateway\b/i,
+  /\bservice unavailable\b/i,
+];
+
+/**
+ * Failures that look transport-ish by wording but must never be retried automatically: the
+ * request would fail the same way, and some of them cost money or need a config change. Checked
+ * first, so a message carrying both (e.g. a rate-limit body delivered over a 503) stays put.
+ */
+const HUMAN_NEEDED_PATTERNS: readonly RegExp[] = [
+  /\brate limit/i,
+  /\bquota\b/i,
+  /\binsufficient (credit|balance|funds)/i,
+  /\bbilling\b/i,
+  /\bpayment\b/i,
+  /\bauthenticat/i,
+  /\bunauthorized\b/i,
+  /\binvalid api key\b/i,
+  /\bcontext overflow\b/i,
+  /\bmodel was not found\b/i,
+];
+
+/**
+ * Whether a failed turn may retry itself.
+ *
+ * Reads the engine's failure text because that is what this turn actually has: see
+ * ``lastErrorFinalText`` in ``inbound.ts``. An empty or unrecognised message is NOT retried —
+ * silence about the cause is not evidence that retrying is safe.
+ */
+export function isTransportTurnFailure(errorText: string): boolean {
+  const text = (errorText ?? "").trim();
+  if (!text) return false;
+  if (HUMAN_NEEDED_PATTERNS.some((pattern) => pattern.test(text))) return false;
+  return TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 /** Test-only: drop all cross-run state so cases cannot leak into each other. */

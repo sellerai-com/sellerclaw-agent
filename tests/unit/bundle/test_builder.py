@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sellerclaw_agent.bundle.builder import BundleBuilder, derive_agent_tools
+from sellerclaw_agent.bundle.builder import (
+    BundleBuilder,
+    _localize_cloud_proxy_url,
+    derive_agent_tools,
+)
 from sellerclaw_agent.bundle.manifest import GenericManifest, bundle_manifest_from_mapping
 from sellerclaw_agent.test_manifest_fixtures import load_manifest_v2_mapping
 
@@ -29,13 +33,29 @@ _MEMORY_TOOLS_EXPECTED = [
 ]
 
 
-def _config_from_llm(mutate_llm: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
-    """Build the OpenClaw config from the v2 fixture, optionally mutating its ``llm`` block."""
+# Host the v2 fixture advertises for the cloud (its provider baseUrls hang off it).
+_FIXTURE_CLOUD_HOST = "https://example.ngrok-free.dev"
+
+
+def _config_from_llm(
+    mutate_llm: Callable[[dict[str, Any]], Any] | None = None,
+    *,
+    sellerclaw_api_url: str = _FIXTURE_CLOUD_HOST,
+) -> dict[str, Any]:
+    """Build the OpenClaw config from the v2 fixture, optionally mutating its ``llm`` block.
+
+    ``sellerclaw_api_url`` defaults to the same host the fixture advertises, so provider
+    baseUrls come out exactly as the manifest states them unless a test asks otherwise.
+    """
     mapping = copy.deepcopy(load_manifest_v2_mapping())
     if mutate_llm is not None:
         mutate_llm(mapping["llm"])
     manifest = bundle_manifest_from_mapping(mapping)
-    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS, agent_api_key="k")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("SELLERCLAW_API_URL", sellerclaw_api_url)
+        result = BundleBuilder().build(
+            manifest, gateway_token=_GW, hooks_token=_HOOKS, agent_api_key="k"
+        )
     return json.loads(result.openclaw_config)
 
 
@@ -206,6 +226,73 @@ def test_defaults_reasoning_default_from_manifest() -> None:
     mapping["agents"].pop("reasoning_default", None)
     cfg = _cfg_from_mapping(mapping)
     assert cfg["agents"]["defaults"]["reasoningDefault"] == "off"
+
+
+def test_provider_base_urls_use_the_host_this_agent_reaches_the_cloud_on() -> None:
+    """A ``/litellm`` baseUrl is re-pointed at SELLERCLAW_API_URL, path untouched.
+
+    The manifest advertises the cloud's public host (a tunnel in local dev); an agent sitting
+    next to the cloud must not route model traffic through it. Every proxied provider moves,
+    and each keeps its own sub-path so the proxy still shapes the request.
+    """
+    providers = _config_from_llm(sellerclaw_api_url="http://host.docker.internal:8000")["models"][
+        "providers"
+    ]
+
+    assert providers["litellm"]["baseUrl"] == "http://host.docker.internal:8000/litellm"
+    assert providers["anthropic"]["baseUrl"] == "http://host.docker.internal:8000/litellm/anthropic"
+    assert providers["google"]["baseUrl"] == "http://host.docker.internal:8000/litellm/gemini"
+
+
+@pytest.mark.parametrize(
+    ("manifest_base_url", "api_url", "expected"),
+    [
+        pytest.param(
+            "https://tunnel.example/litellm",
+            "http://host.docker.internal:8000",
+            "http://host.docker.internal:8000/litellm",
+            id="proxied-url-moves-to-local-host",
+        ),
+        pytest.param(
+            "https://tunnel.example/litellm/gemini",
+            "http://host.docker.internal:8000",
+            "http://host.docker.internal:8000/litellm/gemini",
+            id="sub-path-preserved",
+        ),
+        pytest.param(
+            "https://sellerclaw-litellm.fly.dev",
+            "https://api.sellerclaw.ai",
+            "https://sellerclaw-litellm.fly.dev",
+            id="direct-litellm-host-untouched",
+        ),
+        pytest.param(
+            "https://api.sellerclaw.ai/litellm",
+            "https://api.sellerclaw.ai",
+            "https://api.sellerclaw.ai/litellm",
+            id="same-host-is-a-no-op",
+        ),
+        pytest.param(
+            "https://tunnel.example/litellm",
+            "",
+            "https://tunnel.example/litellm",
+            id="no-api-url-keeps-manifest-value",
+        ),
+        pytest.param(
+            "https://tunnel.example/litellm",
+            "host.docker.internal:8000",
+            "https://tunnel.example/litellm",
+            id="schemeless-api-url-keeps-manifest-value",
+        ),
+        pytest.param(
+            "https://tunnel.example/litellm-mirror",
+            "http://host.docker.internal:8000",
+            "https://tunnel.example/litellm-mirror",
+            id="lookalike-path-untouched",
+        ),
+    ],
+)
+def test_localize_cloud_proxy_url(manifest_base_url: str, api_url: str, expected: str) -> None:
+    assert _localize_cloud_proxy_url(manifest_base_url, sellerclaw_api_url=api_url) == expected
 
 
 def test_providers_are_manifest_driven_not_hardcoded() -> None:

@@ -288,6 +288,16 @@ def test_generate_openclaw_config_allowlists_only_healthcheck_bundled_skill(
     assert payload["skills"]["allowBundled"] == ["healthcheck"]
 
 
+def test_generate_openclaw_config_disables_skill_workshop_autonomy(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Override OpenClaw's auto default so daily collection review does not run."""
+    payload = json.loads(
+        _generate(_supervisor_only(make_assembled_agent), sellerclaw_api_url="http://api/")
+    )
+    assert payload["skills"]["workshop"] == {"autonomous": {"mode": "off"}}
+
+
 def test_generate_openclaw_config_cron_failures_redirect_to_cloud_error_sink(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:

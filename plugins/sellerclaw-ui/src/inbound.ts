@@ -13,6 +13,7 @@ import { logDelivery, logError, logInfo, logWarn } from "./log.js";
 import {
   claimContinuation,
   consumeOwnerAbort,
+  isTransportTurnFailure,
   markOwnerAbort,
   MAX_CONTINUATIONS,
   readRunOutcome,
@@ -436,6 +437,14 @@ async function startInboundTurn(params: {
   /** How much engine error text was kept out of the chat, for the delivery timeline. */
   let suppressedErrorChars = 0;
   /**
+   * The engine's own wording of the failure, kept for {@link classifyTurnFailure}.
+   *
+   * It is the only description of *why* the run died that reaches this turn: on the deployed
+   * runtime a gateway-scope plugin takes no part in the agent run's hooks, so ``agent_end``
+   * (and with it {@link readRunOutcome}) never fires for us.
+   */
+  let lastErrorFinalText = "";
+  /**
    * Whether anything real reached the chat this turn (committed text, preview delta, media).
    * Separates "the run succeeded and the error payload was just a tool-failure warning riding
    * along with the answer" from "the run 'succeeded' but the error text was all it produced"
@@ -586,6 +595,7 @@ async function startInboundTurn(params: {
         if (isError) {
           sawErrorFinal = true;
           suppressedErrorChars += text.length;
+          if (text.trim()) lastErrorFinalText = text;
           return;
         }
 
@@ -755,8 +765,34 @@ async function startInboundTurn(params: {
       resetContinuations(sessionKey);
       return { status: "completed", branch: "owner_stop" };
     }
+    /**
+     * Recover from a failure that is worth re-asking, while attempts remain.
+     *
+     * ``branchWhenRefused`` names why we did not recover, so the delivery timeline still says
+     * which rule fired.
+     */
+    const recoverIfTransport = (
+      branchWhenRefused: string,
+    ): { status: "completed" | "failed"; branch: string } => {
+      if (!isTransportTurnFailure(lastErrorFinalText)) {
+        return { status: "failed", branch: branchWhenRefused };
+      }
+      const attempt = claimContinuation(sessionKey);
+      if (attempt === null) return { status: "failed", branch: "failed_recovery_exhausted" };
+      pendingContinuationAttempt = attempt;
+      return {
+        status: "completed",
+        branch: `recovering_transport attempt=${attempt}/${MAX_CONTINUATIONS}`,
+      };
+    };
+
     const outcome = readRunOutcome(sessionKey);
-    if (!outcome) return { status: "failed", branch: "failed_no_outcome" };
+    // No verdict at all. On the deployed runtime this is every failed turn, not an edge case:
+    // the agent run loads its own plugin set (memory only), so our ``agent_end`` subscription —
+    // registered in the gateway process — is never called. Falling straight through to "failed"
+    // is what left a dropped connection as a dead end in the chat, so the engine's failure text
+    // decides instead.
+    if (!outcome) return recoverIfTransport("failed_no_outcome");
     if (outcome.success) {
       // The run itself finished fine; the error payload was a tool-failure warning the engine
       // appends BESIDE a real answer (``run/payloads.ts`` pushes those with ``isError: true``
@@ -768,9 +804,12 @@ async function startInboundTurn(params: {
         resetContinuations(sessionKey);
         return { status: "completed", branch: "completed_warning_suppressed" };
       }
-      return { status: "failed", branch: "failed_error_family" };
+      return recoverIfTransport("failed_error_family");
     }
-    if (outcome.hasError) return { status: "failed", branch: "failed_error_family" };
+    // An error family the runtime did attribute. Most of these need a human (billing, auth,
+    // quota), but a provider connection that died mid-answer lands here too and is worth one
+    // more try.
+    if (outcome.hasError) return recoverIfTransport("failed_error_family");
     const attempt = claimContinuation(sessionKey);
     if (attempt === null) return { status: "failed", branch: "failed_recovery_exhausted" };
     pendingContinuationAttempt = attempt;
