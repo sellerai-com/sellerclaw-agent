@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.7.1-2
+ARG OPENCLAW_TAG=2026.8.1-beta.2
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -87,12 +87,12 @@ RUN apt-get update \
 # version OpenClaw picks up here must match the `playwright-core` it depends on itself — keep this ARG
 # in lockstep with the base image when OPENCLAW_TAG moves:
 #   docker run --rm --entrypoint sh ghcr.io/openclaw/openclaw:$OPENCLAW_TAG -c 'grep playwright-core /app/package.json'
-# (openclaw 2026.7.1 pins playwright-core 1.61.1 exactly, and browsers come from the base image's
+# (openclaw 2026.8.1-beta.2 pins playwright-core 1.62.1 exactly, and browsers come from the base image's
 # system Chrome — hence PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD.)
 # Unpinned before: `npm install -g playwright` took whatever npm called latest at build time, so the
 # shipped version changed silently the first time the layer cache missed — a rebuild today would jump
 # to 1.62.0 (Chromium 151) while every existing image runs 1.61.1 (Chromium 149).
-ARG PLAYWRIGHT_VERSION=1.61.1
+ARG PLAYWRIGHT_VERSION=1.62.1
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV NODE_PATH=/usr/local/lib/node_modules
 RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}"
@@ -178,7 +178,12 @@ RUN cd /app/dist/extensions && \
 # The installer also writes a stub openclaw.json (it records the memory slot for itself) and an
 # audit log; drop both — the real per-user config is copied in at boot (see copy_runtime_config in
 # openclaw_start), and only state/openclaw.sqlite + extensions/ need to ship.
-RUN runuser -u node -- env HOME=/home/node openclaw plugins install /opt/openclaw-plugins/openclaw-mem0 \
+#
+# `--force` is required since 2026.8.x: installing from a local path is outside ClawHub review, so
+# the installer now stops with "Install cancelled; rerun with --force after reviewing the source".
+# The source here is the npm tarball we unpacked ourselves a few layers up at the pinned version —
+# reviewed by us, not third-party input — so confirming it non-interactively is the intended path.
+RUN runuser -u node -- env HOME=/home/node openclaw plugins install --force /opt/openclaw-plugins/openclaw-mem0 \
     && rm -f /home/node/.openclaw/openclaw.json \
     && rm -rf /home/node/.openclaw/logs
 
