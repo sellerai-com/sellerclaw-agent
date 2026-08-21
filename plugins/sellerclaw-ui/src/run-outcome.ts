@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { extractTargetFromSessionKey } from "./channel.js";
 import { logInfo, logWarn } from "./log.js";
+import { getSharedState } from "./shared-state.js";
 
 /**
  * Per-session bookkeeping that lets a chat turn tell *how* it ended, so an aborted turn can
@@ -74,9 +75,24 @@ interface ContinuationState {
   expiresAt: number;
 }
 
-const runOutcomes = new Map<string, StoredRunOutcome>();
-const ownerAborts = new Map<string, number>();
-const continuations = new Map<string, ContinuationState>();
+/**
+ * Process-wide, not module-level: the writer and the reader live in different module instances.
+ *
+ * `agent_end` is registered on every plugin-registry pass (see `hook-registration.ts`) and so
+ * fires from the newest evaluation of this module, while the inbound turn that reads the verdict
+ * (`readRunOutcome` / `consumeOwnerAbort` in `inbound.ts`) runs inside the HTTP route registered
+ * on the first pass. Module-local maps would put the two on opposite sides of that split and the
+ * turn would never see how its run ended. See `shared-state.ts`.
+ */
+const runOutcomes = getSharedState(
+  "run-outcome:outcomes",
+  () => new Map<string, StoredRunOutcome>(),
+);
+const ownerAborts = getSharedState("run-outcome:owner-aborts", () => new Map<string, number>());
+const continuations = getSharedState(
+  "run-outcome:continuations",
+  () => new Map<string, ContinuationState>(),
+);
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";

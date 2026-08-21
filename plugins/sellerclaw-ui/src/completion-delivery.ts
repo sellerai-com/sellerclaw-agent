@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { deliverTextToChat, extractTargetFromSessionKey, resolveSellerclawUiAccount } from "./channel.js";
 import { logDelivery, logDeliveryFailure } from "./log.js";
+import { getSharedState } from "./shared-state.js";
 
 /**
  * Makes a completion run's answer reach the owner without the agent having to send it.
@@ -95,11 +96,24 @@ interface PendingAnswer {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
-/** Keyed by session key — the only identifier both the run hooks and delivery hooks share. */
-const pendingAnswers = new Map<string, PendingAnswer>();
+/**
+ * Keyed by session key — the only identifier both the run hooks and delivery hooks share.
+ *
+ * Held in a process-wide slot rather than a module-level map: OpenClaw re-evaluates the plugin
+ * module on every registry pass, so a module-local map would be empty in the pass whose hooks
+ * are live, losing the captured answer (and the post-rescue suppression window) whenever a
+ * registry rebuild lands between capture and delivery. See `shared-state.ts`.
+ */
+const pendingAnswers = getSharedState(
+  "completion-delivery:pending-answers",
+  () => new Map<string, PendingAnswer>(),
+);
 
 /** Run ids (or session keys, when no run id is available) that already messaged the owner. */
-const messagedRuns = new Map<string, number>();
+const messagedRuns = getSharedState(
+  "completion-delivery:messaged-runs",
+  () => new Map<string, number>(),
+);
 
 interface BeforeAgentFinalizeEvent {
   runId?: unknown;

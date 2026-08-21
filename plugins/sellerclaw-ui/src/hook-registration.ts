@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { registerCompletionDeliveryGuard } from "./completion-delivery.js";
 import { logWarn } from "./log.js";
+import { getSharedState } from "./shared-state.js";
 import { registerRunOutcomeTracker } from "./run-outcome.js";
 
 /**
@@ -22,11 +23,15 @@ import { registerRunOutcomeTracker } from "./run-outcome.js";
  * fresh registry; the WeakSet only guards against the same `api` being offered twice.
  */
 
-/** APIs already given our hooks — one entry per registry build. */
-const seenApis = new WeakSet<object>();
-
-/** Counts registrations for the liveness log line; survives passes via the module cache. */
-let registrationPass = 0;
+/**
+ * APIs already given our hooks, and the pass counter behind the liveness line.
+ *
+ * Both live in a process-wide slot because the plugin module is re-evaluated on every registry
+ * pass (see `shared-state.ts`) — a module-level counter would reset to zero each time and report
+ * "pass #1" forever, hiding the very re-registration this module exists to make visible.
+ */
+const seenApis = getSharedState("hook-registration:seen-apis", () => new WeakSet<object>());
+const passCounter = getSharedState("hook-registration:pass-counter", () => ({ value: 0 }));
 
 export function registerLifecycleHooks(api: OpenClawPluginApi): void {
   if (typeof (api as { on?: unknown }).on !== "function") {
@@ -36,10 +41,10 @@ export function registerLifecycleHooks(api: OpenClawPluginApi): void {
     return;
   }
   seenApis.add(api);
-  registrationPass += 1;
+  passCounter.value += 1;
   // Warn level on purpose: the bundle ships `logging.level: "warn"`, and this line is the
   // liveness signal — its absence from a session's logs is how the next silent death gets seen.
-  logWarn(api, `sellerclaw-ui: lifecycle hooks registered (pass #${registrationPass})`);
+  logWarn(api, `sellerclaw-ui: lifecycle hooks registered (pass #${passCounter.value})`);
   registerCompletionDeliveryGuard(api);
   registerRunOutcomeTracker(api);
 }
@@ -56,8 +61,7 @@ export function withPerPassHooks<T extends RegistrableEntry>(entry: T): T {
   return entry;
 }
 
-/** Test-only: forget seen APIs and the pass counter. */
+/** Test-only: reset the pass counter. Seen APIs need no reset — tests use fresh api objects. */
 export function __resetHookRegistrationState(): void {
-  registrationPass = 0;
-  // WeakSet cannot be cleared; tests use fresh api objects instead.
+  passCounter.value = 0;
 }
