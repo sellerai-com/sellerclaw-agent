@@ -273,9 +273,15 @@ def test_generate_openclaw_config_sole_agent_has_no_ownership_marker(
 def test_generate_openclaw_config_exec_runs_without_approval_prompts(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """`mode: "full"` replaces the retired `security` / `ask` pair."""
+    """`mode: "full"` replaces the retired `security` / `ask` pair.
+
+    ``backgroundMs`` is pinned alongside it because OpenClaw's 10s default is shorter than the
+    commands this agent runs all day — a CJ lookup, `catalog source-from-supplier`, a storefront
+    publish — so each of them was detached into a background session and cost two extra turns of
+    `process` polling. 60s holds them in the foreground; 120s is OpenClaw's ceiling.
+    """
     payload = json.loads(_generate(_supervisor_only(make_assembled_agent)))
-    assert payload["tools"]["exec"] == {"mode": "full"}
+    assert payload["tools"]["exec"] == {"mode": "full", "backgroundMs": 60000}
 
 
 def test_generate_openclaw_config_allowlists_only_healthcheck_bundled_skill(

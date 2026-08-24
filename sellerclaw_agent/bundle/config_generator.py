@@ -640,7 +640,15 @@ def generate_openclaw_config(
             },
             # `full` is the 2026.8 spelling of the retired `security: "full"` + `ask: "off"`
             # pair: run host commands without approval prompts.
-            "exec": {"mode": "full"},
+            #
+            # ``backgroundMs`` is how long a command is held in the foreground before it is
+            # detached into a background session the agent then has to poll with the `process`
+            # tool. OpenClaw's default is 10s, which is under the normal runtime of the commands
+            # this agent actually runs: a CJ catalog lookup, `catalog source-from-supplier` or a
+            # storefront publish all sit in the 10-30s band. At 10s each of those turned one turn
+            # into three (detach, poll, poll) and pushed agents into guessing `sleep 90` instead.
+            # 60s covers them in a single turn; the ceiling OpenClaw accepts is 120s.
+            "exec": {"mode": "full", "backgroundMs": 60000},
             "sessions": {"visibility": "all"},
             "agentToAgent": {"enabled": True},
         },
