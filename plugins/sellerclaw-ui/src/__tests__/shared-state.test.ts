@@ -80,10 +80,11 @@ describe("guard state across module re-instantiation", () => {
     const first = await loadFreshPass();
     fire(
       first.hooks,
-      "before_agent_finalize",
-      { runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER },
+      "llm_output",
+      { runId: ANNOUNCE_RUN_ID, assistantTexts: [ANSWER] },
       { sessionKey: SESSION_KEY },
     );
+    fire(first.hooks, "agent_end", { runId: ANNOUNCE_RUN_ID }, { sessionKey: SESSION_KEY });
 
     // A registry rebuild lands here: a new module instance registers the live hooks.
     const second = await loadFreshPass();
@@ -130,10 +131,11 @@ describe("guard state across module re-instantiation", () => {
     const second = await loadFreshPass();
     fire(
       second.hooks,
-      "before_agent_finalize",
-      { runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER },
+      "llm_output",
+      { runId: ANNOUNCE_RUN_ID, assistantTexts: [ANSWER] },
       { sessionKey: SESSION_KEY },
     );
+    fire(second.hooks, "agent_end", { runId: ANNOUNCE_RUN_ID }, { sessionKey: SESSION_KEY });
     const result = fire(
       second.hooks,
       "message_sending",

@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { registerCompletionDeliveryGuard } from "./completion-delivery.js";
 import { logWarn } from "./log.js";
+import { registerReasoningRelay } from "./reasoning-relay.js";
 import { getSharedState } from "./shared-state.js";
 import { registerRunOutcomeTracker } from "./run-outcome.js";
 
@@ -47,6 +48,7 @@ export function registerLifecycleHooks(api: OpenClawPluginApi): void {
   logWarn(api, `sellerclaw-ui: lifecycle hooks registered (pass #${passCounter.value})`);
   registerCompletionDeliveryGuard(api);
   registerRunOutcomeTracker(api);
+  registerReasoningRelay(api);
 }
 
 type RegistrableEntry = { register: (api: OpenClawPluginApi) => void };

@@ -32,6 +32,11 @@ import {
   type ScwUiAccount,
 } from "./send.js";
 import { getRuntime } from "./runtime-store.js";
+import {
+  bindInboundTurn,
+  markBoundTurnStreamed,
+  releaseTurnBinding,
+} from "./turn-binding.js";
 
 interface InboundPayload {
   chat_id: string;
@@ -418,6 +423,11 @@ async function startInboundTurn(params: {
   // One streaming assistant message per turn, started lazily on the first delivered
   // part (or eagerly at finish for an empty dispatch) and finalized after dispatch.
   const partsMessageId = crypto.randomUUID();
+  // Publish it as this session's turn binding before anything is posted: on 2026.8 the agent
+  // usually answers with the ``message`` tool instead of a reply the dispatcher hands us, and
+  // that send then lands in this message — next to the thinking the owner watched — rather than
+  // opening a second one and leaving this turn empty. See ``turn-binding.ts``.
+  bindInboundTurn(sessionKey, partsMessageId, payload.chat_id);
   /**
    * Delivery timeline for this turn, logged at warn so it survives ``logging.level: warn``
    * and reaches the shipped logs.
@@ -454,6 +464,9 @@ async function startInboundTurn(params: {
   /** Attempt number of the continuation ``finishTurn`` decided to start, if any. */
   let pendingContinuationAttempt: number | null = null;
   const ensurePartsTurn = async (): Promise<void> => {
+    // The dispatch is producing content of its own, so this message is the streamed reply's:
+    // a ``message``-tool send in the same turn stays a separate message from here on.
+    markBoundTurnStreamed(sessionKey);
     if (partsTurnStarted) return;
     partsTurnStarted = true;
     try {
@@ -828,6 +841,9 @@ async function startInboundTurn(params: {
         ? { status: "completed" as const, branch: "owner_stop" }
         : { status: "failed" as const, branch: "dispatch_error" }
       : resolveTurnEnd();
+    // Stop offering this message to outbound sends before closing it: a send that claimed it
+    // after the ``turn/end`` below would append to a finalized message.
+    releaseTurnBinding(sessionKey, partsMessageId);
     await ensurePartsTurn();
     // Closing line of the delivery timeline: how many pieces the turn produced, how it ended and
     // how long it ran. One delivery on a multi-minute turn means the owner watched an empty chat;

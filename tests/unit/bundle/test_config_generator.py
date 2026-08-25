@@ -180,8 +180,8 @@ def test_generate_openclaw_config_has_gateway_and_models(
         payload["plugins"]["entries"]["sellerclaw-ui"]["config"]["internalWebhookSecret"] == "h"
     )
     # Path-loaded plugin: conversation-access hooks must be opted into, otherwise the
-    # ``before_agent_finalize`` guard that forces completion runs through the ``message`` tool
-    # is silently dropped at plugin load.
+    # completion-delivery guard's answer capture and the reasoning relay (both ``llm_output`` /
+    # ``agent_end``) are silently dropped at plugin load.
     assert (
         payload["plugins"]["entries"]["sellerclaw-ui"]["hooks"]["allowConversationAccess"] is True
     )

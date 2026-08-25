@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/core";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
+import { claimBoundTurnForSend } from "./turn-binding.js";
 import {
   enqueueSend,
   postTurnEnd,
@@ -194,6 +195,12 @@ function buildSellerclawUiRuntimeSnapshot(account: ScwUiAccount): {
  * Deliver a one-shot outbound message (``message`` tool / proactive / handoff) as a
  * self-contained parts turn: start → part(s) → end. Each outbound send is its own
  * assistant message, so async completions never collide with a streamed turn.
+ *
+ * Unless a live dispatch is streaming its reasoning into a message of its own: the first send of
+ * such a turn joins it (see ``turn-binding.ts``) so the owner's "Thinking…" panel and the answer
+ * it produced are one message rather than two, and the panel survives in history. That message is
+ * finished by the dispatch's ``finishTurn``, so this path must not end it — ending twice would
+ * finalize the turn mid-run.
  */
 async function deliverOutboundAsParts(
   account: ScwUiAccount,
@@ -201,7 +208,10 @@ async function deliverOutboundAsParts(
   chatId: string | null,
   parts: OutboundPartInput[],
 ): Promise<{ messageId: string }> {
-  const messageId = crypto.randomUUID();
+  const claimed = claimBoundTurnForSend(sessionKey);
+  const messageId = claimed?.messageId ?? crypto.randomUUID();
+  // Idempotent by ``message_id`` cloud-side: a claimed turn the dispatch already opened is
+  // returned as-is rather than duplicated.
   await postTurnStart(account, sessionKey, messageId, chatId);
   for (const part of parts) {
     await postTurnPart(
@@ -212,7 +222,10 @@ async function deliverOutboundAsParts(
       chatId,
     );
   }
-  await postTurnEnd(account, sessionKey, messageId, chatId);
+  // A claimed message belongs to a live dispatch, which closes it in ``finishTurn``.
+  if (claimed === null) {
+    await postTurnEnd(account, sessionKey, messageId, chatId);
+  }
   return { messageId };
 }
 

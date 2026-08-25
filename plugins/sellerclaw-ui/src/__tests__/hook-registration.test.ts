@@ -38,12 +38,17 @@ describe("registerLifecycleHooks", () => {
     const { api, on } = buildApi();
     registerLifecycleHooks(api);
     const names = registeredHookNames(on);
-    // Completion-delivery guard: capture, no-text fallback, messaging-tool tracker, interception.
-    expect(names).toContain("before_agent_finalize");
+    // Completion-delivery guard: answer capture, messaging-tool tracker, interception.
     expect(names).toContain("before_tool_call");
     expect(names).toContain("message_sending");
-    // Both the guard and the run-outcome tracker listen on agent_end.
-    expect(on.mock.calls.filter((call) => call[0] === "agent_end").length).toBe(2);
+    // Never ``before_agent_finalize``: registering it makes the runtime defer the whole visible
+    // reply stream to the end of the run, which is the live-streaming regression it caused once.
+    expect(names).not.toContain("before_agent_finalize");
+    // The guard's decision point, the run-outcome tracker and the reasoning relay all listen
+    // on agent_end — it is the only hook carrying a non-dispatched run's transcript.
+    expect(on.mock.calls.filter((call) => call[0] === "agent_end").length).toBe(3);
+    // The guard reads each run's visible text off llm_output.
+    expect(on.mock.calls.filter((call) => call[0] === "llm_output").length).toBe(1);
   });
 
   it("registers again on a fresh api — each registry pass must get its own hooks", () => {

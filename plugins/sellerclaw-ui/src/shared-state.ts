@@ -7,7 +7,7 @@
  * empty in each pass, while hooks from the newest pass are the only ones the runtime dispatches.
  *
  * That silently breaks any state handed between two hook firings: the completion guard captures
- * an answer in `before_agent_finalize` and consumes it in `message_sending`, and it keeps a
+ * an answer while the run streams and consumes it in `message_sending`, and it keeps a
  * suppression window open for tens of seconds afterwards. A registry rebuild in between would
  * leave the live hooks looking at an empty map — the raw subagent envelope would sail through
  * exactly as if the guard were not installed.
