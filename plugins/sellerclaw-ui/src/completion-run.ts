@@ -59,3 +59,39 @@ export function isCompletionRun(runId: unknown, messages: unknown): boolean {
   const trigger = lastUserMessageText(messages).trimStart();
   return COMPLETION_TRIGGER_MARKERS.some((marker) => trigger.startsWith(marker));
 }
+
+/** The silent token: a run whose whole answer is this one word deliberately said nothing. */
+export const SILENT_REPLY_TOKEN = "NO_REPLY";
+
+/**
+ * Whether this run declined to answer — its visible text is exactly the silent token.
+ *
+ * A duplicate completion event wakes the supervisor for a turn whose only conclusion is "I have
+ * already answered this". That turn contributes nothing to what the owner reads, so its thinking
+ * does not belong beside the answer: it is commentary on runtime plumbing (retried events, reply
+ * sentinels), and shown in the Thought panel it displaces the reasoning that produced the answer.
+ */
+export function isSilentRun(messages: unknown): boolean {
+  return lastAssistantText(messages).trim() === SILENT_REPLY_TOKEN;
+}
+
+/** Visible text of the run's last assistant message — its answer, thinking blocks excluded. */
+export function lastAssistantText(messages: unknown): string {
+  if (!Array.isArray(messages)) return "";
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as { role?: unknown; content?: unknown } | null;
+    if (!message || typeof message !== "object" || message.role !== "assistant") continue;
+    const content = message.content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((block) => {
+        if (!block || typeof block !== "object") return "";
+        const part = block as { type?: unknown; text?: unknown };
+        return part.type === "text" ? asString(part.text) : "";
+      })
+      .join("")
+      .trim();
+  }
+  return "";
+}

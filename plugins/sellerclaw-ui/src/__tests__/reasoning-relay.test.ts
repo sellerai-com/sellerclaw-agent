@@ -191,6 +191,50 @@ describe("reasoning relay", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("opens no turn for a run that declined to answer", async () => {
+    // A duplicate completion event wakes the supervisor to conclude it has already answered. That
+    // turn's thinking is about the plumbing, and belongs nowhere near the answer it had no part in.
+    const { agentEnd } = setup();
+
+    agentEnd(
+      {
+        runId: `${SETTLE_RUN_ID}:retry-2`,
+        messages: completionTranscript({
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "This is a duplicate completion event. I already replied." },
+            { type: "text", text: "NO_REPLY" },
+          ],
+        }),
+      },
+      { sessionKey: SESSION_KEY },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("still reports a run whose answer merely mentions the silent token", async () => {
+    const { agentEnd } = setup();
+
+    agentEnd(
+      {
+        runId: SETTLE_RUN_ID,
+        messages: completionTranscript({
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Объясняю владельцу, что значит NO_REPLY." },
+            { type: "text", text: "NO_REPLY — это служебный ответ агента." },
+          ],
+        }),
+      },
+      { sessionKey: SESSION_KEY },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
   it("recognizes a completion run from the trigger text when the run id is not prefixed", async () => {
     const { agentEnd } = setup();
 

@@ -5,7 +5,7 @@ import {
   extractTargetFromSessionKey,
   resolveSellerclawUiAccount,
 } from "./channel.js";
-import { isCompletionRun, lastUserMessageIndex } from "./completion-run.js";
+import { isCompletionRun, isSilentRun, lastUserMessageIndex } from "./completion-run.js";
 import { logError, logInfo, logWarn } from "./log.js";
 import { postThought, postTurnEnd, postTurnStart } from "./send.js";
 
@@ -148,6 +148,11 @@ export function registerReasoningRelay(api: OpenClawPluginApi): void {
     // A live chat turn streams its own reasoning through the dispatch; only the runs we cannot
     // pass callbacks into are reported from here.
     if (!isCompletionRun(runId, event?.messages)) return undefined;
+    // A run that answered NO_REPLY wrote nothing the owner will read — typically a duplicate
+    // completion event waking the supervisor to conclude it has already answered. Its thinking is
+    // about the plumbing, and relaying it would put that in the Thought panel next to an answer it
+    // had no part in.
+    if (isSilentRun(event?.messages)) return undefined;
     const texts = readRunThinking(event?.messages).slice(-MAX_THOUGHT_BLOCKS);
     if (texts.length === 0) return undefined;
     void relayRunThinking({

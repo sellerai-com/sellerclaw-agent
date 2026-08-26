@@ -111,6 +111,28 @@ describe("completion delivery", () => {
     expect(decision).toEqual({ content: ANSWER });
   });
 
+  it("delivers an answer whose llm_output lands after the run end", () => {
+    // The real order in OpenClaw 2026.8: ``agent_end`` is dispatched before ``llm_output`` for the
+    // final model call. A run that writes its whole answer in its last round therefore looks
+    // answerless at run end and is complete a heartbeat later. This is the case that reached a
+    // seller as an empty chat after a 30-minute publishing job.
+    const { hooks, sending } = setup();
+    const fire = (name: string, event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+      for (const handler of hooks.get(name) ?? []) handler(event, ctx);
+    };
+    const ctx = { sessionKey: SESSION_KEY };
+
+    fire("agent_end", { runId: ANNOUNCE_RUN_ID, messages: undefined }, ctx);
+    fire("llm_output", { runId: ANNOUNCE_RUN_ID, assistantTexts: [ANSWER] }, ctx);
+
+    const decision = sending(
+      { to: `sellerclaw-ui:direct:${CHAT_ID}`, content: CHILD_REPORT },
+      { sessionKey: SESSION_KEY, channelId: "sellerclaw-ui" },
+    );
+
+    expect(decision).toEqual({ content: ANSWER });
+  });
+
   it("registers all four hooks it depends on", () => {
     const { hooks } = setup();
 

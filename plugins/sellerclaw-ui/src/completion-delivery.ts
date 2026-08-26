@@ -327,8 +327,15 @@ function registerAnswerCapture(api: OpenClawPluginApi): void {
       return undefined;
     }
     if (!answer || isSilentAnswer(answer)) {
+      // Remembered as empty rather than left unset, so the runtime's fallback is still recognised
+      // as belonging to this run and gets cancelled instead of reaching the owner as raw internals.
+      // Whether there is really nothing to say is decided at delivery time, once ``llm_output``
+      // for the final round has landed — see ``registerDeliveryRewrite``.
       rememberAnswer(api, sessionKey, "");
-      logDeliveryFailure(api, `completion run produced no answer session_key=${sessionKey}`);
+      logDeliveryFailure(
+        api,
+        `no answer at run end (may land with the final llm_output) session_key=${sessionKey}`,
+      );
       return undefined;
     }
     rememberAnswer(api, sessionKey, answer);
@@ -386,7 +393,15 @@ function registerDeliveryRewrite(api: OpenClawPluginApi): void {
         logDelivery(api, `late runtime delivery suppressed session_key=${sessionKey}`);
         return { cancel: true, cancelReason: "answer already delivered by sellerclaw-ui" };
       }
-      if (!pending.answer) {
+      // ``agent_end`` may have concluded "no answer" simply because it ran first: OpenClaw
+      // dispatches it before ``llm_output`` for the final model call, so a run whose whole answer
+      // is written in its last round leaves the capture map empty at that moment and full a
+      // heartbeat later — which is now. Asking again here is the difference between the owner
+      // reading their report and reading nothing at all.
+      const answered = pending.answer
+        ? pending
+        : (adoptRacedCompletionAnswer(api, sessionKey) ?? pending);
+      if (!answered.answer) {
         clearPending(sessionKey);
         logDeliveryFailure(
           api,
@@ -394,7 +409,7 @@ function registerDeliveryRewrite(api: OpenClawPluginApi): void {
         );
         return { cancel: true, cancelReason: "completion run produced no owner-facing answer" };
       }
-      const answer = pending.answer;
+      const answer = answered.answer;
       clearPending(sessionKey);
       if (content.trim() === answer.trim()) {
         // Already the right text (a future runtime that delivers the parent's own answer):
