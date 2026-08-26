@@ -1,286 +1,220 @@
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import AsyncIterator
+from types import TracebackType
+from typing import Any, Self
 
 import pytest
-from openclaw_diagnostics.__main__ import main
+from openclaw_diagnostics.gateway import GatewayError
 from openclaw_diagnostics.session_monitor import (
-    collect_new_session_log_lines,
+    TAG,
     format_session_log_line,
     monitor_session_logs,
-    seed_existing_session_offsets,
+    session_log_lines,
 )
 
 pytestmark = pytest.mark.unit
 
 
-def _session_file(state_dir: Path, *, agent_id: str, session_key: str) -> Path:
-    path = state_dir / "agents" / agent_id / "sessions" / f"{session_key}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+def _event(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "event", "event": name, "payload": payload}
 
 
-def test_seed_existing_session_offsets_skips_old_history(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="scout", session_key="session-a")
-    session_file.write_text('{"type":"message","text":"old line"}\n', encoding="utf-8")
-
-    trackers = seed_existing_session_offsets(state_dir=state_dir)
-
-    assert collect_new_session_log_lines(state_dir=state_dir, trackers=trackers) == []
-
-
-def test_collect_new_session_log_lines_emits_new_file_events(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    trackers = seed_existing_session_offsets(state_dir=state_dir)
-    session_file = _session_file(state_dir, agent_id="scout", session_key="session-b")
-    session_file.write_text('{"type":"assistant_message","text":"hello from scout"}\n', encoding="utf-8")
-
-    lines = collect_new_session_log_lines(state_dir=state_dir, trackers=trackers)
-
-    assert len(lines) == 1
-    assert "agent=scout" in lines[0]
-    assert "session=session-b" in lines[0]
-    assert "type=assistant_message" in lines[0]
-    assert "summary=hello from scout" in lines[0]
+def _fields(line: str) -> dict[str, str]:
+    """Parse the ``key=value`` tail of a log line, stopping at the free-form field."""
+    out: dict[str, str] = {}
+    for token in line.removeprefix(f"{TAG} ").split(" "):
+        key, sep, value = token.partition("=")
+        if sep and key not in out:
+            out[key] = value
+        if key in {"summary", "data"}:
+            break
+    return out
 
 
-def test_collect_new_session_log_lines_emits_appended_lines_only(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="supplier", session_key="session-c")
-    session_file.write_text('{"type":"message","text":"first"}\n', encoding="utf-8")
-    trackers = seed_existing_session_offsets(state_dir=state_dir)
+class _FakeGateway:
+    def __init__(
+        self,
+        frames: list[dict[str, Any]],
+        *,
+        connect_error: str | None = None,
+    ) -> None:
+        self._frames = frames
+        self._connect_error = connect_error
+        self.subscribed = False
 
-    with session_file.open("a", encoding="utf-8") as handle:
-        handle.write('{"type":"tool_call","tool":"exec","command":"curl https://example.test"}\n')
+    async def __aenter__(self) -> Self:
+        if self._connect_error:
+            raise GatewayError(self._connect_error)
+        return self
 
-    lines = collect_new_session_log_lines(state_dir=state_dir, trackers=trackers)
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        return None
 
-    assert len(lines) == 1
-    assert "agent=supplier" in lines[0]
-    assert "tool=exec" in lines[0]
-    assert "summary=curl https://example.test" in lines[0]
+    async def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        assert method == "sessions.subscribe"
+        self.subscribed = True
+        return {"subscribed": True}
 
-
-def test_format_session_log_line_falls_back_to_raw_for_invalid_json(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="shopify", session_key="session-d")
-
-    line = format_session_log_line(path=session_file, raw_line="not-json")
-
-    assert "agent=shopify" in line
-    assert "session=session-d" in line
-    assert "raw=not-json" in line
-
-
-@pytest.mark.parametrize(
-    ("raw_line", "must_contain"),
-    [
-        pytest.param(
-            '{"type":"tool_call","tool":"exec","command":"curl https://x.test"}',
-            ["type=tool_call", "tool=exec", "summary=curl https://x.test"],
-            id="tool-with-command",
-        ),
-        pytest.param(
-            '{"type":"msg","message":{"content":[{"type":"output_text","text":"hello"}]}}',
-            ["type=msg", "summary=hello"],
-            id="nested-content-text",
-        ),
-        pytest.param(
-            '{"type":"x","tool":{"name":"browser","input":{"command":"open"}}}',
-            ["tool=browser", "summary=open"],
-            id="nested-tool-input-command",
-        ),
-        pytest.param(
-            "[]",
-            ["raw="],
-            id="non-dict-json",
-        ),
-        pytest.param(
-            "{}",
-            ["[openclaw_session]", "agent=", "session="],
-            id="empty-dict-fallback-data",
-        ),
-        pytest.param(
-            '{"message":"plain text summary"}',
-            ["summary=plain text summary"],
-            id="message-string-summary",
-        ),
-        pytest.param(
-            '{"message":{"content":[{"type":"output_text","text":"nested"}]}}',
-            ["summary=nested"],
-            id="message-dict-content-extraction",
-        ),
-    ],
-)
-def test_format_session_log_line_payload_variants(
-    tmp_path: Path,
-    raw_line: str,
-    must_contain: list[str],
-) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="scout", session_key="session-fmt")
-
-    line = format_session_log_line(path=session_file, raw_line=raw_line)
-
-    for fragment in must_contain:
-        assert fragment in line
+    async def events(self) -> AsyncIterator[dict[str, Any]]:
+        for frame in self._frames:
+            yield frame
+        raise GatewayError("connection lost")
 
 
-def test_format_session_log_line_truncates_long_summary(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="scout", session_key="session-long")
-    long_text = "word " * 80
-    raw = '{"type":"message","text":"' + long_text + '"}'
+def test_message_event_carries_identity_and_text() -> None:
+    line = format_session_log_line(
+        event="session.message",
+        payload={
+            "sessionKey": "agent:supervisor:sellerclaw-ui:direct:c1",
+            "agentId": "supervisor",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "Готово."}]},
+        },
+    )
 
-    line = format_session_log_line(path=session_file, raw_line=raw)
+    fields = _fields(line)
+    assert line.startswith(TAG)
+    assert fields["agent"] == "supervisor"
+    assert fields["session"] == "agent:supervisor:sellerclaw-ui:direct:c1"
+    assert fields["type"] == "session.message"
+    assert "summary=assistant: Готово." in line
 
-    assert "summary=" in line
+
+def test_tool_event_names_the_tool_and_run() -> None:
+    line = format_session_log_line(
+        event="session.tool",
+        payload={
+            "sessionKey": "s1",
+            "agentId": "sellercart",
+            "runId": "run-7",
+            "stream": "tool",
+            "data": {"toolName": "exec", "command": "sellerclaw sellercart status"},
+        },
+    )
+
+    fields = _fields(line)
+    assert fields["type"] == "session.tool"
+    assert fields["runId"] == "run-7"
+    assert fields["stream"] == "tool"
+    assert fields["tool"] == "exec"
+    assert "summary=sellerclaw sellercart status" in line
+
+
+def test_identity_falls_back_to_the_embedded_session_row() -> None:
+    """`session.tool` frames may carry identity only in the row snapshot, whose key field
+    is ``key`` and which names no agent — the id is parsed out of the session key."""
+    line = format_session_log_line(
+        event="session.tool",
+        payload={"session": {"key": "agent:shopify:subagent:1"}},
+    )
+
+    fields = _fields(line)
+    assert fields["agent"] == "shopify"
+    assert fields["session"] == "agent:shopify:subagent:1"
+
+
+def test_unknown_identity_is_marked_rather_than_dropped() -> None:
+    fields = _fields(format_session_log_line(event="agent", payload={}))
+
+    assert fields["agent"] == "unknown"
+    assert fields["session"] == "unknown"
+
+
+def test_event_without_summary_falls_back_to_compact_payload() -> None:
+    line = format_session_log_line(
+        event="sessions.changed",
+        payload={"sessionKey": "s1", "agentId": "supervisor", "reason": "lifecycle"},
+    )
+
+    assert _fields(line)["reason"] == "lifecycle"
+    assert '"sessionKey": "s1"' in line or '"sessionKey":"s1"' in line
+
+
+def test_long_summary_is_truncated() -> None:
+    line = format_session_log_line(
+        event="session.message",
+        payload={"sessionKey": "s1", "message": {"role": "user", "text": "x" * 900}},
+    )
+
     assert line.endswith("…")
-    assert len(line) < len(raw)
+    assert len(line) < 500
 
 
-def test_collect_new_session_log_lines_resets_on_inode_change(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="scout", session_key="session-inode")
-    session_file.write_text('{"type":"message","text":"old"}\n', encoding="utf-8")
-    trackers = seed_existing_session_offsets(state_dir=state_dir)
-
-    # Rename away then create a new file at the same path so inode always changes
-    # (unlink+create can reuse inode on Linux and leave EOF offset mid-file).
-    session_file.rename(session_file.with_suffix(".jsonl.bak"))
-    session_file.write_text('{"type":"message","text":"after-rotate"}\n', encoding="utf-8")
-
-    lines = collect_new_session_log_lines(state_dir=state_dir, trackers=trackers)
-
-    assert len(lines) == 1
-    assert "after-rotate" in lines[0]
+def test_only_mirrored_event_families_produce_lines() -> None:
+    assert session_log_lines(_event("session.message", {"sessionKey": "s1"}))
+    assert session_log_lines(_event("agent", {"sessionKey": "s1"}))
+    # UI bookkeeping we deliberately keep out of the log.
+    assert session_log_lines(_event("session.typing", {"sessionKey": "s1"})) == []
+    assert session_log_lines(_event("sessions.catalog.host", {})) == []
 
 
-def test_collect_new_session_log_lines_resets_on_truncation_without_inode_change(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="scout", session_key="session-trunc")
-    session_file.write_text(
-        '{"type":"message","text":"long long long content here"}\n',
-        encoding="utf-8",
+def test_non_event_frames_are_ignored() -> None:
+    assert session_log_lines({"type": "res", "id": "1", "ok": True, "payload": {}}) == []
+
+
+def test_malformed_payload_still_produces_a_line() -> None:
+    assert session_log_lines({"type": "event", "event": "agent", "payload": "not-a-dict"})
+
+
+async def test_monitor_subscribes_then_mirrors_events(capsys: pytest.CaptureFixture[str]) -> None:
+    gateway = _FakeGateway(
+        [
+            _event("session.message", {"sessionKey": "s1", "agentId": "supervisor"}),
+            _event("session.typing", {"sessionKey": "s1"}),
+            _event("session.tool", {"sessionKey": "s1", "agentId": "supervisor"}),
+        ]
     )
-    trackers = seed_existing_session_offsets(state_dir=state_dir)
 
-    session_file.write_text('{"type":"message","text":"short"}\n', encoding="utf-8")
+    await monitor_session_logs(connection_factory=lambda: gateway, max_events=2)
 
-    lines = collect_new_session_log_lines(state_dir=state_dir, trackers=trackers)
-
-    assert len(lines) == 1
-    assert "short" in lines[0]
+    assert gateway.subscribed
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith(TAG)]
+    assert [_fields(line)["type"] for line in lines] == ["session.message", "session.tool"]
 
 
-def test_collect_new_session_log_lines_buffers_incomplete_final_line(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="scout", session_key="session-partial")
-    session_file.write_text('{"type":"message","text":"first"}\n', encoding="utf-8")
-    trackers = seed_existing_session_offsets(state_dir=state_dir)
-
-    with session_file.open("a", encoding="utf-8") as handle:
-        handle.write('{"type":"message","text":"second')
-
-    assert collect_new_session_log_lines(state_dir=state_dir, trackers=trackers) == []
-
-    with session_file.open("a", encoding="utf-8") as handle:
-        handle.write(' part"}\n')
-
-    lines = collect_new_session_log_lines(state_dir=state_dir, trackers=trackers)
-
-    assert len(lines) == 1
-    assert "second part" in lines[0]
-
-
-def test_collect_new_session_log_lines_drop_tracker_when_file_removed(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="scout", session_key="session-gone")
-    session_file.write_text('{"type":"message","text":"x"}\n', encoding="utf-8")
-    trackers = seed_existing_session_offsets(state_dir=state_dir)
-
-    session_file.unlink()
-
-    assert collect_new_session_log_lines(state_dir=state_dir, trackers=trackers) == []
-    assert session_file not in trackers
-
-
-@pytest.mark.parametrize(
-    ("embedded_char", "char_id"),
-    [
-        pytest.param("", "nel", id="nel-u0085"),
-        pytest.param(" ", "ls", id="line-separator-u2028"),
-        pytest.param(" ", "ps", id="paragraph-separator-u2029"),
-    ],
-)
-def test_collect_new_session_log_lines_does_not_split_on_unicode_line_breaks(
-    tmp_path: Path,
-    embedded_char: str,
-    char_id: str,
-) -> None:
-    """A JSONL record with a Unicode line-break inside a string value must stay
-    as one record. Python's ``str.splitlines()`` would otherwise split on NEL /
-    LS / PS, producing dozens of garbage ``raw=`` fragments per real line."""
-    _ = char_id
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="supervisor", session_key="session-nel")
-    payload_text = f"bin{embedded_char}data"
-    session_file.write_text(
-        '{"type":"model.completed","text":"' + payload_text + '"}\n',
-        encoding="utf-8",
-    )
-    trackers: dict = {}
-
-    lines = collect_new_session_log_lines(state_dir=state_dir, trackers=trackers)
-
-    assert len(lines) == 1
-    assert "type=model.completed" in lines[0]
-    assert "raw=" not in lines[0]
-
-
-def test_collect_new_session_log_lines_reads_file_with_invalid_utf8_bytes(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    session_file = _session_file(state_dir, agent_id="scout", session_key="session-bad")
-    session_file.write_bytes(b'{"type":"message","text":"ok"}\n\xff\xff\n')
-    trackers: dict = {}
-
-    lines = collect_new_session_log_lines(state_dir=state_dir, trackers=trackers)
-
-    assert len(lines) >= 1
-    assert "ok" in lines[0]
-
-
-def test_monitor_session_logs_prints_mirrored_lines(
-    tmp_path: Path,
+async def test_monitor_reports_a_dropped_connection_and_reconnects(
     capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state_dir = tmp_path / ".openclaw"
-    state_dir.mkdir(parents=True)
+    """The gateway restarts on every agent restart; a silent mirror would hide that."""
+    gateways = [
+        _FakeGateway([], connect_error="gateway unreachable"),
+        _FakeGateway([_event("agent", {"sessionKey": "s1", "agentId": "supervisor"})]),
+    ]
 
-    def fake_collect(**kwargs: object) -> list[str]:
-        return ["[openclaw_session] agent=scout session=x type=test"]
-
-    monkeypatch.setattr(
-        "openclaw_diagnostics.session_monitor.collect_new_session_log_lines",
-        fake_collect,
+    await monitor_session_logs(
+        connection_factory=lambda: gateways.pop(0),
+        reconnect_delay_seconds=0,
+        max_events=1,
     )
-    monkeypatch.setattr(
-        "openclaw_diagnostics.session_monitor.seed_existing_session_offsets",
-        lambda **_: {},
-    )
-
-    monitor_session_logs(state_dir=state_dir, interval_seconds=0.0, max_scans=1)
 
     out = capsys.readouterr().out
-    assert "[openclaw_session]" in out
+    assert "type=monitor.disconnected" in out
+    assert "type=agent" in out
+    assert not gateways  # both connections were used, so the reconnect happened
 
 
-def test_main_monitor_sessions_exits_after_max_scans(tmp_path: Path) -> None:
-    state_dir = tmp_path / ".openclaw"
-    state_dir.mkdir(parents=True)
+async def test_monitor_reports_one_line_per_outage_not_per_retry(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The mirror starts alongside a booting gateway; repeating the line would drown the log."""
+    gateways = [
+        _FakeGateway([], connect_error="gateway unreachable"),
+        _FakeGateway([], connect_error="gateway unreachable"),
+        _FakeGateway([], connect_error="gateway unreachable"),
+        _FakeGateway([_event("agent", {"sessionKey": "s1"})]),
+    ]
 
-    code = main(["monitor-sessions", "--state-dir", str(state_dir), "--interval", "0", "--max-scans", "1"])
+    await monitor_session_logs(
+        connection_factory=lambda: gateways.pop(0),
+        reconnect_delay_seconds=0,
+        max_events=1,
+    )
 
-    assert code == 0
+    out = capsys.readouterr().out
+    assert out.count("type=monitor.disconnected") == 1
+    assert "type=agent" in out

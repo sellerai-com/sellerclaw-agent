@@ -83,17 +83,16 @@ def read_proxy_url_from_runtime_env(bundle_volume_path: Path) -> str | None:
 def _openclaw_config_payload_signature(raw: str) -> object:
     """Parse and normalise ``openclaw.json`` for equality checks.
 
-    ``meta.lastTouchedAt`` is rewritten on every build (the bundle generator
-    stamps it with ``datetime.now``), so a naive string compare would always
-    mark the on-disk file as stale. Stripping just that field lets us tell
-    apart "same config, second debounced apply in a row" from "actual edit".
+    ``meta`` carries OpenClaw's own bookkeeping — the ``lastTouchedVersion`` stamp and
+    applied-migration markers — which the gateway rewrites whenever it touches the file,
+    while the generator only ever re-stamps the version. Comparing those values would mark
+    the on-disk file stale on every apply, so the signature keeps only whether the block is
+    present, which still catches a config that lost ``meta`` and must be rewritten. That
+    lets us tell apart "same config, second debounced apply in a row" from "actual edit".
     """
     payload = json.loads(raw)
-    if isinstance(payload, dict):
-        meta = payload.get("meta")
-        if isinstance(meta, dict) and "lastTouchedAt" in meta:
-            meta = {k: v for k, v in meta.items() if k != "lastTouchedAt"}
-            payload = {**payload, "meta": meta}
+    if isinstance(payload, dict) and "meta" in payload:
+        payload = {**payload, "meta": isinstance(payload["meta"], dict)}
     return payload
 
 
@@ -109,7 +108,7 @@ def bundle_on_disk_matches(
     Used by ``update_manifest`` to avoid triggering OpenClaw's config file-watcher
     when a debounced apply ran after a no-op edit (e.g. saving the same Telegram
     token twice). False on any read or parse error so we fall through to the
-    normal write. Ignores ``meta.lastTouchedAt`` — see
+    normal write. Ignores OpenClaw's ``meta`` bookkeeping — see
     :func:`_openclaw_config_payload_signature`.
     """
     oc_path = bundle_volume_path / "openclaw" / "openclaw.json"

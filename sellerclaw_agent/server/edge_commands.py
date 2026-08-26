@@ -87,14 +87,15 @@ async def _execute_remote_command(
         if outcome == "completed":
             state_dir = Path(os.environ.get("OPENCLAW_STATE_DIR", "/home/node/.openclaw"))
 
-            def _full_backup(sd: Path = state_dir) -> bytes:
+            def _full_backup(sd: Path = state_dir) -> bytes | None:
                 from sellerclaw_agent.cloud.state_backup import build_state_backup_archive
 
-                return build_state_backup_archive(sd, include_browser_profile=True)
+                return build_state_backup_archive(sd)
 
             try:
                 archive = await loop.run_in_executor(executor, _full_backup)
-                await client.upload_state_backup(archive)
+                if archive is not None:
+                    await client.upload_state_backup(archive)
             except Exception as exc:  # noqa: BLE001
                 _log.warning("edge_state_backup_after_stop_failed", error=str(exc)[:500])
         return outcome, err

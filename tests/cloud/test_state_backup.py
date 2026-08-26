@@ -36,9 +36,7 @@ def test_read_applied_config_version_none_when_missing_or_malformed(tmp_path: Pa
 
 def _write_tree(base: Path) -> None:
     for rel, content in (
-        ("agents/sup/sessions/chat.jsonl", b"{}\n"),
-        ("agents/sup/sessions/sessions.json", b'{"key":"id"}'),
-        ("agents/sup/sessions/chat.jsonl.lock", b""),
+        ("agents/sup/agent/openclaw-agent.sqlite", b"SQLite format 3\x00"),
         ("workspace-w1/MEMORY.md", b"# m"),
         ("workspace-w1/memory/chunk.md", b"c"),
         ("browser/openclaw/user-data/Local State", b"{}"),
@@ -54,11 +52,9 @@ def _write_tree(base: Path) -> None:
 @pytest.mark.parametrize(
     ("rel", "expected"),
     [
-        pytest.param("agents/sup/sessions/chat.jsonl", True, id="session-transcript"),
-        # Without the index the transcripts cannot be matched back to a session key.
-        pytest.param("agents/sup/sessions/sessions.json", True, id="session-index"),
-        pytest.param("agents/sup/sessions/chat.jsonl.lock", False, id="session-lock"),
-        pytest.param("agents/sup/sessions/notes.txt", False, id="session-unrelated-file"),
+        # Chats live in the SellerClaw database, so the transcript store never travels.
+        pytest.param("agents/sup/agent/openclaw-agent.sqlite", False, id="session-store"),
+        pytest.param("agents/sup/agent/openclaw-agent.sqlite-wal", False, id="session-store-wal"),
         # Durable facts live in cloud-side long-term memory, not workspace files.
         pytest.param("workspace-w1/MEMORY.md", False, id="workspace-memory-md"),
         pytest.param("workspace-w1/memory/chunk.md", False, id="workspace-memory-dir"),
@@ -88,25 +84,20 @@ def test_state_backup_allowlist(tmp_path: Path, rel: str, expected: bool) -> Non
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"x")
 
-    included = {
-        p.relative_to(tmp_path).as_posix()
-        for p in iter_state_backup_files(tmp_path, include_browser_profile=True)
-    }
+    included = {p.relative_to(tmp_path).as_posix() for p in iter_state_backup_files(tmp_path)}
 
     assert (rel in included) is expected
 
 
-def test_iter_state_backup_files_without_browser_profile(tmp_path: Path) -> None:
+def test_iter_state_backup_files_collects_browser_logins_only(tmp_path: Path) -> None:
     _write_tree(tmp_path)
 
-    rels = {
-        p.relative_to(tmp_path).as_posix()
-        for p in iter_state_backup_files(tmp_path, include_browser_profile=False)
-    }
+    rels = {p.relative_to(tmp_path).as_posix() for p in iter_state_backup_files(tmp_path)}
 
     assert rels == {
-        "agents/sup/sessions/chat.jsonl",
-        "agents/sup/sessions/sessions.json",
+        "browser/openclaw/user-data/Local State",
+        "browser/openclaw/user-data/Default/Cookies",
+        "chrome-profile/Default/Cookies",
     }
 
 
@@ -115,13 +106,15 @@ def test_build_and_restore_roundtrip(tmp_path: Path) -> None:
     dst = tmp_path / "dst"
     _write_tree(src)
 
-    archive = build_state_backup_archive(src, include_browser_profile=True)
+    archive = build_state_backup_archive(src)
+    assert archive is not None
     assert archive[:2] == b"\x1f\x8b"
     restore_state_backup(dst, archive)
 
-    assert (dst / "agents" / "sup" / "sessions" / "chat.jsonl").read_text() == "{}\n"
-    assert (dst / "agents" / "sup" / "sessions" / "sessions.json").read_text() == '{"key":"id"}'
     assert (dst / "browser" / "openclaw" / "user-data" / "Default" / "Cookies").exists()
+    assert (dst / "browser" / "openclaw" / "user-data" / "Local State").read_text() == "{}"
+    assert (dst / "chrome-profile" / "Default" / "Cookies").exists()
+    assert not (dst / "agents" / "sup" / "agent" / "openclaw-agent.sqlite").exists()
     assert not (dst / "workspace-w1" / "MEMORY.md").exists()
     assert not (dst / "browser" / "openclaw" / "user-data" / "Default" / "Cache").exists()
 
@@ -129,12 +122,12 @@ def test_build_and_restore_roundtrip(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("rel", "expected"),
     [
-        pytest.param("agents/a/sessions/x.jsonl", True, id="session-transcript"),
-        pytest.param("agents/a/sessions/sessions.json", True, id="session-index"),
-        # Chrome creates a profile on first launch, so it must not read as "state exists"
-        # — that would make a cold start skip the restore it needs.
-        pytest.param("browser/openclaw/user-data/Default/Cookies", False, id="browser-profile"),
+        pytest.param("browser/openclaw/user-data/Default/Cookies", True, id="browser-profile"),
+        pytest.param("chrome-profile/Default/Cookies", True, id="legacy-browser-profile"),
+        # A machine that only has chats and memory still needs its browser logins back.
+        pytest.param("agents/a/agent/openclaw-agent.sqlite", False, id="session-store"),
         pytest.param("workspace-w1/MEMORY.md", False, id="workspace-memory-md"),
+        pytest.param("browser/openclaw/user-data/Default/Cache/data_0", False, id="browser-cache"),
     ],
 )
 def test_state_dir_has_restoreable_data(tmp_path: Path, rel: str, expected: bool) -> None:
@@ -144,6 +137,15 @@ def test_state_dir_has_restoreable_data(tmp_path: Path, rel: str, expected: bool
     path.write_text("x", encoding="utf-8")
 
     assert state_dir_has_restoreable_data(tmp_path) is expected
+
+
+def test_build_archive_returns_none_when_nothing_to_back_up(tmp_path: Path) -> None:
+    """The cloud keeps one archive per user; an empty tar would overwrite the good one."""
+    (tmp_path / "agents" / "sup" / "agent").mkdir(parents=True)
+    (tmp_path / "agents" / "sup" / "agent" / "openclaw-agent.sqlite").write_bytes(b"db")
+
+    assert build_state_backup_archive(tmp_path) is None
+    assert build_state_backup_archive(tmp_path / "missing") is None
 
 
 def test_restore_rejects_path_traversal(tmp_path: Path) -> None:

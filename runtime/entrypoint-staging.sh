@@ -23,6 +23,11 @@ chown -R node:node "$STATE_DIR/agents" "$STATE_DIR/credentials"
 if [ "${RESET_STATE:-}" = "1" ]; then
   rm -rf "$STATE_DIR"/workspace-*/memory
   rm -f "$STATE_DIR"/workspace-*/MEMORY.md
+  # Chats live in the per-agent SQLite store; the -wal/-shm sidecars hold pages that would
+  # otherwise be replayed into a fresh database. The jsonl/lock sweep below is for machines
+  # whose state predates the SQLite store, and for the archive the import leaves behind.
+  rm -f "$STATE_DIR"/agents/*/agent/openclaw-agent.sqlite* 2>/dev/null || true
+  rm -rf "$STATE_DIR"/agents/*/session-sqlite-import-archive
   find "$STATE_DIR"/agents -type f \( -name "*.jsonl" -o -name "*.lock" \) -path "*/sessions/*" -delete 2>/dev/null || true
 fi
 

@@ -14,7 +14,7 @@ declare module "openclaw/plugin-sdk/secret-input" {
   export function normalizeSecretInput(value: unknown): string | undefined;
 }
 
-declare module "openclaw/plugin-sdk/text-runtime" {
+declare module "openclaw/plugin-sdk/string-coerce-runtime" {
   export function normalizeOptionalString(value: unknown): string | undefined;
 }
 

@@ -24,6 +24,6 @@ vi.mock("openclaw/plugin-sdk/secret-input", () => ({
   },
 }));
 
-vi.mock("openclaw/plugin-sdk/text-runtime", () => ({
+vi.mock("openclaw/plugin-sdk/string-coerce-runtime", () => ({
   normalizeOptionalString: (v: unknown) => (typeof v === "string" ? v : undefined),
 }));

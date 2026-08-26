@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sellerclaw_agent.bundle.builder import BundleBuilder, derive_agent_tools
+from sellerclaw_agent.bundle.builder import (
+    BundleBuilder,
+    _localize_cloud_proxy_url,
+    derive_agent_tools,
+)
 from sellerclaw_agent.bundle.manifest import GenericManifest, bundle_manifest_from_mapping
 from sellerclaw_agent.test_manifest_fixtures import load_manifest_v2_mapping
 
@@ -29,21 +33,37 @@ _MEMORY_TOOLS_EXPECTED = [
 ]
 
 
-def _config_from_llm(mutate_llm: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
-    """Build the OpenClaw config from the v2 fixture, optionally mutating its ``llm`` block."""
+# Host the v2 fixture advertises for the cloud (its provider baseUrls hang off it).
+_FIXTURE_CLOUD_HOST = "https://example.ngrok-free.dev"
+
+
+def _config_from_llm(
+    mutate_llm: Callable[[dict[str, Any]], Any] | None = None,
+    *,
+    sellerclaw_api_url: str = _FIXTURE_CLOUD_HOST,
+) -> dict[str, Any]:
+    """Build the OpenClaw config from the v2 fixture, optionally mutating its ``llm`` block.
+
+    ``sellerclaw_api_url`` defaults to the same host the fixture advertises, so provider
+    baseUrls come out exactly as the manifest states them unless a test asks otherwise.
+    """
     mapping = copy.deepcopy(load_manifest_v2_mapping())
     if mutate_llm is not None:
         mutate_llm(mapping["llm"])
     manifest = bundle_manifest_from_mapping(mapping)
-    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS, agent_api_key="k")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("SELLERCLAW_API_URL", sellerclaw_api_url)
+        result = BundleBuilder().build(
+            manifest, gateway_token=_GW, hooks_token=_HOOKS, agent_api_key="k"
+        )
     return json.loads(result.openclaw_config)
 
 
 def _agent_payload(cfg: dict, agent_id: str) -> dict:
-    for agent in cfg["agents"]["list"]:
-        if agent["id"] == agent_id:
-            return agent
-    raise AssertionError(f"agent {agent_id!r} not in config")
+    entries = cfg["agents"]["entries"]
+    if agent_id not in entries:
+        raise AssertionError(f"agent {agent_id!r} not in config")
+    return entries[agent_id]
 
 
 def test_bundle_builder_produces_config_and_workspaces(
@@ -179,7 +199,7 @@ def test_per_agent_model_from_manifest_text_refs_and_heartbeat_disabled() -> Non
     assert _agent_payload(cfg, "marketing")["model"] == "litellm/u:5fdc144e/complex"
     assert _agent_payload(cfg, "supplier")["model"] == "litellm/u:5fdc144e/simple"
 
-    for agent in cfg["agents"]["list"]:
+    for agent in cfg["agents"]["entries"].values():
         assert "heartbeat" not in agent
 
 
@@ -206,6 +226,73 @@ def test_defaults_reasoning_default_from_manifest() -> None:
     mapping["agents"].pop("reasoning_default", None)
     cfg = _cfg_from_mapping(mapping)
     assert cfg["agents"]["defaults"]["reasoningDefault"] == "off"
+
+
+def test_provider_base_urls_use_the_host_this_agent_reaches_the_cloud_on() -> None:
+    """A ``/litellm`` baseUrl is re-pointed at SELLERCLAW_API_URL, path untouched.
+
+    The manifest advertises the cloud's public host (a tunnel in local dev); an agent sitting
+    next to the cloud must not route model traffic through it. Every proxied provider moves,
+    and each keeps its own sub-path so the proxy still shapes the request.
+    """
+    providers = _config_from_llm(sellerclaw_api_url="http://host.docker.internal:8000")["models"][
+        "providers"
+    ]
+
+    assert providers["litellm"]["baseUrl"] == "http://host.docker.internal:8000/litellm"
+    assert providers["anthropic"]["baseUrl"] == "http://host.docker.internal:8000/litellm/anthropic"
+    assert providers["google"]["baseUrl"] == "http://host.docker.internal:8000/litellm/gemini"
+
+
+@pytest.mark.parametrize(
+    ("manifest_base_url", "api_url", "expected"),
+    [
+        pytest.param(
+            "https://tunnel.example/litellm",
+            "http://host.docker.internal:8000",
+            "http://host.docker.internal:8000/litellm",
+            id="proxied-url-moves-to-local-host",
+        ),
+        pytest.param(
+            "https://tunnel.example/litellm/gemini",
+            "http://host.docker.internal:8000",
+            "http://host.docker.internal:8000/litellm/gemini",
+            id="sub-path-preserved",
+        ),
+        pytest.param(
+            "https://sellerclaw-litellm.fly.dev",
+            "https://api.sellerclaw.ai",
+            "https://sellerclaw-litellm.fly.dev",
+            id="direct-litellm-host-untouched",
+        ),
+        pytest.param(
+            "https://api.sellerclaw.ai/litellm",
+            "https://api.sellerclaw.ai",
+            "https://api.sellerclaw.ai/litellm",
+            id="same-host-is-a-no-op",
+        ),
+        pytest.param(
+            "https://tunnel.example/litellm",
+            "",
+            "https://tunnel.example/litellm",
+            id="no-api-url-keeps-manifest-value",
+        ),
+        pytest.param(
+            "https://tunnel.example/litellm",
+            "host.docker.internal:8000",
+            "https://tunnel.example/litellm",
+            id="schemeless-api-url-keeps-manifest-value",
+        ),
+        pytest.param(
+            "https://tunnel.example/litellm-mirror",
+            "http://host.docker.internal:8000",
+            "https://tunnel.example/litellm-mirror",
+            id="lookalike-path-untouched",
+        ),
+    ],
+)
+def test_localize_cloud_proxy_url(manifest_base_url: str, api_url: str, expected: str) -> None:
+    assert _localize_cloud_proxy_url(manifest_base_url, sellerclaw_api_url=api_url) == expected
 
 
 def test_providers_are_manifest_driven_not_hardcoded() -> None:
@@ -235,7 +322,11 @@ def test_bundle_builder_entry_point_tools_and_subagents(
     result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
     cfg = json.loads(result.openclaw_config)
     supervisor = _agent_payload(cfg, "supervisor")
-    assert supervisor["default"] is True
+    # The retired per-agent `default` marker is gone: in a fleet every surface resolves its
+    # owner explicitly, so the entry point is designated by the channel bindings instead.
+    assert "default" not in supervisor
+    assert cfg["agents"]["ownership"] == "explicit"
+    assert {"agentId": "supervisor", "match": {"channel": "sellerclaw-ui"}} in cfg["bindings"]
     assert "group:sessions" in supervisor["tools"]["allow"]
     assert supervisor["subagents"]["allowAgents"] == ["scout", "supplier", "marketing"]
     # The roster (`allowAgents`) is emitted ONLY for the entry point. `defaults.subagents` carries
@@ -243,6 +334,36 @@ def test_bundle_builder_entry_point_tools_and_subagents(
     assert "allowAgents" not in cfg["agents"]["defaults"]["subagents"]
     for sub in ("scout", "supplier", "marketing"):
         assert "subagents" not in _agent_payload(cfg, sub)
+
+
+def test_bundle_builder_entry_point_keeps_delegation_tools_with_empty_team(
+    make_manifest: Callable[..., GenericManifest],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A team-less supervisor still gets ``group:sessions`` + ``agents_list``.
+
+    Regression: these used to be granted only when the manifest carried at least one subagent.
+    OpenClaw hot-applies a changed ``allowAgents`` roster to the running gateway but never
+    re-derives a changed tool allow-list, so an agent that started with an empty team stayed
+    unable to list or spawn anyone — through a restart of the *chat*, not just the current
+    session. Enabling the first specialist therefore did nothing until the whole agent was
+    restarted. The roster is the gate (empty here); the tools are constant.
+    """
+    monkeypatch.setenv("AGENT_API_KEY", "unit-test-agent-key")
+    mapping = load_manifest_v2_mapping()
+    mapping["agents"] = {**mapping["agents"], "subagents": []}
+    manifest = make_manifest(overrides={"agents": mapping["agents"]})
+    result = BundleBuilder().build(manifest, gateway_token=_GW, hooks_token=_HOOKS)
+    cfg = json.loads(result.openclaw_config)
+    supervisor = _agent_payload(cfg, "supervisor")
+    assert "group:sessions" in supervisor["tools"]["allow"]
+    assert "agents_list" in supervisor["tools"]["allow"]
+    # Nobody to delegate to yet — and `requireAgentId` leaves no id `sessions_spawn` accepts,
+    # so the granted tools cannot spawn a clone of the supervisor either.
+    assert supervisor["subagents"] == {"allowAgents": [], "requireAgentId": True}
+    assert list(cfg["agents"]["entries"]) == ["supervisor"]
+    # A sole agent stays its own implicit owner, so the fleet marker must not appear.
+    assert "ownership" not in cfg["agents"]
 
 
 def test_bundle_builder_supplier_thinking_off_from_manifest(
@@ -402,28 +523,19 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
 
 
 @pytest.mark.parametrize(
-    ("is_entry_point", "has_subagents", "browser", "cron", "expected_allow", "expected_deny"),
+    ("is_entry_point", "browser", "cron", "expected_allow", "expected_deny"),
     [
         pytest.param(
-            True, True, True, True,
+            True, True, True,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
                 "message", "browser", "exec", "pdf", "cron", "process", *_MEMORY_TOOLS_EXPECTED,
             ],
             [],
-            id="entry-point-with-subagents",
+            id="entry-point",
         ),
         pytest.param(
-            True, False, True, True,
-            [
-                "group:fs", "group:web", "web_search", "message", "browser", "exec", "pdf",
-                "cron", "process", *_MEMORY_TOOLS_EXPECTED,
-            ],
-            [],
-            id="entry-point-no-subagents",
-        ),
-        pytest.param(
-            True, True, True, False,
+            True, True, False,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
                 "message", "browser", "exec", "pdf", "process", *_MEMORY_TOOLS_EXPECTED,
@@ -432,7 +544,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             id="entry-point-cron-disabled",
         ),
         pytest.param(
-            False, False, True, True,
+            False, True, True,
             [
                 "group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf",
                 *_MEMORY_TOOLS_EXPECTED,
@@ -441,7 +553,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             id="subagent-never-gets-cron",
         ),
         pytest.param(
-            False, False, False, True,
+            False, False, True,
             [
                 "group:fs", "exec", "process", "web_fetch", "web_search", "pdf",
                 *_MEMORY_TOOLS_EXPECTED,
@@ -453,7 +565,6 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
 )
 def test_derive_agent_tools(
     is_entry_point: bool,
-    has_subagents: bool,
     browser: bool,
     cron: bool,
     expected_allow: list[str],
@@ -461,7 +572,6 @@ def test_derive_agent_tools(
 ) -> None:
     allow, deny = derive_agent_tools(
         is_entry_point=is_entry_point,
-        has_subagents=has_subagents,
         browser_enabled=browser,
         cron_enabled=cron,
     )
@@ -476,7 +586,6 @@ def test_derive_agent_tools_grants_whatsapp_login_to_entry_point_when_enabled() 
     """The entry point gets the in-chat ``whatsapp_login`` QR tool only when WhatsApp is on."""
     allow, _ = derive_agent_tools(
         is_entry_point=True,
-        has_subagents=True,
         browser_enabled=True,
         cron_enabled=False,
         whatsapp_enabled=True,
@@ -487,7 +596,6 @@ def test_derive_agent_tools_grants_whatsapp_login_to_entry_point_when_enabled() 
 def test_derive_agent_tools_omits_whatsapp_login_when_disabled() -> None:
     allow, _ = derive_agent_tools(
         is_entry_point=True,
-        has_subagents=True,
         browser_enabled=True,
         cron_enabled=False,
         whatsapp_enabled=False,
@@ -499,7 +607,6 @@ def test_derive_agent_tools_never_grants_whatsapp_login_to_subagent() -> None:
     """Subagents never pair WhatsApp, even if the flag is set."""
     allow, _ = derive_agent_tools(
         is_entry_point=False,
-        has_subagents=False,
         browser_enabled=True,
         cron_enabled=True,
         whatsapp_enabled=True,
@@ -508,15 +615,13 @@ def test_derive_agent_tools_never_grants_whatsapp_login_to_subagent() -> None:
 
 
 @pytest.mark.parametrize(
-    ("is_entry_point", "has_subagents"),
+    "is_entry_point",
     [
-        pytest.param(True, True, id="entry-point"),
-        pytest.param(False, False, id="subagent"),
+        pytest.param(True, id="entry-point"),
+        pytest.param(False, id="subagent"),
     ],
 )
-def test_derive_agent_tools_grants_memory_tools_to_every_agent(
-    is_entry_point: bool, has_subagents: bool
-) -> None:
+def test_derive_agent_tools_grants_memory_tools_to_every_agent(is_entry_point: bool) -> None:
     """Both the supervisor and subagents get the mem0 read/write tools, never in ``deny``.
 
     Without these the injected triage protocol tells the agent to call ``memory_add`` but no such
@@ -524,7 +629,6 @@ def test_derive_agent_tools_grants_memory_tools_to_every_agent(
     """
     allow, deny = derive_agent_tools(
         is_entry_point=is_entry_point,
-        has_subagents=has_subagents,
         browser_enabled=True,
         cron_enabled=True,
     )

@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from sellerclaw_agent.assembly import AssembledAgentConfig
 from sellerclaw_agent.bundle.archive import build_gateway_version, build_workspaces_from_assembled
@@ -12,6 +13,7 @@ from sellerclaw_agent.bundle.manifest import AgentSpec, GenericManifest, ModelGr
 from sellerclaw_agent.bundle.result import BundleResult
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
 from sellerclaw_agent.cloud.settings import (
+    get_openclaw_version,
     get_sellerclaw_api_url,
     get_sellerclaw_web_url,
 )
@@ -67,7 +69,6 @@ _MEMORY_TOOLS = [
 def derive_agent_tools(
     *,
     is_entry_point: bool,
-    has_subagents: bool,
     browser_enabled: bool,
     cron_enabled: bool,
     whatsapp_enabled: bool = False,
@@ -76,10 +77,11 @@ def derive_agent_tools(
 
     Returns ``(allow, deny)``. All capability tools are manifest-driven:
 
-    - Entry point (supervisor): broad allow including ``group:fs`` (file access, always) and
-      ``process`` (background long-running commands instead of blocking the turn). When it has
-      subagents it additionally gets ``group:sessions`` + ``agents_list`` to inspect and drive
-      its team. ``cron`` only here, and only when enabled.
+    - Entry point (supervisor): broad allow including ``group:fs`` (file access, always),
+      ``process`` (background long-running commands instead of blocking the turn) and
+      ``group:sessions`` + ``agents_list`` to inspect and drive its team — the last two
+      unconditionally, even with an empty team (see the note at the grant site).
+      ``cron`` only here, and only when enabled.
       ``whatsapp_login`` (in-chat QR pairing tool) only here, and only when WhatsApp is on.
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
     - Long-term memory tools (``_MEMORY_TOOLS``) are granted to every agent so the injected
@@ -90,9 +92,31 @@ def derive_agent_tools(
       generation, so adding them to ``allow`` only produces an "unknown tool" warning.
     """
     if is_entry_point:
-        # The supervisor gets file access (``group:fs``) unconditionally so it can read and
+        # ``agents_list`` lets the supervisor enumerate its available team alongside
+        # ``group:sessions`` (spawn/list/manage live child sessions). Granted whether or not a
+        # specialist is enabled right now: OpenClaw hot-applies a changed subagent roster
+        # (``allowAgents``) to the running gateway — new and already-open sessions alike — but it
+        # does NOT re-derive a changed per-agent tool allow-list. Gating these two on "the team
+        # is non-empty" therefore made the *first* specialist unusable until the whole agent
+        # restarted: the supervisor kept its empty-team tool set and could neither list nor spawn
+        # anyone, so it promised the owner a specialist and then silently did the work itself.
+        # Constant here, dynamic in ``allowAgents``: the roster stays the real gate, and that one
+        # does reload live. An empty roster is a safe resting state — ``agents_list`` returns
+        # nobody and ``sessions_spawn`` has no id it will accept (``requireAgentId``).
+        #
+        # The supervisor also gets file access (``group:fs``) unconditionally so it can read and
         # write workspace files itself, not only delegate.
-        allow = ["group:fs", "group:web", "web_search", "message", "browser", "exec", "pdf"]
+        allow = [
+            "group:sessions",
+            "agents_list",
+            "group:fs",
+            "group:web",
+            "web_search",
+            "message",
+            "browser",
+            "exec",
+            "pdf",
+        ]
         if cron_enabled:
             allow.append("cron")
         # WhatsApp links a personal account by QR; the agent runs ``whatsapp_login`` in the
@@ -107,10 +131,6 @@ def derive_agent_tools(
         # so without it here OpenClaw also strips ``process`` from the subagents ("inherited
         # tools"), leaving no agent able to run work in the background.
         allow.append("process")
-        if has_subagents:
-            # ``agents_list`` lets the supervisor enumerate its available team alongside
-            # ``group:sessions`` (spawn/list/manage live child sessions).
-            allow = ["group:sessions", "agents_list", *allow]
         deny: list[str] = []
     else:
         allow = [
@@ -225,7 +245,44 @@ def _build_provider_models(
     return models
 
 
-def build_providers(manifest: GenericManifest) -> dict[str, object]:
+# Path the cloud API mounts its LiteLLM proxy on (src/litellm_proxy in the monolith).
+_CLOUD_LITELLM_PROXY_PREFIX = "/litellm"
+
+
+def _localize_cloud_proxy_url(base_url: str, *, sellerclaw_api_url: str) -> str:
+    """Reach the cloud's ``/litellm`` proxy over the host we already talk to it on.
+
+    The manifest carries whatever public URL the cloud advertises for itself. In local
+    development that is an ngrok tunnel, so a box sitting next to the cloud API would send
+    every model token out to the public internet and back — and a long streamed answer that
+    loses that round trip dies mid-sentence ("terminated"), which the user sees as a turn
+    that never finished.
+
+    ``SELLERCLAW_API_URL`` is the address this agent already uses for every other cloud call
+    (manifest pull, memory, web search), so borrowing its scheme+host keeps the request on the
+    short path while still going THROUGH the cloud proxy — the path is preserved, so the
+    request-shaping that route does (e.g. injecting Gemini's ``/v1beta`` segment) still applies.
+
+    Only ``/litellm`` URLs are rewritten: a group pointed straight at LiteLLM (staging and
+    production do that) is not proxied by the cloud API and must keep its own host. Same-host
+    URLs come out unchanged, so this is a no-op everywhere the two already agree.
+    """
+    api_base = (sellerclaw_api_url or "").strip().rstrip("/")
+    if not api_base:
+        return base_url
+    parsed = urlsplit(base_url)
+    path = parsed.path.rstrip("/")
+    if path != _CLOUD_LITELLM_PROXY_PREFIX and not path.startswith(f"{_CLOUD_LITELLM_PROXY_PREFIX}/"):
+        return base_url
+    api_parsed = urlsplit(api_base)
+    if not api_parsed.scheme or not api_parsed.netloc:
+        return base_url
+    return urlunsplit(
+        (api_parsed.scheme, api_parsed.netloc, f"{api_parsed.path.rstrip('/')}{parsed.path}", "", "")
+    )
+
+
+def build_providers(manifest: GenericManifest, *, sellerclaw_api_url: str = "") -> dict[str, object]:
     """Build the OpenClaw ``models.providers`` mapping from ``manifest.llm.groups``.
 
     Each provider is built strictly from its own group: ``baseUrl`` / ``apiKey`` come from
@@ -236,7 +293,7 @@ def build_providers(manifest: GenericManifest) -> dict[str, object]:
     providers: dict[str, object] = {}
     for name, group in manifest.llm.groups.items():
         entry: dict[str, object] = {
-            "baseUrl": group.base_url,
+            "baseUrl": _localize_cloud_proxy_url(group.base_url, sellerclaw_api_url=sellerclaw_api_url),
             "apiKey": group.api_key,
         }
         if group.api is not None:
@@ -344,8 +401,8 @@ class BundleBuilder:
             user_id=manifest.user_id,
             sellerclaw_api_url=sellerclaw_api_url,
             sellerclaw_agent_api_base_url=agent_api_base_url,
-            providers=build_providers(manifest),
-            created_at=ts,
+            providers=build_providers(manifest, sellerclaw_api_url=sellerclaw_api_url),
+            openclaw_version=get_openclaw_version(),
             telegram_enabled=manifest.channels.telegram.enabled,
             telegram_bot_token=manifest.channels.telegram.bot_token,
             telegram_allowed_user_ids=manifest.channels.telegram.allowed_user_ids,
@@ -398,7 +455,6 @@ class BundleBuilder:
     ) -> AssembledAgentConfig:
         tools_allow, tools_deny = derive_agent_tools(
             is_entry_point=agent.is_entry_point,
-            has_subagents=bool(agent.subagent_ids),
             browser_enabled=agent.browser_enabled,
             cron_enabled=manifest.cron_enabled,
             whatsapp_enabled=manifest.channels.whatsapp.enabled,

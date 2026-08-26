@@ -13,15 +13,42 @@ from sellerclaw_agent.cloud.state_backup import build_state_backup_archive
 pytestmark = pytest.mark.unit
 
 
-def test_run_restore_skips_when_local_sessions_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_restore_skips_when_browser_logins_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A profile on disk is newer than any backup, so it must win over the cloud copy."""
     monkeypatch.setenv("OPENCLAW_STATE_DIR", str(tmp_path))
-    p = tmp_path / "agents" / "a" / "sessions" / "s.jsonl"
+    p = tmp_path / "browser" / "openclaw" / "user-data" / "Default" / "Cookies"
     p.parent.mkdir(parents=True)
     p.write_text("x", encoding="utf-8")
     client_ctor = MagicMock()
     monkeypatch.setattr("sellerclaw_agent.cloud.restore_state.httpx.Client", client_ctor)
     run_restore_if_needed()
     client_ctor.assert_not_called()
+
+
+def test_run_restore_downloads_when_only_chats_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sessions on disk say nothing about browser logins — the restore must still run."""
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AGENT_API_KEY", "secret-token")
+    monkeypatch.setenv("SELLERCLAW_API_URL", "http://example.com")
+    store = tmp_path / "agents" / "a" / "agent" / "openclaw-agent.sqlite"
+    store.parent.mkdir(parents=True)
+    store.write_bytes(b"SQLite format 3\x00")
+
+    src = tmp_path / "upstream"
+    (src / "chrome-profile" / "Default").mkdir(parents=True)
+    (src / "chrome-profile" / "Default" / "Cookies").write_text("jar", encoding="utf-8")
+    archive = build_state_backup_archive(src)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=archive)
+
+    def _client_factory(**kwargs: Any) -> httpx.Client:
+        kwargs.pop("transport", None)
+        return HttpxClient(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr("sellerclaw_agent.cloud.restore_state.httpx.Client", _client_factory)
+    run_restore_if_needed()
+    assert (tmp_path / "chrome-profile" / "Default" / "Cookies").read_text() == "jar"
 
 
 def test_run_restore_skips_without_agent_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,9 +80,9 @@ def test_run_restore_downloads_when_empty(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setenv("SELLERCLAW_API_URL", "http://example.com")
 
     src = tmp_path / "upstream"
-    (src / "agents" / "z" / "sessions").mkdir(parents=True)
-    (src / "agents" / "z" / "sessions" / "c.jsonl").write_text("{}\n", encoding="utf-8")
-    archive = build_state_backup_archive(src, include_browser_profile=False)
+    (src / "browser" / "openclaw" / "user-data" / "Default").mkdir(parents=True)
+    (src / "browser" / "openclaw" / "user-data" / "Default" / "Cookies").write_text("jar", encoding="utf-8")
+    archive = build_state_backup_archive(src)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "http://example.com/agent/connection/state-backup"
@@ -68,7 +95,7 @@ def test_run_restore_downloads_when_empty(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr("sellerclaw_agent.cloud.restore_state.httpx.Client", _client_factory)
     run_restore_if_needed()
-    assert (tmp_path / "agents" / "z" / "sessions" / "c.jsonl").read_text() == "{}\n"
+    assert (tmp_path / "browser" / "openclaw" / "user-data" / "Default" / "Cookies").read_text() == "jar"
 
 
 def test_run_restore_noop_on_404(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,4 +112,5 @@ def test_run_restore_noop_on_404(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr("sellerclaw_agent.cloud.restore_state.httpx.Client", _client_factory)
     run_restore_if_needed()
-    assert not (tmp_path / "agents").exists()
+    assert not (tmp_path / "browser").exists()
+    assert not (tmp_path / "chrome-profile").exists()

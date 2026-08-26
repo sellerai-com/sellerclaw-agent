@@ -1,0 +1,166 @@
+#!/bin/bash
+# Pre-warm the browser display sidecar (KasmVNC) once the gateway is ready.
+#
+# Why: the browser tool's Chrome-launch deadline inside OpenClaw is built-in
+# (~15 s, not configurable). A cold KasmVNC start takes ~12 s on a shared-CPU
+# machine — dominated by an opaque ~10 s pause inside Xvnc before the session
+# starts — so the *first* browser call after machine boot times out with a
+# misleading "Restart the OpenClaw gateway" error (staging chat b76fd17a,
+# 2026-08-19). Starting the display early makes the lazy-start path in
+# openclaw_chrome a no-op ("already-running"), so the first call succeeds.
+#
+# Safety properties:
+# - Additive only: openclaw_chrome's lazy start stays untouched and remains
+#   the fallback — if this script fails or is disabled, behaviour is exactly
+#   the pre-warm-less status quo, never worse.
+# - Off the boot critical path: we wait for the gateway /ready endpoint before
+#   touching supervisord, so the X server never competes with the gateway for
+#   CPU during the (already CPU-starved) boot window.
+# - Idempotent: a gateway restart re-runs this; an already-RUNNING kasmvnc is
+#   left alone.
+# - Chrome itself stays lazy — only the X display (~50-80 MB) is warmed.
+#
+# Kill switch: OPENCLAW_BROWSER_WARM_START=0 in the machine environment — that
+# is the only lever that works today. runtime.env is sourced below too, but
+# `write_runtime_env` (cloud/supervisor_manager.py) regenerates that file from
+# scratch on every manifest push and emits PROXY_URL only, so a hand-added line
+# there is silently wiped; turning it into a per-user lever means teaching that
+# writer to emit the var.
+set -uo pipefail
+
+readonly SUPERVISOR_CONF="/etc/supervisor/conf.d/openclaw.conf"
+readonly SUPERVISOR_SOCK="/tmp/supervisor.sock"
+readonly CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/home/node/.openclaw/openclaw.json}"
+
+# Per-user settings come from the bundle manifest via runtime.env (same
+# convention as openclaw_chrome). Sourced twice on purpose: once now, so a kill
+# switch can stop us before any work, and again after the gateway is ready —
+# `write_runtime_env` runs on the manifest POST, which is an inbound HTTP call
+# racing supervisord's autostart of the gateway, so on a machine's first boot
+# this file can still be absent right here.
+readonly RUNTIME_ENV="${OPENCLAW_BUNDLE_VOLUME_PATH:-/opt/config-bundle}/runtime.env"
+source_runtime_env() {
+  if [ -f "$RUNTIME_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$RUNTIME_ENV"
+  fi
+}
+source_runtime_env
+
+log() {
+  echo "[openclaw_browser_warm] $*"
+}
+
+if [[ "${OPENCLAW_BROWSER_WARM_START:-1}" == "0" ]]; then
+  log "disabled via OPENCLAW_BROWSER_WARM_START=0; skipping"
+  exit 0
+fi
+
+# Lazy start disabled means an operator manages the sidecars themselves
+# (e.g. autostart=true builds); don't fight that setup.
+if [[ "${OPENCLAW_BROWSER_LAZY_START:-1}" == "0" ]]; then
+  log "sidecars are externally managed (OPENCLAW_BROWSER_LAZY_START=0); skipping"
+  exit 0
+fi
+
+# Wait for the gateway to report ready before spending CPU on the X server.
+# Budget mirrors the readiness monitor (70 x 5 s). If the gateway never comes
+# up, warming is pointless — exit quietly; the lazy path still covers later.
+#
+# Polling happens inside ONE python process, not one spawn per attempt: this
+# runs during the machine's boot window, which is already CPU-starved, and the
+# whole point of waiting here is to not compete with the gateway. Readiness is
+# decided by the same parser the gateway's own monitor uses (is_ready_payload),
+# so a whitespace change in the /ready payload cannot silently defeat it. Any
+# failure (package missing, interpreter error) exits non-zero and is treated as
+# "not ready" — we skip warming and leave the lazy path in charge.
+attempts="${OPENCLAW_BROWSER_WARM_READY_ATTEMPTS:-70}"
+interval="${OPENCLAW_BROWSER_WARM_READY_INTERVAL_SECONDS:-5}"
+probe_rc=0
+python - "$attempts" "$interval" <<'PYPROBE' || probe_rc=$?
+import sys, time
+from openclaw_diagnostics.probe import URL_READY, is_ready_payload, probe_endpoint_result
+
+attempts = int(sys.argv[1])
+interval = float(sys.argv[2])
+for attempt in range(attempts):
+    status, body = probe_endpoint_result(URL_READY)
+    if status == "200" and is_ready_payload(body):
+        sys.exit(0)
+    if attempt + 1 < attempts:
+        time.sleep(interval)
+# Distinct from 1 so a crash (bad env value, missing package) is not reported
+# as "the gateway never came up" — that message would send whoever reads this
+# log hunting the wrong problem. Stderr is deliberately left attached.
+sys.exit(3)
+PYPROBE
+if [[ "$probe_rc" == "3" ]]; then
+  log "gateway not ready after ${attempts} attempts; skipping warm-up"
+  exit 0
+elif [[ "$probe_rc" != "0" ]]; then
+  log "readiness probe itself failed (exit ${probe_rc}); skipping warm-up"
+  exit 0
+fi
+
+# Re-read per-user settings now that the gateway is up: the bundle is
+# guaranteed on disk by this point, which was not true before the gate.
+source_runtime_env
+
+# Skip when the user's config explicitly disables the browser tool — warming
+# a display nothing will connect to just wastes memory. Absent key or an
+# unreadable config defaults to warming (upstream default is enabled).
+browser_enabled=$(python3 -c "import json,pathlib
+try:
+    d = json.loads(pathlib.Path('${CONFIG_PATH}').read_text())
+    print('0' if d.get('browser', {}).get('enabled') is False else '1')
+except Exception:
+    print('1')" 2>/dev/null || echo "1")
+if [[ "$browser_enabled" == "0" ]]; then
+  log "browser disabled in ${CONFIG_PATH}; skipping"
+  exit 0
+fi
+
+if ! command -v supervisorctl >/dev/null 2>&1 || [[ ! -S "$SUPERVISOR_SOCK" ]]; then
+  log "supervisorctl unavailable; skipping warm-up"
+  exit 0
+fi
+
+# Start one sidecar program if it is not already up. Never fails the script:
+# every outcome leaves openclaw_chrome's lazy start as the fallback.
+warm_program() {
+  local svc="$1"
+  local state
+  state=$(supervisorctl -c "$SUPERVISOR_CONF" status "$svc" 2>/dev/null | head -n1 | awk '{print $2}')
+  if [[ "$state" == "RUNNING" || "$state" == "STARTING" ]]; then
+    log "${svc} already ${state}; nothing to do"
+    return 0
+  fi
+  if supervisorctl -c "$SUPERVISOR_CONF" start "$svc" >/dev/null 2>&1; then
+    log "${svc} warm start requested (was: ${state:-unknown})"
+  else
+    log "${svc} warm start failed (was: ${state:-unknown}); lazy start will cover the first browser call"
+  fi
+  return 0
+}
+
+warm_program kasmvnc
+
+# gost only matters when a proxy is actually configured — that is the sole
+# condition under which openclaw_chrome points Chrome at 127.0.0.1:18080 and
+# blocks waiting for that port (measured ~4 s on a cold start, out of a ~15 s
+# browser-launch budget). The condition below mirrors openclaw_chrome exactly;
+# keep the two in lockstep. With no proxy, openclaw_chrome skips gost too, so
+# warming it would start a proxy nothing routes through.
+if [[ ! -f "$RUNTIME_ENV" ]]; then
+  # Distinct from "no proxy": the manifest POST that writes this file races the
+  # gateway's startup on a machine's very first boot, so its absence means
+  # "unknown", not "none". Saying otherwise would send a later reader hunting a
+  # proxy misconfiguration that does not exist.
+  log "runtime.env not present yet; proxy state unknown, leaving gost to lazy start"
+elif [[ -n "${PROXY_URL:-}" && -n "${OPENCLAW_CHROME_PROXY_SERVER:-}" ]]; then
+  warm_program gost
+else
+  log "no proxy configured; skipping gost (openclaw_chrome skips it too)"
+fi
+
+exit 0

@@ -369,7 +369,9 @@ start_container() {
     # Only /data is persisted: it holds the account token and local secrets, so an upgrade
     # does not ask you to sign in again. OpenClaw's own state directory is deliberately NOT
     # a volume — it ships inside the image (plugins, extensions) and would be shadowed by a
-    # stale copy after an upgrade; sessions and memory come back from the cloud backup.
+    # stale copy after an upgrade. Chats live in the SellerClaw database and durable facts in
+    # long-term memory, so nothing there needs to survive locally; browser sign-ins are the
+    # one exception and come back from the cloud backup.
     set -- run -d \
         --name "$CONTAINER_NAME" \
         --restart unless-stopped \

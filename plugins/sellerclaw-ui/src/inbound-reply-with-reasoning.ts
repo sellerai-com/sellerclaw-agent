@@ -16,7 +16,16 @@ import { normalizeOutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload
  *
  * ⚠️ Drift risk: this mirrors OpenClaw-internal orchestration and the plugin-sdk shims are loosely
  * typed, so the compiler will NOT flag a mismatch. On every OpenClaw upgrade, re-verify this still
- * matches ``dispatchInboundDirectDmWithRuntime`` and smoke-test reasoning end-to-end.
+ * matches ``dispatchInboundDirectDmWithRuntime``, smoke-test reasoning end-to-end, and confirm an
+ * aborted run still delivers its final with ``isError: true`` (see the third divergence below —
+ * the delivery-timeline log line in ``inbound.ts`` names the branch it took, which is the canary).
+ *
+ * Verified against 2026.8.1-beta.2: upstream now assembles a ``ChannelTurnPlan`` and hands it to
+ * ``dispatchRoutedChannelTurn`` instead of calling ``runPreparedInboundReply`` itself, but the plan
+ * it builds still hardcodes ``replyOptions: { onModelSelected }`` — so reasoning callbacks are still
+ * dropped and this copy still earns its keep. Every SDK entry point below survived that reshuffle
+ * with its shape intact. Note ``plugin-sdk/channel-reply-pipeline`` is now deprecated in favour of
+ * ``plugin-sdk/channel-outbound``; migrate when the old subpath stops shipping.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DispatchParams = Record<string, any>;
@@ -84,10 +93,26 @@ export async function dispatchInboundDirectDmWithReasoning(params: DispatchParam
           // re-delivers the whole reply once more as a consolidated final (``kind: "final"``);
           // without this label the bridge can't tell them apart and double-posts multi-block
           // replies. See ``inbound.ts`` deliver for how the label is consumed.
+          // THIRD DIVERGENCE from upstream: keep ``isError``.
+          //
+          // ``normalizeOutboundReplyPayload`` extracts text and media only — by design, since
+          // most channels just need something to send. But when a run aborts (run-budget
+          // timeout, provider failure) OpenClaw does not throw: it *converts* the terminal
+          // state into reply text ("LLM request timed out.") and marks that payload
+          // ``isError: true`` (built in ``embedded-agent-runner/run/payloads.ts``, copied onto
+          // the channel payload there, preserved through ``normalizeReplyPayload``, and used by
+          // OpenClaw's own webchat to render a chat message as an error). Dropping the flag here
+          // is what let a 22-character engine string be stored as the assistant's answer —
+          // staging chat b76fd17a, 2026-08-19. ``inbound.ts`` consumes it to hold the string
+          // back and close the turn honestly.
           deliver: async (payload: unknown, dispatchInfo?: unknown) => {
-            const normalized =
-              payload && typeof payload === "object" ? normalizeOutboundReplyPayload(payload) : {};
-            return await params.deliver(normalized, dispatchInfo);
+            const raw =
+              payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+            const normalized = raw ? normalizeOutboundReplyPayload(raw) : {};
+            return await params.deliver(
+              raw?.isError === true ? { ...normalized, isError: true } : normalized,
+              dispatchInfo,
+            );
           },
           onError: params.onDispatchError,
         },

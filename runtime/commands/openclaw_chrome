@@ -76,9 +76,21 @@ ensure_browser_sidecars_via_supervisor() {
     echo "[openclaw_chrome] supervisor socket not ready: ${SUPERVISOR_SOCK}" >&2
     return 1
   }
-  local kasm_detail gost_detail
+  local kasm_detail
+  local gost_detail="skipped (no proxy configured)"
   kasm_detail=$(_ensure_supervisor_program_with_detail kasmvnc) || return 1
-  gost_detail=$(_ensure_supervisor_program_with_detail gost) || return 1
+
+  # Only start gost when a proxy is actually configured. Chrome is pointed at
+  # 127.0.0.1:18080 under exactly this condition (see --proxy-server below), so
+  # without it gost would run in permanent direct mode with nothing routed
+  # through it — a process we pay for on every cold start, plus its supervisord
+  # startsecs gate, inside the browser tool's ~15 s launch budget.
+  local proxy_enabled=0
+  if [[ -n "${PROXY_URL:-}" && -n "${OPENCLAW_CHROME_PROXY_SERVER:-}" ]]; then
+    proxy_enabled=1
+    gost_detail=$(_ensure_supervisor_program_with_detail gost) || return 1
+  fi
+
   local deadline=$(( $(date +%s) + 60 ))
   while [[ ! -e "$X11_SOCKET" ]] && [[ "$(date +%s)" -lt "$deadline" ]]; do
     sleep 0.2
@@ -88,7 +100,7 @@ ensure_browser_sidecars_via_supervisor() {
     return 1
   fi
   local proxy_note=""
-  if [[ -n "${PROXY_URL:-}" && -n "${OPENCLAW_CHROME_PROXY_SERVER:-}" ]]; then
+  if [[ "$proxy_enabled" == "1" ]]; then
     deadline=$(( $(date +%s) + 30 ))
     while [[ "$(date +%s)" -lt "$deadline" ]]; do
       if timeout 1 bash -c "echo >/dev/tcp/127.0.0.1/18080" 2>/dev/null; then

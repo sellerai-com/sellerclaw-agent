@@ -22,9 +22,9 @@ def _resolve_restore_bearer() -> str | None:
 
 
 def run_restore_if_needed() -> None:
-    """Download latest state backup when local OpenClaw state is empty (managed cold start)."""
-    # start_agent(restart_agent(..., clean=True)) sets RESET_STATE=1; entrypoint clears sessions/memory
-    # before this runs. Skipping cloud restore avoids re-importing stale/corrupt data from S3.
+    """Download the browser sign-in backup when this machine has none (managed cold start)."""
+    # start_agent(restart_agent(..., clean=True)) sets RESET_STATE=1; the entrypoint clears
+    # sessions and memory before this runs. Skipping the restore keeps a clean start clean.
     if (os.environ.get("RESET_STATE") or "").strip() == "1":
         return
     state_dir = default_openclaw_state_dir()

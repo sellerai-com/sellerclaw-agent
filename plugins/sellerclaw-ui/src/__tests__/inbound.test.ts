@@ -918,8 +918,8 @@ describe("registerInboundRoute", () => {
 
   describe("readDeliverPayload", () => {
     it("returns empty fields for non-object payloads", () => {
-      expect(readDeliverPayload(null)).toEqual({ text: "", mediaUrls: [] });
-      expect(readDeliverPayload("nope")).toEqual({ text: "", mediaUrls: [] });
+      expect(readDeliverPayload(null)).toEqual({ text: "", mediaUrls: [], isError: false });
+      expect(readDeliverPayload("nope")).toEqual({ text: "", mediaUrls: [], isError: false });
     });
 
     it("merges mediaUrls and the legacy mediaUrl field, deduped and trimmed", () => {
@@ -929,13 +929,23 @@ describe("registerInboundRoute", () => {
           mediaUrls: [" /a.png ", "/b.png", "/a.png"],
           mediaUrl: "/b.png",
         }),
-      ).toEqual({ text: "caption", mediaUrls: ["/a.png", "/b.png"] });
+      ).toEqual({ text: "caption", mediaUrls: ["/a.png", "/b.png"], isError: false });
     });
 
     it("ignores non-string media entries", () => {
       expect(
         readDeliverPayload({ text: "", mediaUrls: [42, null, "/ok.png", ""] }),
-      ).toEqual({ text: "", mediaUrls: ["/ok.png"] });
+      ).toEqual({ text: "", mediaUrls: ["/ok.png"], isError: false });
+    });
+
+    it("reads the engine's error flag, and only when it is exactly true", () => {
+      // The flag is what separates "the agent answered" from "the engine gave up and wrote a
+      // notice"; a truthy-but-not-true value is not that signal.
+      expect(readDeliverPayload({ text: "LLM request timed out.", isError: true }).isError).toBe(
+        true,
+      );
+      expect(readDeliverPayload({ text: "hi", isError: "yes" }).isError).toBe(false);
+      expect(readDeliverPayload({ text: "hi" }).isError).toBe(false);
     });
   });
 
@@ -1304,7 +1314,12 @@ describe("registerInboundRoute catch-up re-delivery", () => {
     const handler = getHandler(registerHttpRoute);
 
     const end1 = vi.fn();
-    await handler(makeReq(), { statusCode: 0, end: end1 } as unknown as ServerResponse);
+    // The handler stays open for the whole turn (it holds the Gateway work admission the run
+    // needs), so the first call can only be awaited once the gated dispatch is released.
+    const firstTurn = handler(
+      makeReq(),
+      { statusCode: 0, end: end1 } as unknown as ServerResponse,
+    );
     await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
 
     const end2 = vi.fn();
@@ -1318,9 +1333,8 @@ describe("registerInboundRoute catch-up re-delivery", () => {
 
     // Let the original turn finish so its dangling promises settle before the test ends.
     release();
-    await vi.waitFor(() =>
-      expect(globalThis.fetch as ReturnType<typeof vi.fn>).toHaveBeenCalled(),
-    );
+    await firstTurn;
+    expect(globalThis.fetch as ReturnType<typeof vi.fn>).toHaveBeenCalled();
   });
 
   it("dispatches a re-delivery with a FRESH MessageSid (defeats session-level dedup)", async () => {

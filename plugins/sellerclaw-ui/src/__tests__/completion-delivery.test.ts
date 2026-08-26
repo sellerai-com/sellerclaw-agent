@@ -64,8 +64,20 @@ function setup() {
     hooks,
     toolCall: (event: Record<string, unknown>, ctx?: Record<string, unknown>) =>
       fire("before_tool_call", event, ctx),
-    finalize: (event: Record<string, unknown>, ctx?: Record<string, unknown>) =>
-      fire("before_agent_finalize", event, ctx),
+    /**
+     * How a run reports its answer now: the visible text of its model calls (``llm_output``),
+     * then the run end that decides what to do with it. ``sessionKey`` rides the hook context —
+     * the only place either handler reads it.
+     */
+    answerRun: (
+      params: { runId?: unknown; text?: string; messages?: unknown },
+      ctx: Record<string, unknown> = { sessionKey: SESSION_KEY },
+    ) => {
+      if (params.text !== undefined) {
+        fire("llm_output", { runId: params.runId, assistantTexts: [params.text] }, ctx);
+      }
+      fire("agent_end", { runId: params.runId, messages: params.messages }, ctx);
+    },
     agentEnd: (event: Record<string, unknown>, ctx?: Record<string, unknown>) =>
       fire("agent_end", event, ctx),
     sending: (event: Record<string, unknown>, ctx?: Record<string, unknown>) =>
@@ -88,9 +100,31 @@ afterEach(() => {
 
 describe("completion delivery", () => {
   it("substitutes the supervisor's answer for the child's raw report", () => {
-    const { finalize, sending } = setup();
+    const { answerRun, sending } = setup();
 
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER });
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
+    const decision = sending(
+      { to: `sellerclaw-ui:direct:${CHAT_ID}`, content: CHILD_REPORT },
+      { sessionKey: SESSION_KEY, channelId: "sellerclaw-ui" },
+    );
+
+    expect(decision).toEqual({ content: ANSWER });
+  });
+
+  it("delivers an answer whose llm_output lands after the run end", () => {
+    // The real order in OpenClaw 2026.8: ``agent_end`` is dispatched before ``llm_output`` for the
+    // final model call. A run that writes its whole answer in its last round therefore looks
+    // answerless at run end and is complete a heartbeat later. This is the case that reached a
+    // seller as an empty chat after a 30-minute publishing job.
+    const { hooks, sending } = setup();
+    const fire = (name: string, event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+      for (const handler of hooks.get(name) ?? []) handler(event, ctx);
+    };
+    const ctx = { sessionKey: SESSION_KEY };
+
+    fire("agent_end", { runId: ANNOUNCE_RUN_ID, messages: undefined }, ctx);
+    fire("llm_output", { runId: ANNOUNCE_RUN_ID, assistantTexts: [ANSWER] }, ctx);
+
     const decision = sending(
       { to: `sellerclaw-ui:direct:${CHAT_ID}`, content: CHILD_REPORT },
       { sessionKey: SESSION_KEY, channelId: "sellerclaw-ui" },
@@ -102,17 +136,19 @@ describe("completion delivery", () => {
   it("registers all four hooks it depends on", () => {
     const { hooks } = setup();
 
+    // ``before_agent_finalize`` is deliberately absent: a handler for it makes the runtime hold
+    // back the whole visible reply stream until the run ends (see ``registerAnswerCapture``).
     expect([...hooks.keys()].sort()).toEqual([
       "agent_end",
-      "before_agent_finalize",
       "before_tool_call",
+      "llm_output",
       "message_sending",
     ]);
   });
 
   it("applies the answer only once, so a later delivery is untouched", () => {
-    const { finalize, sending } = setup();
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER });
+    const { answerRun, sending } = setup();
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
 
     expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toEqual({
       content: ANSWER,
@@ -121,7 +157,7 @@ describe("completion delivery", () => {
   });
 
   it("leaves a run that sent the answer itself completely alone", () => {
-    const { toolCall, finalize, sending } = setup();
+    const { toolCall, answerRun, sending } = setup();
 
     toolCall(
       {
@@ -131,7 +167,7 @@ describe("completion delivery", () => {
       },
       { sessionKey: SESSION_KEY, runId: ANNOUNCE_RUN_ID },
     );
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER });
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
 
     expect(sending({ content: ANSWER }, { sessionKey: SESSION_KEY })).toBeUndefined();
     vi.advanceTimersByTime(60_000);
@@ -139,13 +175,13 @@ describe("completion delivery", () => {
   });
 
   it("does not count a non-send message call as having answered the owner", () => {
-    const { toolCall, finalize, sending } = setup();
+    const { toolCall, answerRun, sending } = setup();
 
     toolCall(
       { toolName: "message", runId: ANNOUNCE_RUN_ID, params: { action: "list" } },
       { sessionKey: SESSION_KEY, runId: ANNOUNCE_RUN_ID },
     );
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER });
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
 
     expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toEqual({
       content: ANSWER,
@@ -167,9 +203,9 @@ describe("completion delivery", () => {
     ["lowercase no_reply", "no_reply"],
     ["whitespace only", "   "],
   ])("delivers nothing when the answer is silent (%s)", (_label, text) => {
-    const { finalize, sending } = setup();
+    const { answerRun, sending } = setup();
 
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: text });
+    answerRun({ runId: ANNOUNCE_RUN_ID, text });
 
     expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toMatchObject({
       cancel: true,
@@ -177,8 +213,8 @@ describe("completion delivery", () => {
   });
 
   it("passes media through untouched", () => {
-    const { finalize, sending } = setup();
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER });
+    const { answerRun, sending } = setup();
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
 
     // A media-only payload reaches the hook with empty text; the child's screenshot or export
     // is a deliverable, not its internal report.
@@ -190,15 +226,15 @@ describe("completion delivery", () => {
   });
 
   it("does not rewrite when the runtime already delivered the answer", () => {
-    const { finalize, sending } = setup();
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER });
+    const { answerRun, sending } = setup();
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
 
     expect(sending({ content: `${ANSWER}\n` }, { sessionKey: SESSION_KEY })).toBeUndefined();
   });
 
   it("sends the answer itself when the runtime never delivers, then swallows a late delivery", async () => {
-    const { finalize, sending } = setup();
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER });
+    const { answerRun, sending } = setup();
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
 
     await vi.advanceTimersByTimeAsync(5_000);
 
@@ -222,8 +258,8 @@ describe("completion delivery", () => {
   });
 
   it("forgets a captured answer once it goes stale", () => {
-    const { finalize, sending } = setup();
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER });
+    const { answerRun, sending } = setup();
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
     deliverTextToChat.mockClear();
 
     vi.advanceTimersByTime(120_000);
@@ -232,8 +268,8 @@ describe("completion delivery", () => {
   });
 
   it("keeps answers separate per chat", () => {
-    const { finalize, sending } = setup();
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: SESSION_KEY, lastAssistantMessage: ANSWER });
+    const { answerRun, sending } = setup();
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
 
     expect(sending({ content: CHILD_REPORT }, { sessionKey: OTHER_SESSION_KEY })).toBeUndefined();
     expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toEqual({
@@ -242,12 +278,11 @@ describe("completion delivery", () => {
   });
 
   it("recognizes a completion run from the trigger text when the run id is not prefixed", () => {
-    const { finalize, sending } = setup();
+    const { answerRun, sending } = setup();
 
-    finalize({
+    answerRun({
       runId: "run-42",
-      sessionKey: SESSION_KEY,
-      lastAssistantMessage: ANSWER,
+      text: ANSWER,
       messages: [
         { role: "user", content: "давай снимем этот листинг с продажи" },
         { role: "assistant", content: [{ type: "toolCall", name: "message" }] },
@@ -266,12 +301,11 @@ describe("completion delivery", () => {
   });
 
   it("leaves a live chat turn alone even when an older completion trigger is in history", () => {
-    const { finalize, sending } = setup();
+    const { answerRun, sending } = setup();
 
-    finalize({
+    answerRun({
       runId: "run-43",
-      sessionKey: SESSION_KEY,
-      lastAssistantMessage: ANSWER,
+      text: ANSWER,
       messages: [
         { role: "user", content: "A background task completed. Use this result to reply." },
         { role: "assistant", content: [{ type: "text", text: "Снял." }] },
@@ -284,17 +318,56 @@ describe("completion delivery", () => {
 
   it("ignores completions whose requester is not a sellerclaw-ui chat", () => {
     const subagentSession = "agent:ebay:subagent:cd0df525-f55c-45a9-b328-02baaa8ece25";
-    const { finalize, sending } = setup();
+    const { answerRun, sending } = setup();
 
-    finalize({ runId: ANNOUNCE_RUN_ID, sessionKey: subagentSession, lastAssistantMessage: ANSWER });
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER }, { sessionKey: subagentSession });
 
     expect(sending({ content: CHILD_REPORT }, { sessionKey: subagentSession })).toBeUndefined();
   });
 
-  it("falls back to the hook context for the session key", () => {
-    const { finalize, sending } = setup();
+  it("substitutes even when the fallback send beats the run's end", () => {
+    const { hooks, sending } = setup();
+    // Only the per-model-call capture ran; ``agent_end`` is fire-and-forget and has not landed.
+    for (const handler of hooks.get("llm_output") ?? []) {
+      handler({ runId: ANNOUNCE_RUN_ID, assistantTexts: [ANSWER] }, { sessionKey: SESSION_KEY });
+    }
 
-    finalize({ runId: ANNOUNCE_RUN_ID, lastAssistantMessage: ANSWER }, { sessionKey: SESSION_KEY });
+    expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toEqual({
+      content: ANSWER,
+    });
+  });
+
+  it("leaves a normal chat turn's own delivery alone when its end has not landed", () => {
+    const { hooks, sending } = setup();
+    // A live chat turn (no announce run id): its reply is the owner's answer, not a fallback.
+    for (const handler of hooks.get("llm_output") ?? []) {
+      handler({ runId: "run-77", assistantTexts: ["обычный ответ"] }, { sessionKey: SESSION_KEY });
+    }
+
+    expect(sending({ content: "обычный ответ" }, { sessionKey: SESSION_KEY })).toBeUndefined();
+  });
+
+  it("does not substitute at delivery time for a run that messaged the owner itself", () => {
+    const { hooks, toolCall, sending } = setup();
+    toolCall(
+      {
+        toolName: "message",
+        runId: ANNOUNCE_RUN_ID,
+        params: { action: "send", target: `sellerclaw-ui:direct:${CHAT_ID}`, message: ANSWER },
+      },
+      { sessionKey: SESSION_KEY, runId: ANNOUNCE_RUN_ID },
+    );
+    for (const handler of hooks.get("llm_output") ?? []) {
+      handler({ runId: ANNOUNCE_RUN_ID, assistantTexts: [ANSWER] }, { sessionKey: SESSION_KEY });
+    }
+
+    expect(sending({ content: ANSWER }, { sessionKey: SESSION_KEY })).toBeUndefined();
+  });
+
+  it("reads the session key from the hook context", () => {
+    const { answerRun, sending } = setup();
+
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER }, { sessionKey: SESSION_KEY });
 
     expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toEqual({
       content: ANSWER,

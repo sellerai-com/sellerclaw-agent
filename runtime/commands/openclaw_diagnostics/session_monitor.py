@@ -1,145 +1,115 @@
+"""Mirror OpenClaw session activity into container stdout.
+
+Chats, tool calls and run lifecycle all reach the gateway as events; ``sessions.subscribe``
+asks for them across every session on one connection, which is what makes this a mirror of
+the whole agent rather than of whichever sessions happened to exist at startup.
+
+Each event becomes one ``[openclaw_session] …`` line. That prefix and the ``session=`` /
+``type=`` keys are what the chat-analysis commands grep for, so they are part of the
+contract with those tools, not incidental formatting.
+"""
+
 from __future__ import annotations
 
+import asyncio
 import json
-import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from collections.abc import Callable
+from typing import Any, Final
+
+from openclaw_diagnostics.gateway import (
+    GatewayConnection,
+    GatewayError,
+    GatewayStream,
+    agent_id_from_session_key,
+)
 
 TAG = "[openclaw_session]"
-DEFAULT_STATE_DIR = Path("/home/node/.openclaw")
 _SUMMARY_LIMIT = 240
 
+# Event families a bare `sessions.subscribe` delivers for every session. Anything else on
+# the socket (typing indicators, sharing changes, catalog notices) is UI bookkeeping that
+# would only dilute the log.
+_MIRRORED_EVENTS: Final[frozenset[str]] = frozenset(
+    {
+        "session.message",
+        "session.tool",
+        "sessions.changed",
+        "session.operation",
+        "agent",
+    }
+)
 
-@dataclass
-class SessionFileTracker:
-    """Track incremental reads for one OpenClaw session JSONL file."""
-
-    position: int
-    inode: int
-    remainder: str = ""
-
-
-def list_session_files(*, state_dir: Path) -> list[Path]:
-    """Return all agent session JSONL files under the OpenClaw state directory."""
-    return sorted(state_dir.glob("agents/*/sessions/*.jsonl"))
-
-
-def seed_existing_session_offsets(*, state_dir: Path) -> dict[Path, SessionFileTracker]:
-    """Initialize trackers at EOF so old sessions are not replayed on startup."""
-    trackers: dict[Path, SessionFileTracker] = {}
-    for path in list_session_files(state_dir=state_dir):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        trackers[path] = SessionFileTracker(position=stat.st_size, inode=stat.st_ino)
-    return trackers
+_RECONNECT_DELAY_S: Final[float] = 2.0
 
 
-def collect_new_session_log_lines(
+async def monitor_session_logs(
     *,
-    state_dir: Path,
-    trackers: dict[Path, SessionFileTracker],
-) -> list[str]:
-    """Read newly appended session JSONL lines and return formatted stdout log lines."""
-    lines: list[str] = []
-    current_files = list_session_files(state_dir=state_dir)
-    active_paths = set(current_files)
-
-    for stale_path in tuple(trackers):
-        if stale_path not in active_paths:
-            trackers.pop(stale_path, None)
-
-    for path in current_files:
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-
-        tracker = trackers.get(path)
-        if tracker is None:
-            tracker = SessionFileTracker(position=0, inode=stat.st_ino)
-            trackers[path] = tracker
-        elif tracker.inode != stat.st_ino or stat.st_size < tracker.position:
-            tracker.position = 0
-            tracker.inode = stat.st_ino
-            tracker.remainder = ""
-
-        if stat.st_size == tracker.position:
-            continue
-
-        try:
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
-                handle.seek(tracker.position)
-                chunk = handle.read()
-                tracker.position = handle.tell()
-        except OSError:
-            continue
-
-        if not chunk:
-            continue
-
-        buffered = tracker.remainder + chunk
-        raw_lines = buffered.split("\n")
-        tracker.remainder = raw_lines.pop()
-
-        for raw_line in raw_lines:
-            line = raw_line.rstrip("\r")
-            if not line:
-                continue
-            lines.append(format_session_log_line(path=path, raw_line=line))
-
-    return lines
-
-
-def monitor_session_logs(
-    *,
-    state_dir: Path = DEFAULT_STATE_DIR,
-    interval_seconds: float = 1.0,
-    max_scans: int | None = None,
+    connection_factory: Callable[[], GatewayStream] = GatewayConnection,
+    reconnect_delay_seconds: float = _RECONNECT_DELAY_S,
+    max_events: int | None = None,
 ) -> None:
-    """Continuously mirror all agent session events into container stdout."""
-    trackers = seed_existing_session_offsets(state_dir=state_dir)
-    scans = 0
+    """Stream session events to stdout until cancelled.
+
+    Reconnects for as long as it runs: the gateway restarts on every agent restart and on
+    every config apply, and a mirror that stopped at the first of those would be silent
+    exactly when the logs matter most. Events emitted while disconnected are lost — the
+    gateway keeps no backlog — which is the accepted cost of a debugging mirror.
+    """
+    emitted = 0
+    reported_outage = False
     while True:
-        for line in collect_new_session_log_lines(state_dir=state_dir, trackers=trackers):
-            print(line, flush=True)
+        try:
+            async with connection_factory() as conn:
+                await conn.call("sessions.subscribe", {})
+                reported_outage = False
+                async for frame in conn.events():
+                    for line in session_log_lines(frame):
+                        print(line, flush=True)
+                        emitted += 1
+                        if max_events is not None and emitted >= max_events:
+                            return
+        except GatewayError as exc:
+            # One line per outage, not per retry: this loop runs alongside a booting gateway
+            # and would otherwise fill the container log with the same line every few seconds.
+            if not reported_outage:
+                print(f"{TAG} agent=- session=- type=monitor.disconnected reason={exc}", flush=True)
+                reported_outage = True
+        await asyncio.sleep(reconnect_delay_seconds)
 
-        scans += 1
-        if max_scans is not None and scans >= max_scans:
-            return
-        time.sleep(interval_seconds)
 
-
-def format_session_log_line(*, path: Path, raw_line: str) -> str:
-    """Format one JSONL session event into a concise single-line stdout record."""
-    agent_id = _agent_id_for_path(path)
-    session_key = path.stem
-
-    try:
-        payload = json.loads(raw_line)
-    except json.JSONDecodeError:
-        return f"{TAG} agent={agent_id} session={session_key} raw={_truncate(raw_line)}"
-
+def session_log_lines(frame: dict[str, Any]) -> list[str]:
+    """Render one gateway frame as stdout lines (empty when it is not a mirrored event)."""
+    if frame.get("type") != "event":
+        return []
+    event = frame.get("event")
+    if not isinstance(event, str) or event not in _MIRRORED_EVENTS:
+        return []
+    payload = frame.get("payload")
     if not isinstance(payload, dict):
-        return f"{TAG} agent={agent_id} session={session_key} raw={_truncate(raw_line)}"
+        payload = {}
+    return [format_session_log_line(event=event, payload=payload)]
 
-    parts = [
-        TAG,
-        f"agent={agent_id}",
-        f"session={session_key}",
-    ]
 
-    timestamp = _first_str(payload, "timestamp", "created_at", "time")
-    if timestamp:
-        parts.append(f"ts={timestamp}")
+def format_session_log_line(*, event: str, payload: dict[str, Any]) -> str:
+    """Format one gateway session event into a concise single-line stdout record."""
+    raw_session = payload.get("session")
+    session: dict[str, Any] = raw_session if isinstance(raw_session, dict) else {}
+    # Top-level payloads say `sessionKey`; the embedded session-row snapshot says `key`.
+    session_key = (
+        _first_str(payload, "sessionKey")
+        or _first_str(session, "sessionKey", "key")
+        or _first_str(payload, "sessionId")
+        or _first_str(session, "sessionId")
+        or "unknown"
+    )
+    agent_id = _first_str(payload, "agentId") or _first_str(session, "agentId")
+    if not agent_id:
+        # Not every frame names the agent, but agent-scoped keys encode it.
+        agent_id = agent_id_from_session_key(session_key)
 
-    event_type = _first_str(payload, "type", "event_type")
-    if event_type:
-        parts.append(f"type={event_type}")
+    parts = [TAG, f"agent={agent_id}", f"session={session_key}", f"type={event}"]
 
-    for key in ("runId", "stage", "decision", "reason", "stopReason", "status"):
+    for key in ("stream", "runId", "reason", "phase", "status", "stopReason", "operation"):
         value = payload.get(key)
         if value is not None:
             parts.append(f"{key}={_display_scalar(value)}")
@@ -157,17 +127,6 @@ def format_session_log_line(*, path: Path, raw_line: str) -> str:
     return " ".join(parts)
 
 
-def _agent_id_for_path(path: Path) -> str:
-    parts = path.parts
-    try:
-        agents_idx = parts.index("agents")
-    except ValueError:
-        return "unknown"
-    if agents_idx + 1 >= len(parts):
-        return "unknown"
-    return parts[agents_idx + 1]
-
-
 def _first_str(payload: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = payload.get(key)
@@ -177,17 +136,20 @@ def _first_str(payload: dict[str, Any], *keys: str) -> str | None:
 
 
 def _extract_tool_name(payload: dict[str, Any]) -> str | None:
-    tool = payload.get("tool")
-    if isinstance(tool, str) and tool.strip():
-        return tool.strip()
-    if isinstance(tool, dict):
-        name = tool.get("name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
-
-    tool_name = payload.get("tool_name")
-    if isinstance(tool_name, str) and tool_name.strip():
-        return tool_name.strip()
+    for source in (payload, payload.get("data")):
+        if not isinstance(source, dict):
+            continue
+        tool = source.get("tool")
+        if isinstance(tool, str) and tool.strip():
+            return tool.strip()
+        if isinstance(tool, dict):
+            name = tool.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        for key in ("toolName", "tool_name"):
+            name = source.get(key)
+            if isinstance(name, str) and name.strip():
+                return name.strip()
 
     for item in _iter_content_items(payload):
         if item.get("type") != "toolCall":
@@ -199,16 +161,20 @@ def _extract_tool_name(payload: dict[str, Any]) -> str | None:
 
 
 def _extract_summary(payload: dict[str, Any]) -> str | None:
-    for key in ("text", "message", "result", "result_summary"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    for source in (payload, payload.get("message"), payload.get("data")):
+        if not isinstance(source, dict):
+            continue
+        for key in ("text", "error", "result", "result_summary", "headline"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
 
     command = _extract_command(payload)
     if command:
         return command
 
-    role = payload.get("role")
+    message = payload.get("message")
+    role = message.get("role") if isinstance(message, dict) else None
     text = _extract_content_text(payload)
     if isinstance(role, str) and role.strip() and text:
         return f"{role.strip()}: {text}"
@@ -216,24 +182,27 @@ def _extract_summary(payload: dict[str, Any]) -> str | None:
 
 
 def _extract_command(payload: dict[str, Any]) -> str | None:
-    for key in ("command", "raw_command", "input", "tool_input"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        if isinstance(value, dict):
-            nested = value.get("command")
-            if isinstance(nested, str) and nested.strip():
-                return nested.strip()
+    for source in (payload, payload.get("data")):
+        if not isinstance(source, dict):
+            continue
+        for key in ("command", "raw_command", "input", "tool_input", "args"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, dict):
+                nested = value.get("command")
+                if isinstance(nested, str) and nested.strip():
+                    return nested.strip()
 
-    tool = payload.get("tool")
-    if isinstance(tool, dict):
-        tool_input = tool.get("input")
-        if isinstance(tool_input, str) and tool_input.strip():
-            return tool_input.strip()
-        if isinstance(tool_input, dict):
-            nested = tool_input.get("command")
-            if isinstance(nested, str) and nested.strip():
-                return nested.strip()
+        tool = source.get("tool")
+        if isinstance(tool, dict):
+            tool_input = tool.get("input")
+            if isinstance(tool_input, str) and tool_input.strip():
+                return tool_input.strip()
+            if isinstance(tool_input, dict):
+                nested = tool_input.get("command")
+                if isinstance(nested, str) and nested.strip():
+                    return nested.strip()
     return None
 
 
@@ -248,16 +217,12 @@ def _extract_content_text(payload: dict[str, Any]) -> str | None:
 
 
 def _iter_content_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    message = payload.get("message")
-    if isinstance(message, dict):
-        content = message.get("content")
+    for source in (payload.get("message"), payload.get("data"), payload):
+        if not isinstance(source, dict):
+            continue
+        content = source.get("content")
         if isinstance(content, list):
             return [item for item in content if isinstance(item, dict)]
-
-    content = payload.get("content")
-    if isinstance(content, list):
-        return [item for item in content if isinstance(item, dict)]
-
     return []
 
 

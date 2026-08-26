@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.7.1-2
+ARG OPENCLAW_TAG=2026.8.1-beta.2
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -87,12 +87,12 @@ RUN apt-get update \
 # version OpenClaw picks up here must match the `playwright-core` it depends on itself — keep this ARG
 # in lockstep with the base image when OPENCLAW_TAG moves:
 #   docker run --rm --entrypoint sh ghcr.io/openclaw/openclaw:$OPENCLAW_TAG -c 'grep playwright-core /app/package.json'
-# (openclaw 2026.7.1 pins playwright-core 1.61.1 exactly, and browsers come from the base image's
+# (openclaw 2026.8.1-beta.2 pins playwright-core 1.62.1 exactly, and browsers come from the base image's
 # system Chrome — hence PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD.)
 # Unpinned before: `npm install -g playwright` took whatever npm called latest at build time, so the
 # shipped version changed silently the first time the layer cache missed — a rebuild today would jump
 # to 1.62.0 (Chromium 151) while every existing image runs 1.61.1 (Chromium 149).
-ARG PLAYWRIGHT_VERSION=1.61.1
+ARG PLAYWRIGHT_VERSION=1.62.1
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV NODE_PATH=/usr/local/lib/node_modules
 RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}"
@@ -131,6 +131,21 @@ RUN mkdir -p /opt/openclaw-plugins/openclaw-mem0 \
     && npm install --omit=dev --no-audit --no-fund \
     && chown -R root:root /opt/openclaw-plugins/openclaw-mem0
 
+
+# Repair an incomplete dependency tree in the base image: the bundled Telegram channel loads
+# grammy, whose vendored whatwg@5 requires `tr46`, but that package is missing from
+# ghcr.io/openclaw/openclaw:2026.8.1-beta.2. The channel then dies at load time with
+# `Cannot find module 'tr46'` (ERR_MODULE_NOT_FOUND), so every agent with Telegram enabled
+# silently loses it — OpenClaw's own advice, `openclaw doctor --fix`, cannot help because the
+# runtime never runs doctor. Installed beside grammy so the fix stays scoped to the package
+# that needs it, and re-checked immediately: if a later base image ships the dependency (or
+# drops grammy), the resolve below still passes, but a broken shim fails the build loudly.
+# Version follows whatwg-url@5's own `tr46: ~0.0.3` constraint.
+ARG TR46_SHIM_VERSION=0.0.3
+RUN npm install --no-save --no-audit --no-fund --prefix /tmp/tr46-shim "tr46@${TR46_SHIM_VERSION}" \
+    && cp -r /tmp/tr46-shim/node_modules/tr46 /app/node_modules/grammy/node_modules/tr46 \
+    && rm -rf /tmp/tr46-shim \
+    && node -e "require.resolve('tr46', { paths: ['/app/node_modules/grammy/node_modules/whatwg-url'] })"
 
 # Remove unused bundled extensions from the base image to speed up cold start.
 # OpenClaw scans all directories in the bundled extensions dir at startup, even when
@@ -171,14 +186,23 @@ RUN cd /app/dist/extensions && \
 # Being on plugins.load.paths satisfies config validation but does NOT register the plugin — the
 # registry is what the doctor checks — hence this separate install. It is fully offline (local
 # directory source; verified with `docker run --network none`) and must run AFTER the extension
-# prune above so the registry snapshot matches the final image. mem0 stays on load.paths too, which
-# only costs a benign "duplicate plugin id … global plugin will be overridden by config plugin"
-# warning and keeps config validation working even if this registry ever goes stale.
+# prune above so the registry snapshot matches the final image. mem0 stays on load.paths too, so
+# config validation keeps working even if this registry ever goes stale.
+#
+# `--link` registers the directory we already vendored instead of copying it under
+# ~/.openclaw/npm/projects. Without it the runtime sees the same plugin id at two different paths
+# and warns "duplicate plugin id … global plugin will be overridden by config plugin" — once per
+# agent, so a ten-agent fleet opened every boot with a ten-line wall of the same warning.
 #
 # The installer also writes a stub openclaw.json (it records the memory slot for itself) and an
 # audit log; drop both — the real per-user config is copied in at boot (see copy_runtime_config in
 # openclaw_start), and only state/openclaw.sqlite + extensions/ need to ship.
-RUN runuser -u node -- env HOME=/home/node openclaw plugins install /opt/openclaw-plugins/openclaw-mem0 \
+#
+# `--force` is required since 2026.8.x: installing from a local path is outside ClawHub review, so
+# the installer now stops with "Install cancelled; rerun with --force after reviewing the source".
+# The source here is the npm tarball we unpacked ourselves a few layers up at the pinned version —
+# reviewed by us, not third-party input — so confirming it non-interactively is the intended path.
+RUN runuser -u node -- env HOME=/home/node openclaw plugins install --force --link /opt/openclaw-plugins/openclaw-mem0 \
     && rm -f /home/node/.openclaw/openclaw.json \
     && rm -rf /home/node/.openclaw/logs
 
@@ -206,6 +230,7 @@ COPY sellerclaw-agent/runtime/commands/fetch_config_bundle         /usr/local/bi
 COPY sellerclaw-agent/runtime/commands/gost_start                  /usr/local/bin/gost_start
 COPY sellerclaw-agent/runtime/commands/openclaw_chrome             /usr/local/bin/openclaw_chrome
 COPY sellerclaw-agent/runtime/commands/kasmvnc_start               /usr/local/bin/kasmvnc_start
+COPY sellerclaw-agent/runtime/commands/openclaw_browser_warm       /usr/local/bin/openclaw_browser_warm
 # Safe archive extraction. Agents must use this instead of `unzip` (see the file_storage skill):
 # it refuses symlinks, path escapes and decompression bombs while unpacking, not just from the
 # zip's (forgeable) table of contents.
@@ -221,6 +246,7 @@ RUN chmod +x \
     /usr/local/bin/gost_start \
     /usr/local/bin/openclaw_chrome \
     /usr/local/bin/kasmvnc_start \
+    /usr/local/bin/openclaw_browser_warm \
     /usr/local/bin/sellerclaw_unzip \
     /usr/local/bin/openclaw_tcp_check
 

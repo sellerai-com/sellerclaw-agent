@@ -262,6 +262,27 @@ describe("messaging.targetResolver", () => {
     expect(messaging.inferTargetChatType({ to: "sellerclaw-ui:group:x" })).toBeUndefined();
   });
 
+  /**
+   * The agent addresses the chat with the shortest string that identifies it — the bare id it
+   * reads out of the address, or the session key it sees in its own context. Both used to be
+   * rejected as ``Unknown target``, costing a model round trip before it guessed the canonical
+   * form, so both are accepted here and normalized before delivery.
+   */
+  it.each([
+    ["a bare chat id", "9ced2cbb-33a8-4284-b021-4eb77e2b6d81"],
+    [
+      "the session key the agent sees",
+      "agent:supervisor:sellerclaw-ui:direct:9ced2cbb-33a8-4284-b021-4eb77e2b6d81",
+    ],
+  ])("accepts %s as a target", (_label, raw) => {
+    expect(messaging.targetResolver.looksLikeId(raw)).toBe(true);
+    expect(messaging.inferTargetChatType({ to: raw })).toBe("direct");
+  });
+
+  it("still rejects a bare id that is not a UUID", () => {
+    expect(messaging.targetResolver.looksLikeId("primenest-wix")).toBe(false);
+  });
+
   it("exposes a hint string so error reports tell the operator the expected shape", () => {
     expect(messaging.targetResolver.hint).toMatch(/sellerclaw-ui:direct:/);
   });

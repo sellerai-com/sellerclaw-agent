@@ -45,7 +45,7 @@ What it creates:
 - volume `sellerclaw-agent-data` mounted at `/data` — the account token and local secrets, which is why an upgrade never asks you to sign in again;
 - `~/.local/bin/sellerclaw-agent` — a thin wrapper around `docker`, plus a copy of the installer under `~/.sellerclaw-agent/`.
 
-OpenClaw's own state directory is deliberately *not* a volume: it ships inside the image, and a stale copy would shadow the plugins and extensions of a newer version. Sessions and memory come back from the cloud state backup on the next start, exactly like a managed agent.
+OpenClaw's own state directory is deliberately *not* a volume: it ships inside the image, and a stale copy would shadow the plugins and extensions of a newer version. Chats live in the SellerClaw database and durable facts in long-term memory, so nothing there needs to survive locally; browser sign-ins are the one exception and come back from the cloud backup on the next start, exactly like a managed agent.
 
 ### Day-to-day commands
 

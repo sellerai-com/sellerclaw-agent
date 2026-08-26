@@ -97,15 +97,19 @@ declare module "openclaw/plugin-sdk/core" {
       ) => boolean | Promise<boolean>;
     }) => void;
     /**
-     * Typed lifecycle hook registration. Present only when the plugin is loaded in "full"
-     * registration mode, hence optional — callers must feature-check before using it.
+     * Typed lifecycle hook registration. Present in the "full", "discovery" and
+     * "tool-discovery" registration modes and absent in metadata-only passes, hence optional —
+     * callers must feature-check before using it. Note the registry it lands in is REPLACED on
+     * every activation pass (see `hook-registration.ts`), so registering once is not enough.
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     on?: (hookName: string, handler: (event: any, ctx?: any) => any, opts?: unknown) => void;
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  export function defineChannelPluginEntry(opts: Record<string, any>): unknown;
+  export function defineChannelPluginEntry(opts: Record<string, any>): {
+    register: (api: OpenClawPluginApi) => void;
+  };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   export function defineSetupPluginEntry(opts: Record<string, any>): unknown;
   /** Runtime returns a rich plugin object; locally we use `any` so tests can narrow. */

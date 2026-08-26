@@ -91,7 +91,28 @@ export const SELLERCLAW_UI_DIRECT_TARGET_RE =
   /^sellerclaw-ui:direct:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 export function looksLikeSellerclawUiTarget(raw: string): boolean {
-  return SELLERCLAW_UI_DIRECT_TARGET_RE.test(raw.trim());
+  return normalizeSellerclawUiTarget(raw) !== null;
+}
+
+/** A chat id on its own — what the agent reads out of an address and often passes back as-is. */
+const BARE_CHAT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The canonical ``sellerclaw-ui:direct:<chat_id>`` address for whatever the agent aimed at.
+ *
+ * The ``message`` tool's ``to`` is free-form, and the agent reliably reaches for the shortest
+ * thing that identifies the chat — the bare id, or the session key it sees in its own context —
+ * rather than the address the resolver wants. Every such call used to die with ``Unknown target
+ * "<uuid>" for sellerclaw-ui``, costing a model round trip before the agent guessed the longer
+ * form. Accepting all three spellings here (and normalizing before delivery, so the webhook still
+ * carries a proper ``chat_id``) turns that class of failure into a no-op.
+ */
+export function normalizeSellerclawUiTarget(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (SELLERCLAW_UI_DIRECT_TARGET_RE.test(trimmed)) return trimmed;
+  if (BARE_CHAT_ID_RE.test(trimmed)) return `sellerclaw-ui:direct:${trimmed}`;
+  return extractTargetFromSessionKey(trimmed);
 }
 
 /**
@@ -130,6 +151,24 @@ type OutboundParams = Record<string, unknown> & {
   account?: ScwUiAccount;
   config?: OpenClawConfig;
 };
+
+/**
+ * The chat an outbound send is aimed at, in the single spelling the rest of the path uses.
+ *
+ * Every outbound entry point goes through here so a new one cannot quietly skip normalization
+ * and reintroduce ``Unknown target`` (or, worse, a turn posted without a ``chat_id``).
+ */
+function resolveOutboundDestination(
+  p: OutboundParams,
+  sendKind: string,
+): { address: string; chatId: string | null } {
+  const raw = resolveSessionKey(p);
+  if (!raw) {
+    throw new Error(`sellerclaw-ui: missing session key on outbound ${sendKind} params`);
+  }
+  const address = normalizeSellerclawUiTarget(raw) ?? raw;
+  return { address, chatId: extractChatIdFromAddress(address) };
+}
 
 /** One outbound part with the ``part_id`` filled in by {@link deliverOutboundAsParts}. */
 type OutboundPartInput =
@@ -194,6 +233,13 @@ function buildSellerclawUiRuntimeSnapshot(account: ScwUiAccount): {
  * Deliver a one-shot outbound message (``message`` tool / proactive / handoff) as a
  * self-contained parts turn: start → part(s) → end. Each outbound send is its own
  * assistant message, so async completions never collide with a streamed turn.
+ *
+ * The reasoning the owner watched while this answer was written lives in the dispatch's own
+ * message, which stays empty when the agent answers with the ``message`` tool. Reuniting the two
+ * is the cloud's job: it drops that empty message at ``turn/end`` and hands the blocks to this
+ * exchange's answer, i.e. the last message the turn produced. Doing it here instead — delivering
+ * into the dispatch's message — would pin the panel to the *first* send of a turn, which on a
+ * multi-message turn is an interim note rather than the answer.
  */
 async function deliverOutboundAsParts(
   account: ScwUiAccount,
@@ -229,12 +275,13 @@ export async function deliverTextToChat(
   sessionKey: string,
   text: string,
 ): Promise<{ messageId: string }> {
-  // A session key carries the address as a suffix (``agent:<id>:sellerclaw-ui:direct:<uuid>``),
-  // so recover the address first — the anchored extractor only matches a bare one.
-  const address = extractTargetFromSessionKey(sessionKey) ?? sessionKey;
+  // Fold the caller's session key down to the chat's address, the same key ordinary ``message``
+  // sends queue under: queued under the longer form this rescue would sit in a queue of its own
+  // and could interleave with the very stream it is meant to follow.
+  const address = normalizeSellerclawUiTarget(sessionKey) ?? sessionKey;
   const chatId = extractChatIdFromAddress(address);
-  return enqueueSend(sessionKey, () =>
-    deliverOutboundAsParts(account, sessionKey, chatId, [{ kind: "text", text }]),
+  return enqueueSend(address, () =>
+    deliverOutboundAsParts(account, address, chatId, [{ kind: "text", text }]),
   );
 }
 
@@ -244,17 +291,13 @@ async function outboundSendText(params: unknown): Promise<{ messageId: string }>
     return { messageId: "silent" };
   }
   const account = resolveOutboundAccount(p);
-  const sessionKey = resolveSessionKey(p);
-  if (!sessionKey) {
-    throw new Error("sellerclaw-ui: missing session key on outbound sendText params");
-  }
+  const { address, chatId } = resolveOutboundDestination(p, "sendText");
   const text = typeof p.text === "string" ? p.text : "";
   if (!text.trim()) {
     return { messageId: "empty" };
   }
-  const chatId = extractChatIdFromAddress(sessionKey);
-  return enqueueSend(sessionKey, () =>
-    deliverOutboundAsParts(account, sessionKey, chatId, [{ kind: "text", text }]),
+  return enqueueSend(address, () =>
+    deliverOutboundAsParts(account, address, chatId, [{ kind: "text", text }]),
   );
 }
 
@@ -284,13 +327,9 @@ async function resolveDeliverableImage(
 async function outboundSendImage(params: unknown): Promise<{ messageId: string }> {
   const p = params as OutboundParams;
   const account = resolveOutboundAccount(p);
-  const sessionKey = resolveSessionKey(p);
-  if (!sessionKey) {
-    throw new Error("sellerclaw-ui: missing session key on outbound sendImage params");
-  }
+  const { address, chatId } = resolveOutboundDestination(p, "sendImage");
   const { url: imageUrl, contentType } = await resolveDeliverableImage(account, p);
   const caption = typeof p.text === "string" ? p.text : "";
-  const chatId = extractChatIdFromAddress(sessionKey);
   const parts: OutboundPartInput[] = [];
   if (caption.trim()) {
     parts.push({ kind: "text", text: caption });
@@ -300,7 +339,7 @@ async function outboundSendImage(params: unknown): Promise<{ messageId: string }
     url: imageUrl,
     ...(contentType ? { content_type: contentType } : {}),
   });
-  return enqueueSend(sessionKey, () => deliverOutboundAsParts(account, sessionKey, chatId, parts));
+  return enqueueSend(address, () => deliverOutboundAsParts(account, address, chatId, parts));
 }
 
 /**
@@ -325,17 +364,13 @@ async function outboundSendMedia(params: unknown): Promise<{ messageId: string }
     return { messageId: "silent" };
   }
   const account = resolveOutboundAccount(p);
-  const sessionKey = resolveSessionKey(p);
-  if (!sessionKey) {
-    throw new Error("sellerclaw-ui: missing session key on outbound sendMedia params");
-  }
+  const { address, chatId } = resolveOutboundDestination(p, "sendMedia");
   const rawMediaUrl = typeof p.mediaUrl === "string" ? p.mediaUrl.trim() : "";
   if (!rawMediaUrl) {
     throw new Error("sellerclaw-ui: mediaUrl is required for sendMedia");
   }
   const caption = typeof p.text === "string" ? p.text : "";
   const { url, contentType } = await resolveOutboundMediaUrl(account, rawMediaUrl);
-  const chatId = extractChatIdFromAddress(sessionKey);
   const parts: OutboundPartInput[] = [];
   if (caption.trim()) {
     parts.push({ kind: "text", text: caption });
@@ -345,7 +380,7 @@ async function outboundSendMedia(params: unknown): Promise<{ messageId: string }
     url,
     ...(contentType ? { content_type: contentType } : {}),
   });
-  return enqueueSend(sessionKey, () => deliverOutboundAsParts(account, sessionKey, chatId, parts));
+  return enqueueSend(address, () => deliverOutboundAsParts(account, address, chatId, parts));
 }
 
 const sellerclawUiChatPlugin = createChatChannelPlugin<ScwUiAccount>({
@@ -420,7 +455,7 @@ export const sellerclawUiChannelPlugin = {
     inferTargetChatType: ({ to }: { to: string }): "direct" | undefined =>
       looksLikeSellerclawUiTarget(to) ? "direct" : undefined,
     targetResolver: {
-      hint: "Expected sellerclaw-ui:direct:<chat_id-uuid>.",
+      hint: "Expected sellerclaw-ui:direct:<chat_id-uuid>, or the bare chat id.",
       looksLikeId: (raw: string) => looksLikeSellerclawUiTarget(raw),
     },
   },
