@@ -4,4 +4,4 @@
 # of the agent's own Python code (those live in pyproject.toml under the
 # `server` extra). Pin exact versions so image rebuilds are reproducible.
 
-sellerclaw-cli==1.7.0b19
+sellerclaw-cli==2.0.0
