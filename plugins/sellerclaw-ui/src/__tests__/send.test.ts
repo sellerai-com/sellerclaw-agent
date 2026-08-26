@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { extractChatIdFromAddress, sellerclawUiChannelPlugin, setPluginConfig } from "../channel.js";
+import {
+  deliverTextToChat,
+  extractChatIdFromAddress,
+  sellerclawUiChannelPlugin,
+  setPluginConfig,
+} from "../channel.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import {
   CHAT_ARCHIVED_ERROR_CODE,
@@ -577,20 +582,58 @@ describe("top-level outbound sendText", () => {
     expect(body.session_key).toBe("sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000");
   });
 
-  it("does not include chat_id when sessionKey is a full session key", async () => {
+  /**
+   * The agent's ``to`` reaches the outbound path verbatim, and it reaches for whatever is
+   * shortest — the bare chat id, or the session key it sees in its own context. Both used to be
+   * refused as ``Unknown target``; now every spelling is folded into the canonical address, so
+   * the turn always carries an explicit ``chat_id`` instead of relying on the cloud to parse it.
+   */
+  it.each([
+    ["a bare chat id", "550e8400-e29b-41d4-a716-446655440000"],
+    [
+      "a full session key",
+      "agent:supervisor:sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
+    ],
+  ])("routes an outbound send addressed by %s to the same chat", async (_label, to) => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     globalThis.fetch = fetchMock;
 
     const plugin = sellerclawUiChannelPlugin as PluginOutbound;
-    await plugin.outbound.sendText({
-      account,
-      sessionKey: "agent:supervisor:sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
-      text: "reply message",
-    });
+    await plugin.outbound.sendText({ account, to, text: "reply message" });
 
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.chat_id).toBeUndefined();
+    for (const call of fetchMock.mock.calls as [string, RequestInit][]) {
+      const body = JSON.parse(call[1].body as string) as Record<string, unknown>;
+      expect(body.chat_id).toBe("550e8400-e29b-41d4-a716-446655440000");
+      expect(body.session_key).toBe(
+        "sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
+      );
+    }
+  });
+
+  /**
+   * The completion rescue (``deliverTextToChat``) is handed a full session key rather than an
+   * address. It must land in the same chat, and — since it shares the send queue with ordinary
+   * ``message`` sends — under the same key, so a rescued answer cannot interleave with the
+   * stream it is meant to follow.
+   */
+  it("routes the completion rescue to the same chat and address as a normal send", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock;
+
+    await deliverTextToChat(
+      account,
+      "agent:supervisor:sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
+      "rescued answer",
+    );
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
+    for (const call of fetchMock.mock.calls as [string, RequestInit][]) {
+      const body = JSON.parse(call[1].body as string) as Record<string, unknown>;
+      expect(body.chat_id).toBe("550e8400-e29b-41d4-a716-446655440000");
+      expect(body.session_key).toBe(
+        "sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
+      );
+    }
   });
 
   it("returns empty for whitespace-only text", async () => {
