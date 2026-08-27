@@ -146,6 +146,81 @@ describe("completion delivery", () => {
     ]);
   });
 
+  it("leaves a live chat turn alone after a silent announce left its token behind", () => {
+    // The staging incident (chat 4148ca42, 2026-08-27). A duplicate completion event woke the
+    // supervisor, which declined to speak: ``agent_end`` ran first and emptied the capture map, the
+    // run's final ``llm_output`` then refilled it with the token, and nothing cleared it again.
+    // Twelve minutes later the owner asked an ordinary question — and the delivery adopted that
+    // leftover as its "raced" answer, replacing the 492 characters the agent had just written with
+    // the word NO_REPLY. The answer was not hidden but destroyed: the chat kept the token.
+    const { hooks, sending } = setup();
+    const fire = (name: string, event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+      for (const handler of hooks.get(name) ?? []) handler(event, ctx);
+    };
+    const ctx = { sessionKey: SESSION_KEY };
+    const liveAnswer = "Да — миска в каталоге: добавлена сегодня из CJ и опубликована в Shopify.";
+
+    fire("agent_end", { runId: ANNOUNCE_RUN_ID, messages: undefined }, ctx);
+    fire("llm_output", { runId: ANNOUNCE_RUN_ID, assistantTexts: ["NO_REPLY"] }, ctx);
+    vi.advanceTimersByTime(12 * 60_000);
+
+    expect(sending({ content: liveAnswer }, ctx)).toBeUndefined();
+  });
+
+  it("cancels the fallback when the raced answer is the silent token, rather than sending it", () => {
+    // Genuinely this run's own text, so the rescue applies — but the token means "deliver nothing".
+    // Substituting it would put an internal sentinel in front of the owner; the outcome the run
+    // asked for is silence.
+    const { hooks, sending } = setup();
+    const fire = (name: string, event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+      for (const handler of hooks.get(name) ?? []) handler(event, ctx);
+    };
+    const ctx = { sessionKey: SESSION_KEY };
+
+    fire("agent_end", { runId: ANNOUNCE_RUN_ID, messages: undefined }, ctx);
+    fire("llm_output", { runId: ANNOUNCE_RUN_ID, assistantTexts: ["NO_REPLY"] }, ctx);
+
+    expect(sending({ content: CHILD_REPORT }, ctx)).toMatchObject({ cancel: true });
+  });
+
+  it("rescues a fresh raced answer even when the delivery names an unrelated run", () => {
+    // ``message_sending`` is an outbound-path hook: nothing promises its context carries the id of
+    // the run whose ``llm_output`` wrote the text. Rejecting on a mismatched id here would veto a
+    // legitimate rescue and hand the owner an empty chat — the failure this module exists to
+    // prevent — so the raced adopt discriminates by capture age alone.
+    const { hooks, sending } = setup();
+    const fire = (name: string, event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+      for (const handler of hooks.get(name) ?? []) handler(event, ctx);
+    };
+    const ctx = { sessionKey: SESSION_KEY };
+
+    fire("agent_end", { runId: ANNOUNCE_RUN_ID, messages: undefined }, ctx);
+    fire("llm_output", { runId: ANNOUNCE_RUN_ID, assistantTexts: [ANSWER] }, ctx);
+
+    expect(
+      sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY, runId: "delivery-run-777" }),
+    ).toEqual({ content: ANSWER });
+  });
+
+  it("never answers a completion run with text an earlier run left behind", () => {
+    // Same map, same chat, different task. The earlier run's report is not this one's answer, and
+    // delivering it would tell the owner a job finished that this run knows nothing about.
+    const { hooks, sending } = setup();
+    const fire = (name: string, event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+      for (const handler of hooks.get(name) ?? []) handler(event, ctx);
+    };
+    const ctx = { sessionKey: SESSION_KEY };
+    const earlierRun =
+      "announce:v1:agent:shopify:subagent:11111111-2222-3333-4444-555555555555:0000aaaa";
+
+    fire("agent_end", { runId: earlierRun, messages: undefined }, ctx);
+    fire("llm_output", { runId: earlierRun, assistantTexts: ["Публикация завершена."] }, ctx);
+    vi.advanceTimersByTime(11_000);
+    fire("agent_end", { runId: ANNOUNCE_RUN_ID, messages: undefined }, ctx);
+
+    expect(sending({ content: CHILD_REPORT }, ctx)).toMatchObject({ cancel: true });
+  });
+
   it("applies the answer only once, so a later delivery is untouched", () => {
     const { answerRun, sending } = setup();
     answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });

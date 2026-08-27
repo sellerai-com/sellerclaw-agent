@@ -83,6 +83,26 @@ const MESSAGED_RUN_TTL_MS = 10 * 60_000;
  */
 const LAST_VISIBLE_TEXT_TTL_MS = 15 * 60_000;
 
+/**
+ * How recently that text must have been captured for a *delivery* to claim it as its own answer.
+ *
+ * The race ``adoptRacedCompletionAnswer`` rescues is a dispatch ordering inside a single run —
+ * ``agent_end`` voided by the harness, the final ``llm_output`` landing a heartbeat later — so the
+ * gap it has to cover is milliseconds. The TTL above is a different measure: it bounds how long a
+ * run's own ``agent_end`` may take to arrive, and fifteen minutes of it is what turned a stale
+ * entry into somebody else's answer. A duplicate announce answered ``NO_REPLY``, its late
+ * ``llm_output`` refilled the map after its own ``agent_end`` had emptied it, and twelve minutes
+ * later the owner asked an ordinary question in the same chat: the delivery adopted the leftover
+ * token and the answer the agent had actually written — 492 characters of it — was replaced by the
+ * word ``NO_REPLY`` on its way out (staging chat 4148ca42, 2026-08-27).
+ *
+ * Age is the only discriminator applied at delivery time: ``message_sending`` is an outbound-path
+ * hook whose context is not promised to name the producing run, so a run-id comparison there could
+ * veto a legitimate rescue. Run ids are compared at ``agent_end`` instead, where they are
+ * comparable — see ``adoptRacedCompletionAnswer``.
+ */
+const RACED_ANSWER_MAX_AGE_MS = 10_000;
+
 /** The silent token: an answer of exactly this means "deliver nothing". */
 const SILENT_REPLY_TOKEN = "NO_REPLY";
 
@@ -123,7 +143,11 @@ const messagedRuns = getSharedState(
  */
 const lastVisibleTexts = getSharedState(
   "completion-delivery:last-visible-texts",
-  () => new Map<string, { text: string; runId: string; completion: boolean; expiresAt: number }>(),
+  () =>
+    new Map<
+      string,
+      { text: string; runId: string; completion: boolean; capturedAt: number; expiresAt: number }
+    >(),
 );
 
 interface LlmOutputEvent {
@@ -188,14 +212,19 @@ function hasMessagedOwner(runId: unknown, sessionKey: string): boolean {
 /** The run's latest visible assistant text and the run it came from, while still applicable. */
 function readLastVisible(
   sessionKey: string,
-): { text: string; runId: string; completion: boolean } | null {
+): { text: string; runId: string; completion: boolean; capturedAt: number } | null {
   const entry = lastVisibleTexts.get(sessionKey);
   if (!entry) return null;
   if (entry.expiresAt <= Date.now()) {
     lastVisibleTexts.delete(sessionKey);
     return null;
   }
-  return { text: entry.text, runId: entry.runId, completion: entry.completion };
+  return {
+    text: entry.text,
+    runId: entry.runId,
+    completion: entry.completion,
+    capturedAt: entry.capturedAt,
+  };
 }
 
 function clearPending(sessionKey: string): void {
@@ -300,6 +329,7 @@ function registerAnswerCapture(api: OpenClawPluginApi): void {
       : [];
     if (texts.length === 0) return undefined;
     const runId = asString(event?.runId);
+    const now = Date.now();
     lastVisibleTexts.set(sessionKey, {
       text: texts.join("\n\n"),
       runId,
@@ -307,7 +337,8 @@ function registerAnswerCapture(api: OpenClawPluginApi): void {
       // covers every announce run the runtime drives. The trigger-text fallback still applies at
       // ``agent_end``, where the messages are.
       completion: runId.startsWith(ANNOUNCE_RUN_ID_PREFIX),
-      expiresAt: Date.now() + LAST_VISIBLE_TEXT_TTL_MS,
+      capturedAt: now,
+      expiresAt: now + LAST_VISIBLE_TEXT_TTL_MS,
     });
     return undefined;
   });
@@ -318,7 +349,14 @@ function registerAnswerCapture(api: OpenClawPluginApi): void {
   api.on?.("agent_end", (event: AgentEndEvent, ctx?: HookContext) => {
     const sessionKey = asString(ctx?.sessionKey);
     if (!sessionKey || !extractTargetFromSessionKey(sessionKey)) return undefined;
-    const answer = readLastVisible(sessionKey)?.text ?? "";
+    const ending = asString(event?.runId ?? ctx?.runId);
+    const seen = readLastVisible(sessionKey);
+    // This run's own text, and nobody else's. A previous run of the same chat can leave an entry
+    // behind — its final ``llm_output`` landing after its own end refills the map that end had just
+    // emptied — and adopting that would answer this run with the last one's words. The id filter is
+    // best-effort (two announce runs are not guaranteed distinguishable ids); the capture-age check
+    // in ``adoptRacedCompletionAnswer`` is what backstops it at delivery time.
+    const answer = seen && (!ending || !seen.runId || seen.runId === ending) ? seen.text : "";
     lastVisibleTexts.delete(sessionKey);
     if (!isCompletionRun(event?.runId ?? ctx?.runId, event?.messages)) return undefined;
     if (hasMessagedOwner(event?.runId ?? ctx?.runId, sessionKey)) {
@@ -357,7 +395,16 @@ function registerAnswerCapture(api: OpenClawPluginApi): void {
  * internal envelope, which is the one thing this module exists to prevent.
  *
  * Restricted to announce runs that never messaged the owner: a normal chat turn's own delivery
- * must pass through untouched.
+ * must pass through untouched. Being an announce run is a property of the *captured* text, though,
+ * not of the delivery reading it — so the text must also be shown to belong to the delivery
+ * claiming it. Capture *age* is what shows that: the race this rescues is milliseconds wide, so
+ * anything older than a few seconds is by definition a leftover from an earlier run of the same
+ * chat. Without that check a live question inherited a twelve-minute-old ``NO_REPLY`` and lost its
+ * own answer — see ``RACED_ANSWER_MAX_AGE_MS``. Deliberately NOT the run id: ``message_sending``
+ * is an outbound-path hook, not a run event, and nothing promises its context names the run whose
+ * ``llm_output`` wrote the text — comparing ids here could reject a perfectly legitimate rescue
+ * and hand the owner an empty chat, the very failure this module exists to prevent. The id check
+ * lives at ``agent_end``, where both sides come from run-scoped events and are comparable.
  */
 function adoptRacedCompletionAnswer(
   api: OpenClawPluginApi,
@@ -365,13 +412,18 @@ function adoptRacedCompletionAnswer(
 ): PendingAnswer | null {
   const seen = readLastVisible(sessionKey);
   if (!seen || !seen.completion || !seen.text) return null;
+  if (Date.now() - seen.capturedAt > RACED_ANSWER_MAX_AGE_MS) return null;
   if (hasMessagedOwner(seen.runId, sessionKey)) return null;
   lastVisibleTexts.delete(sessionKey);
-  rememberAnswer(api, sessionKey, seen.text);
+  // The silent token is a refusal to speak, not something to say. Remembered as empty so the
+  // runtime's fallback is cancelled — the outcome the run asked for — instead of the word itself
+  // being handed to the owner as though it were the answer.
+  const answer = isSilentAnswer(seen.text) ? "" : seen.text;
+  rememberAnswer(api, sessionKey, answer);
   logDelivery(
     api,
     `completion answer captured at delivery time (agent_end had not landed) ` +
-      `session_key=${sessionKey} chars=${seen.text.length}`,
+      `session_key=${sessionKey} chars=${answer.length}`,
   );
   return readPending(sessionKey);
 }
