@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.8.1-beta.2
+ARG OPENCLAW_TAG=2026.9.1-beta.1
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -87,7 +87,7 @@ RUN apt-get update \
 # version OpenClaw picks up here must match the `playwright-core` it depends on itself — keep this ARG
 # in lockstep with the base image when OPENCLAW_TAG moves:
 #   docker run --rm --entrypoint sh ghcr.io/openclaw/openclaw:$OPENCLAW_TAG -c 'grep playwright-core /app/package.json'
-# (openclaw 2026.8.1-beta.2 pins playwright-core 1.62.1 exactly, and browsers come from the base image's
+# (openclaw 2026.9.1-beta.1 pins playwright-core 1.62.1 exactly, and browsers come from the base image's
 # system Chrome — hence PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD.)
 # Unpinned before: `npm install -g playwright` took whatever npm called latest at build time, so the
 # shipped version changed silently the first time the layer cache missed — a rebuild today would jump
@@ -134,7 +134,7 @@ RUN mkdir -p /opt/openclaw-plugins/openclaw-mem0 \
 
 # Repair an incomplete dependency tree in the base image: the bundled Telegram channel loads
 # grammy, whose vendored whatwg@5 requires `tr46`, but that package is missing from
-# ghcr.io/openclaw/openclaw:2026.8.1-beta.2. The channel then dies at load time with
+# ghcr.io/openclaw/openclaw:2026.8.1-beta.2 (and earlier). The channel then dies at load time with
 # `Cannot find module 'tr46'` (ERR_MODULE_NOT_FOUND), so every agent with Telegram enabled
 # silently loses it — OpenClaw's own advice, `openclaw doctor --fix`, cannot help because the
 # runtime never runs doctor. Installed beside grammy so the fix stays scoped to the package
