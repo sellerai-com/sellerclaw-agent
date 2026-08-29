@@ -16,6 +16,7 @@ import structlog
 
 from sellerclaw_agent.bundle.builder import BundleBuilder
 from sellerclaw_agent.bundle.manifest import GenericManifest
+from sellerclaw_agent.cloud.openclaw_forwarder import openclaw_gateway_base_url
 from sellerclaw_agent.cloud.state_backup import write_applied_config_version
 from sellerclaw_agent.server.secrets_store import get_secrets
 
@@ -283,6 +284,13 @@ class SupervisorContainerManager:
     gost_program_name: str = "gost"
     credentials_data_dir: Path | None = None
     openclaw_start_cmd: str = "/usr/local/bin/openclaw_start"
+    # Where THIS process reaches the gateway. Deliberately not ``gateway_host_port``: that
+    # one is the nginx port published to the host, and a request that takes the nginx hop
+    # from loopback carries a forwarded client address OpenClaw cannot attribute, so it is
+    # answered with 403 ``proxy_attribution_required``. The readiness probe read that 403 as
+    # "the listener is not up yet" and reported ``starting`` forever, leaving the owner on
+    # the launch screen while their agent was already serving chat.
+    gateway_internal_base_url: str = "http://127.0.0.1:7789"
 
     def _run_ctl(self, *args: str, timeout: float) -> subprocess.CompletedProcess[str]:
         cmd = ["supervisorctl", "-c", self.supervisord_config, *args]
@@ -598,7 +606,7 @@ class SupervisorContainerManager:
         return "completed", None
 
     def _gateway_ready_url(self) -> str:
-        return f"http://127.0.0.1:{self.gateway_host_port}/ready"
+        return f"{self.gateway_internal_base_url.rstrip('/')}/ready"
 
     def _gateway_is_ready(self, *, timeout: float = 1.5) -> bool:
         """Return True unless gateway ``/ready`` shows the listener is not up yet.
@@ -882,6 +890,7 @@ def create_supervisor_manager(
         program_name=os.environ.get("OPENCLAW_SUPERVISOR_PROGRAM", "openclaw"),
         supervisord_config=os.environ.get("OPENCLAW_SUPERVISOR_CONF", "/etc/supervisor/conf.d/openclaw.conf"),
         gateway_host_port=_env_int("OPENCLAW_PORT_GATEWAY", "7788"),
+        gateway_internal_base_url=openclaw_gateway_base_url(),
         vnc_host_port=_env_int("OPENCLAW_PORT_VNC", "6080"),
         runtime_image_tag=raw_image or None,
         kasm_program_name=os.environ.get("OPENCLAW_SUPERVISOR_KASM_PROGRAM", "kasmvnc"),

@@ -498,7 +498,14 @@ def generate_openclaw_config(
         "gateway": {
             "mode": "local",
             "auth": {"mode": "token", "token": gateway_token},
-            "trustedProxies": ["127.0.0.0/8", "172.16.0.0/12"],
+            # ONLY the local nginx hop (runtime/nginx/openclaw-proxy.conf), and nothing
+            # wider. OpenClaw resolves the client address by walking X-Forwarded-For from
+            # the right and discarding every entry that is itself a trusted proxy: with
+            # the docker bridge range in this list, a caller from the host (172.x) was
+            # discarded as a proxy, left no client to attribute, and every
+            # gateway-authenticated request through nginx came back 403
+            # proxy_attribution_required.
+            "trustedProxies": ["127.0.0.1", "::1"],
             "controlUi": _build_control_ui_config(
                 allowed_origins=allowed_origins,
             ),

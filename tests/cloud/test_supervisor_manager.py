@@ -186,6 +186,33 @@ def test_is_ready_payload(body: str, expected: bool) -> None:
     assert _is_ready_payload(body) is expected
 
 
+def test_ready_probe_bypasses_the_published_nginx_port(tmp_path: Path) -> None:
+    """The readiness probe talks to the gateway directly, never through the nginx hop.
+
+    nginx forwards a client address to OpenClaw, and for a caller inside the container that
+    address is loopback -- which names no client, so the gateway answers 403
+    ``proxy_attribution_required``. The probe read that as "the listener is not up yet", so a
+    running agent reported ``starting`` on every ping and the owner watched an endless
+    "Starting your agent" while the agent was already answering chat.
+    """
+    mgr = _mgr(
+        tmp_path,
+        gateway_host_port=7788,
+        gateway_internal_base_url="http://127.0.0.1:7789",
+    )
+    assert mgr._gateway_ready_url() == "http://127.0.0.1:7789/ready"
+
+    with patch(
+        "sellerclaw_agent.cloud.supervisor_manager.urllib.request.urlopen"
+    ) as urlopen:
+        urlopen.return_value.__enter__.return_value = MagicMock(
+            status=200,
+            read=MagicMock(return_value=b'{"ready": true, "failing": []}'),
+        )
+        assert mgr._gateway_is_ready() is True
+    assert urlopen.call_args.args[0] == "http://127.0.0.1:7789/ready"
+
+
 def test_probe_exited_maps_to_stopped(
     tmp_path: Path,
 ) -> None:
@@ -714,6 +741,7 @@ def test_create_supervisor_manager_uses_env(
     monkeypatch.setenv("OPENCLAW_PORT_GATEWAY", "7789")
     monkeypatch.setenv("OPENCLAW_PORT_VNC", "6081")
     monkeypatch.setenv("OPENCLAW_RUNTIME_IMAGE", "img:tag")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_HTTP_BASE", "http://gw.internal:9999")
     (tmp_path / "b").mkdir()
 
     m = create_supervisor_manager()
@@ -724,6 +752,7 @@ def test_create_supervisor_manager_uses_env(
     assert m.gateway_host_port == 7789
     assert m.vnc_host_port == 6081
     assert m.runtime_image_tag == "img:tag"
+    assert m.gateway_internal_base_url == "http://gw.internal:9999"
 
 
 def test_probe_browser_status_kasm_stopped(
