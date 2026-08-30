@@ -1,8 +1,9 @@
 import {
+  buildChannelOutboundSessionRoute,
   createChannelPluginBase,
   createChatChannelPlugin,
 } from "openclaw/plugin-sdk/core";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { ChannelOutboundSessionRoute, OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 import {
   enqueueSend,
@@ -113,6 +114,21 @@ export function normalizeSellerclawUiTarget(raw: string): string | null {
   if (SELLERCLAW_UI_DIRECT_TARGET_RE.test(trimmed)) return trimmed;
   if (BARE_CHAT_ID_RE.test(trimmed)) return `sellerclaw-ui:direct:${trimmed}`;
   return extractTargetFromSessionKey(trimmed);
+}
+
+/**
+ * The bare chat id behind any outbound target spelling this channel accepts.
+ *
+ * Covers the canonical address, the bare uuid, a full session key — everything
+ * ``normalizeSellerclawUiTarget`` takes — plus the kind-prefixed remnants other layers
+ * produce: ``direct:<uuid>`` when a caller has already stripped the channel prefix, and
+ * ``user:<uuid>`` / ``dm:<uuid>`` as core's generic fallback wrote into stored session routes.
+ */
+export function chatIdFromOutboundTarget(raw: string): string | null {
+  const address = normalizeSellerclawUiTarget(raw);
+  if (address) return extractChatIdFromAddress(address);
+  const stripped = raw.trim().replace(/^(direct|user|dm):/i, "");
+  return BARE_CHAT_ID_RE.test(stripped) ? stripped : null;
 }
 
 /**
@@ -457,6 +473,38 @@ export const sellerclawUiChannelPlugin = {
     targetResolver: {
       hint: "Expected sellerclaw-ui:direct:<chat_id-uuid>, or the bare chat id.",
       looksLikeId: (raw: string) => looksLikeSellerclawUiTarget(raw),
+    },
+    /**
+     * Session route for mirroring an outbound send back into the sending session's
+     * transcript. Without this hook, core's fallback (``resolveFallbackSession``) strips only
+     * the channel prefix from the target and its ``stripKindPrefix`` does not know
+     * ``direct:`` — so ``sellerclaw-ui:direct:<uuid>`` became peer id ``direct:<uuid>`` and
+     * the mirror aimed at ``agent:…:sellerclaw-ui:direct:direct:<uuid>``, a session that does
+     * not exist. Every ``message``-tool send then logged ``failed to mirror outbound delivery
+     * … session rebound`` and never reached the agent's own history: on its next run the agent
+     * had no record of having spoken, which is a straight path to telling the owner the same
+     * thing twice. The peer id here is the bare chat uuid, so the mirror lands in the same
+     * session inbound delivery uses — which is also why ``recipientSessionExact`` is safe.
+     */
+    resolveOutboundSessionRoute: (params: {
+      cfg: OpenClawConfig;
+      agentId: string;
+      accountId?: string | null;
+      target: string;
+    }): ChannelOutboundSessionRoute | null => {
+      const chatId = chatIdFromOutboundTarget(params.target)?.toLowerCase();
+      if (!chatId) return null;
+      return buildChannelOutboundSessionRoute({
+        cfg: params.cfg,
+        agentId: params.agentId,
+        channel: "sellerclaw-ui",
+        accountId: params.accountId,
+        recipientSessionExact: true,
+        peer: { kind: "direct", id: chatId },
+        chatType: "direct",
+        from: `sellerclaw-ui:${chatId}`,
+        to: `sellerclaw-ui:direct:${chatId}`,
+      });
     },
   },
   status: {

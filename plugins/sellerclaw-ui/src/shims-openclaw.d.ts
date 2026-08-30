@@ -117,6 +117,30 @@ declare module "openclaw/plugin-sdk/core" {
   export function createChannelPluginBase(cfg: unknown): any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   export function createChatChannelPlugin<T = unknown>(cfg: unknown): any;
+
+  /** Session route a channel's outbound target maps to, used to mirror sends into transcripts. */
+  export type ChannelOutboundSessionRoute = {
+    sessionKey: string;
+    baseSessionKey: string;
+    recipientSessionExact?: boolean | "direct-alias" | "delivery-identity";
+    peer: { kind: "direct" | "group" | "channel"; id: string };
+    chatType: "direct" | "group" | "channel";
+    from: string;
+    to: string;
+    threadId?: string | number;
+  };
+  export function buildChannelOutboundSessionRoute(params: {
+    cfg: OpenClawConfig;
+    agentId: string;
+    channel: string;
+    accountId?: string | null;
+    recipientSessionExact?: boolean | "direct-alias" | "delivery-identity";
+    peer: { kind: "direct" | "group" | "channel"; id: string };
+    chatType: "direct" | "group" | "channel";
+    from: string;
+    to: string;
+    threadId?: string | number;
+  }): ChannelOutboundSessionRoute;
 }
 
 declare module "openclaw/plugin-sdk/reply-payload" {

@@ -3,6 +3,36 @@ import { vi } from "vitest";
 vi.mock("openclaw/plugin-sdk/core", () => ({
   createChannelPluginBase: (cfg: unknown) => cfg,
   createChatChannelPlugin: (cfg: unknown) => cfg,
+  // Faithful-enough reproduction of the SDK's route builder for the dm scopes the bundle uses:
+  // the real one delegates key construction to core's ``buildAgentPeerSessionKey``.
+  buildChannelOutboundSessionRoute: (params: {
+    cfg: { session?: { dmScope?: string; mainKey?: string } };
+    agentId: string;
+    channel: string;
+    recipientSessionExact?: boolean | string;
+    peer: { kind: string; id: string };
+    chatType: string;
+    from: string;
+    to: string;
+  }) => {
+    const dmScope = params.cfg.session?.dmScope ?? "main";
+    const peerId = params.peer.id.toLowerCase();
+    const sessionKey =
+      dmScope === "per-channel-peer" && peerId
+        ? `agent:${params.agentId}:${params.channel}:direct:${peerId}`
+        : `agent:${params.agentId}:${params.cfg.session?.mainKey ?? "main"}`;
+    return {
+      sessionKey,
+      baseSessionKey: sessionKey,
+      ...(params.recipientSessionExact !== undefined
+        ? { recipientSessionExact: params.recipientSessionExact }
+        : {}),
+      peer: params.peer,
+      chatType: params.chatType,
+      from: params.from,
+      to: params.to,
+    };
+  },
 }));
 
 /** Shared holder — mirrors SDK slot used by runtime-store.ts (single module instance). */
