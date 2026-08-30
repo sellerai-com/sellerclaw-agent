@@ -193,9 +193,9 @@ def test_generate_openclaw_config_stamps_runtime_version_in_meta(
     """The stamp names the OpenClaw build shipped in this image — it drives OpenClaw's
     downgrade guard, so it is never invented and simply absent when the version is unknown."""
     payload = json.loads(
-        _generate(_supervisor_only(make_assembled_agent), openclaw_version="2026.8.1-beta.2")
+        _generate(_supervisor_only(make_assembled_agent), openclaw_version="2026.9.1-beta.1")
     )
-    assert payload["meta"] == {"lastTouchedVersion": "2026.8.1-beta.2"}
+    assert payload["meta"] == {"lastTouchedVersion": "2026.9.1-beta.1"}
 
 
 @pytest.mark.parametrize(
@@ -585,6 +585,21 @@ def test_generate_openclaw_config_allowed_origins_in_control_ui(
     origins = payload["gateway"]["controlUi"]["allowedOrigins"]
     assert origins == ["https://app.example.com", "https://admin.example.com"]
     assert payload["gateway"]["controlUi"]["dangerouslyAllowHostHeaderOriginFallback"] is False
+
+
+def test_generate_openclaw_config_trusts_only_the_local_nginx_hop(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """Nothing wider than the nginx hop may be listed, or host callers lose their identity.
+
+    OpenClaw resolves the real client by walking ``X-Forwarded-For`` from the right and
+    discarding every entry that is itself a trusted proxy. Listing the docker bridge range
+    discarded the address of a caller coming from the host, leaving no client to attribute,
+    and every gateway-authenticated request through nginx was refused with
+    ``proxy_attribution_required``.
+    """
+    payload = json.loads(_generate(_supervisor_only(make_assembled_agent)))
+    assert payload["gateway"]["trustedProxies"] == ["127.0.0.1", "::1"]
 
 
 def test_generate_openclaw_config_litellm_model_ids_come_from_passed_providers(

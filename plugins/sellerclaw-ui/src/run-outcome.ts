@@ -55,7 +55,7 @@ export interface RunOutcome {
   /**
    * Whether ``agent_end`` carried an error string.
    *
-   * On the deployed runtime (``ghcr.io/openclaw/openclaw:2026.8.1-beta.2``) an abort suppresses
+   * On the deployed runtime (``ghcr.io/openclaw/openclaw:2026.9.1-beta.1``) an abort suppresses
    * this field on purpose — upstream comments it as "abort outranks failure in terminal-outcome
    * precedence" — so `success: false` with no error is the budget-timeout/abort family, while a
    * provider failure (billing, auth, rate limit) arrives with the error set. Older runtimes set

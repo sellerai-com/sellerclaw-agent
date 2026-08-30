@@ -16,11 +16,21 @@ INBOUND_FORWARD_TIMEOUT = httpx.Timeout(60.0, connect=2.0)
 
 
 def openclaw_gateway_base_url() -> str:
-    """Base URL for OpenClaw HTTP gateway (host port mapped from the runtime container)."""
+    """Base URL every in-container caller must use to reach the OpenClaw gateway.
+
+    This is the gateway's own loopback listener, NOT the nginx port published to the host
+    (``OPENCLAW_PORT_GATEWAY``, 7788). OpenClaw rejects a proxied request whose forwarded
+    client address it cannot attribute to a real client -- HTTP 403
+    ``proxy_attribution_required`` -- and a loopback -> loopback hop has no client to
+    attribute. So anything inside the container talks to the gateway directly and leaves
+    nginx to the traffic that genuinely arrives from outside.
+    """
     explicit = (os.environ.get("OPENCLAW_GATEWAY_HTTP_BASE") or "").strip().rstrip("/")
     if explicit:
         return explicit
-    port = int((os.environ.get("OPENCLAW_PORT_GATEWAY") or "7788").strip() or "7788")
+    port = int(
+        (os.environ.get("OPENCLAW_PORT_GATEWAY_LOCAL") or "7789").strip() or "7789"
+    )
     return f"http://127.0.0.1:{port}"
 
 

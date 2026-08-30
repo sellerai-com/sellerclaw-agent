@@ -1,2 +1,5 @@
 #!/bin/sh
-curl -sf --max-time 2 "http://127.0.0.1:7788/ready" > /dev/null
+# Probe the gateway's own loopback listener, not the nginx port (7788): a request that
+# takes the nginx hop from inside the container carries a forwarded client address
+# OpenClaw cannot attribute, and is answered 403 proxy_attribution_required.
+curl -sf --max-time 2 "${OPENCLAW_GATEWAY_HTTP_BASE:-http://127.0.0.1:7789}/ready" > /dev/null

@@ -1,6 +1,11 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
-import { deliverTextToChat, extractTargetFromSessionKey, resolveSellerclawUiAccount } from "./channel.js";
+import {
+  deliverTextToChat,
+  extractTargetFromSessionKey,
+  normalizeSellerclawUiTarget,
+  resolveSellerclawUiAccount,
+} from "./channel.js";
 import { ANNOUNCE_RUN_ID_PREFIX, isCompletionRun } from "./completion-run.js";
 import { logDelivery, logDeliveryFailure } from "./log.js";
 import { getSharedState } from "./shared-state.js";
@@ -71,7 +76,16 @@ const SELF_DELIVER_AFTER_MS = 5_000;
 /** How long a self-delivered entry lingers, purely to swallow a late runtime delivery. */
 const SUPPRESS_AFTER_SELF_DELIVERY_MS = 30_000;
 
-/** Bound on remembered messaging-tool runs, so a long-lived gateway cannot accumulate them. */
+/**
+ * Bound on remembered messaging-tool runs, so a long-lived gateway cannot accumulate them.
+ *
+ * The TTL is a growth bound, not a validity window: each marker records which run made the
+ * send, and ``hasMessagedOwner`` refuses a marker provably left by a *different* run. Before
+ * that attribution existed, a marker's mere freshness was taken as proof — and a card the
+ * supervisor had messaged from a live chat turn vouched, seven minutes later, for an announce
+ * run that had messaged nobody. The guard stood down and the owner read the Wix specialist's
+ * raw completion envelope (staging chat cc713e8d, 2026-08-30).
+ */
 const MESSAGED_RUN_TTL_MS = 10 * 60_000;
 
 /**
@@ -103,6 +117,15 @@ const LAST_VISIBLE_TEXT_TTL_MS = 15 * 60_000;
  */
 const RACED_ANSWER_MAX_AGE_MS = 10_000;
 
+/**
+ * How long a ``message``-tool send stays recognizable on its way through ``message_sending``.
+ *
+ * ``before_tool_call`` and the outbound hook for the same send are microseconds apart in one
+ * process, so this only has to absorb scheduler jitter. It must stay short: while it is open, a
+ * runtime fallback arriving in the same chat would be waved through as if the agent had sent it.
+ */
+const TOOL_SEND_GRACE_MS = 3_000;
+
 /** The silent token: an answer of exactly this means "deliver nothing". */
 const SILENT_REPLY_TOKEN = "NO_REPLY";
 
@@ -128,10 +151,16 @@ const pendingAnswers = getSharedState(
   () => new Map<string, PendingAnswer>(),
 );
 
-/** Run ids (or session keys, when no run id is available) that already messaged the owner. */
+/**
+ * Runs that already messaged the owner, and which run each marker belongs to.
+ *
+ * Keyed by run id and, as a fallback for hooks whose context names no run, by session key.
+ * The session-scoped entry still records the sending run (``""`` when unknown) so a later run
+ * in the same chat cannot inherit it — see ``hasMessagedOwner``.
+ */
 const messagedRuns = getSharedState(
   "completion-delivery:messaged-runs",
-  () => new Map<string, number>(),
+  () => new Map<string, { expiresAt: number; runId: string }>(),
 );
 
 /**
@@ -148,6 +177,23 @@ const lastVisibleTexts = getSharedState(
       string,
       { text: string; runId: string; completion: boolean; capturedAt: number; expiresAt: number }
     >(),
+);
+
+/**
+ * Sessions with a ``message``-tool send on its way to the outbound hook, by when it was made.
+ *
+ * The guard's business is correcting what the *runtime* delivers; a send the agent made itself
+ * must pass through untouched. The two are indistinguishable inside ``message_sending`` — its
+ * context names no run — except by this: a tool send always crosses ``before_tool_call``
+ * microseconds earlier, and a runtime fallback never does. Without the flag, a pending answer
+ * left by one run could rewrite or cancel the next run's own legitimate message: a cancelled
+ * send is committed as *success*, so the agent would believe it delivered a message the owner
+ * never saw. Consumed one-shot by the first delivery it excuses, keyed by the send's target
+ * session (a cross-chat send is excused in the chat it lands in).
+ */
+const toolSendsInFlight = getSharedState(
+  "completion-delivery:tool-sends-in-flight",
+  () => new Map<string, number>(),
 );
 
 interface LlmOutputEvent {
@@ -191,8 +237,8 @@ function isSilentAnswer(text: string): boolean {
 }
 
 function sweepMessagedRuns(now: number): void {
-  for (const [key, expiresAt] of messagedRuns) {
-    if (expiresAt <= now) messagedRuns.delete(key);
+  for (const [key, marker] of messagedRuns) {
+    if (marker.expiresAt <= now) messagedRuns.delete(key);
   }
 }
 
@@ -203,10 +249,23 @@ function messagedKeys(runId: unknown, sessionKey: string): string[] {
   return keys;
 }
 
+/**
+ * Whether *this* run put a message in front of the owner.
+ *
+ * The run-scoped marker is authoritative. The session-scoped one is a fallback for hooks whose
+ * context named no run — so it vouches only when neither side can be attributed, or when it was
+ * recorded by the very run now asking. A marker provably left by a different run in the same
+ * chat says nothing about this one: honoring it is how a live turn's card message once disarmed
+ * the guard for the announce run that followed, and the owner got the child's raw envelope.
+ */
 function hasMessagedOwner(runId: unknown, sessionKey: string): boolean {
   const now = Date.now();
   sweepMessagedRuns(now);
-  return messagedKeys(runId, sessionKey).some((key) => (messagedRuns.get(key) ?? 0) > now);
+  const asking = asString(runId);
+  if (asking && (messagedRuns.get(`run:${asking}`)?.expiresAt ?? 0) > now) return true;
+  const bySession = messagedRuns.get(`session:${sessionKey}`);
+  if (!bySession || bySession.expiresAt <= now) return false;
+  return !asking || !bySession.runId || bySession.runId === asking;
 }
 
 /** The run's latest visible assistant text and the run it came from, while still applicable. */
@@ -304,11 +363,25 @@ function registerMessagingToolTracker(api: OpenClawPluginApi): void {
     const action = asString(params.action).trim().toLowerCase();
     if (toolName === "message" && action && action !== "send") return undefined;
     const sessionKey = asString(ctx?.sessionKey);
-    if (!sessionKey || !extractTargetFromSessionKey(sessionKey)) return undefined;
-    const expiresAt = Date.now() + MESSAGED_RUN_TTL_MS;
-    for (const key of messagedKeys(event?.runId ?? ctx?.runId, sessionKey)) {
-      messagedRuns.set(key, expiresAt);
+    const ownAddress = sessionKey ? extractTargetFromSessionKey(sessionKey) : null;
+    if (!sessionKey || !ownAddress) return undefined;
+    const run = asString(event?.runId ?? ctx?.runId);
+    const marker = { expiresAt: Date.now() + MESSAGED_RUN_TTL_MS, runId: run };
+    for (const key of messagedKeys(run, sessionKey)) {
+      messagedRuns.set(key, marker);
     }
+    // Flag the send for ``message_sending`` under the session it will be delivered into: the
+    // current one when the tool has no explicit target (the default), the target chat's
+    // otherwise — both agent-prefixed keys share everything but the address. A flag whose
+    // delivery never came through (the send failed before the outbound hook) is swept here,
+    // long after it could excuse anything, so the map cannot grow without bound.
+    const now = Date.now();
+    for (const [key, markedAt] of toolSendsInFlight) {
+      if (now - markedAt > MESSAGED_RUN_TTL_MS) toolSendsInFlight.delete(key);
+    }
+    const targetAddress =
+      normalizeSellerclawUiTarget(asString(params.target ?? params.to)) ?? ownAddress;
+    toolSendsInFlight.set(sessionKey.replace(ownAddress, targetAddress), now);
     return undefined;
   });
 }
@@ -434,6 +507,14 @@ function registerDeliveryRewrite(api: OpenClawPluginApi): void {
     (event: MessageSendingEvent, ctx?: HookContext): MessageSendingResult | undefined => {
       const sessionKey = asString(ctx?.sessionKey);
       if (!sessionKey) return undefined;
+      // The agent's own ``message``-tool send, recognized by the flag its ``before_tool_call``
+      // raised moments ago. It is exactly what it should be — never rewrite or cancel it, and
+      // leave any pending answer in place for the runtime delivery it is actually waiting for.
+      const toolSendMarkedAt = toolSendsInFlight.get(sessionKey);
+      if (toolSendMarkedAt !== undefined) {
+        toolSendsInFlight.delete(sessionKey);
+        if (Date.now() - toolSendMarkedAt <= TOOL_SEND_GRACE_MS) return undefined;
+      }
       const pending = readPending(sessionKey) ?? adoptRacedCompletionAnswer(api, sessionKey);
       if (!pending) return undefined;
       const content = asString(event?.content);
@@ -497,4 +578,5 @@ export function __resetCompletionDeliveryState(): void {
   for (const sessionKey of [...pendingAnswers.keys()]) clearPending(sessionKey);
   messagedRuns.clear();
   lastVisibleTexts.clear();
+  toolSendsInFlight.clear();
 }

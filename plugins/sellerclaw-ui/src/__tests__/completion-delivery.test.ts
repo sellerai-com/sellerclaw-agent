@@ -249,6 +249,103 @@ describe("completion delivery", () => {
     expect(deliverTextToChat).not.toHaveBeenCalled();
   });
 
+  it("does not let an earlier run's message vouch for a completion run that sent nothing", () => {
+    // The staging incident of 2026-08-30 (chat cc713e8d): a live chat turn messaged the task
+    // card, and seven minutes later the wix announce run — which messaged nobody and produced
+    // no visible text — inherited that marker, so the guard stood down and the child's raw
+    // envelope reached the owner. The session-scoped marker must vouch for its own run only.
+    const { toolCall, agentEnd, sending } = setup();
+    const liveRunId = "58ffadc1-0f43-48cd-b3f0-54fcfc96da5a";
+
+    toolCall(
+      {
+        toolName: "message",
+        runId: liveRunId,
+        params: { action: "send", target: `sellerclaw-ui:direct:${CHAT_ID}`, message: "карточка" },
+      },
+      { sessionKey: SESSION_KEY, runId: liveRunId },
+    );
+    // The tool send's own delivery, which the guard must wave through.
+    expect(sending({ content: "карточка" }, { sessionKey: SESSION_KEY })).toBeUndefined();
+    agentEnd({ runId: ANNOUNCE_RUN_ID, messages: [] }, { sessionKey: SESSION_KEY });
+
+    const decision = sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY });
+    expect(decision).toEqual({
+      cancel: true,
+      cancelReason: "completion run produced no owner-facing answer",
+    });
+  });
+
+  it("substitutes the answer even after an earlier run messaged the same chat", () => {
+    const { toolCall, answerRun, sending } = setup();
+
+    toolCall(
+      {
+        toolName: "message",
+        runId: "58ffadc1-0f43-48cd-b3f0-54fcfc96da5a",
+        params: { action: "send", target: `sellerclaw-ui:direct:${CHAT_ID}`, message: "карточка" },
+      },
+      { sessionKey: SESSION_KEY, runId: "58ffadc1-0f43-48cd-b3f0-54fcfc96da5a" },
+    );
+    expect(sending({ content: "карточка" }, { sessionKey: SESSION_KEY })).toBeUndefined();
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });
+
+    expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toEqual({
+      content: ANSWER,
+    });
+  });
+
+  it("never cancels the agent's own tool send while an empty pending is armed", () => {
+    // The trap the in-flight flag exists for: run A ends with nothing to show (arming the
+    // empty suppression), and before the runtime's fallback arrives, run B messages the owner.
+    // B's send must pass untouched — cancelling it would be committed as a *success*, so the
+    // agent would believe it delivered a message the owner never saw — and the pending must
+    // survive B's send to still swallow A's fallback.
+    const { toolCall, agentEnd, sending } = setup();
+
+    agentEnd({ runId: ANNOUNCE_RUN_ID, messages: [] }, { sessionKey: SESSION_KEY });
+    toolCall(
+      {
+        toolName: "message",
+        runId: "announce:v1:agent:woo:subagent:22222222-3333-4444-5555-666666666666:b1",
+        params: { action: "send", message: "WooCommerce опубликован" },
+      },
+      {
+        sessionKey: SESSION_KEY,
+        runId: "announce:v1:agent:woo:subagent:22222222-3333-4444-5555-666666666666:b1",
+      },
+    );
+
+    expect(sending({ content: "WooCommerce опубликован" }, { sessionKey: SESSION_KEY })).toBe(
+      undefined,
+    );
+    expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toEqual({
+      cancel: true,
+      cancelReason: "completion run produced no owner-facing answer",
+    });
+  });
+
+  it("still honors an unattributed session marker, when neither side names a run", () => {
+    // Fallback for hook contexts that carry no run id anywhere: with nothing to compare, the
+    // marker keeps its old meaning — this chat was messaged, leave the delivery alone.
+    const { toolCall, agentEnd, sending } = setup();
+
+    toolCall(
+      {
+        toolName: "message",
+        params: { action: "send", target: `sellerclaw-ui:direct:${CHAT_ID}`, message: ANSWER },
+      },
+      { sessionKey: SESSION_KEY },
+    );
+    expect(sending({ content: ANSWER }, { sessionKey: SESSION_KEY })).toBeUndefined();
+    agentEnd(
+      { messages: [{ role: "user", content: "A background task completed." }] },
+      { sessionKey: SESSION_KEY },
+    );
+
+    expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toBeUndefined();
+  });
+
   it("does not count a non-send message call as having answered the owner", () => {
     const { toolCall, answerRun, sending } = setup();
 

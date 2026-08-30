@@ -288,6 +288,61 @@ describe("messaging.targetResolver", () => {
   });
 });
 
+/**
+ * Mirroring an outbound send back into the sending session's transcript needs the same session
+ * key inbound delivery uses. Core's fallback route builder does not know the ``direct:`` kind
+ * prefix, kept it inside the peer id, and aimed every mirror at
+ * ``agent:…:sellerclaw-ui:direct:direct:<uuid>`` — a session that does not exist. Each
+ * ``message``-tool send then failed to land in the agent's own history (``failed to mirror
+ * outbound delivery … session rebound`` on every send), so later runs had no record of what
+ * was already said.
+ */
+describe("resolveOutboundSessionRoute", () => {
+  type PluginWithSessionRoute = {
+    messaging: {
+      resolveOutboundSessionRoute: (params: {
+        cfg: Record<string, unknown>;
+        agentId: string;
+        accountId?: string | null;
+        target: string;
+      }) => {
+        sessionKey: string;
+        recipientSessionExact?: boolean | string;
+        peer: { kind: string; id: string };
+        chatType: string;
+        to: string;
+      } | null;
+    };
+  };
+  const resolveRoute = (sellerclawUiChannelPlugin as unknown as PluginWithSessionRoute).messaging
+    .resolveOutboundSessionRoute;
+  const CHAT_ID = "9ced2cbb-33a8-4284-b021-4eb77e2b6d81";
+  const routeCfg = { session: { dmScope: "per-channel-peer" } };
+
+  it.each([
+    ["the canonical address", `sellerclaw-ui:direct:${CHAT_ID}`],
+    ["a bare chat id", CHAT_ID],
+    ["the agent's own session key", `agent:supervisor:sellerclaw-ui:direct:${CHAT_ID}`],
+    ["a channel-stripped direct:<uuid> remnant", `direct:${CHAT_ID}`],
+    ["core's generic user:<uuid> form from stored routes", `user:${CHAT_ID}`],
+  ])("maps %s to the inbound session, with the uuid alone as peer id", (_label, target) => {
+    const route = resolveRoute({ cfg: routeCfg, agentId: "supervisor", target });
+    expect(route).not.toBeNull();
+    expect(route?.sessionKey).toBe(`agent:supervisor:sellerclaw-ui:direct:${CHAT_ID}`);
+    expect(route?.peer).toEqual({ kind: "direct", id: CHAT_ID });
+    expect(route?.chatType).toBe("direct");
+    expect(route?.to).toBe(`sellerclaw-ui:direct:${CHAT_ID}`);
+    expect(route?.recipientSessionExact).toBe(true);
+  });
+
+  it("declines targets that carry no chat id, so core skips the mirror instead of guessing", () => {
+    expect(resolveRoute({ cfg: routeCfg, agentId: "supervisor", target: "not-a-chat" })).toBeNull();
+    expect(
+      resolveRoute({ cfg: routeCfg, agentId: "supervisor", target: "telegram:direct:abc" }),
+    ).toBeNull();
+  });
+});
+
 describe("status", () => {
   const status = (sellerclawUiChannelPlugin as PluginWithStatus).status;
 

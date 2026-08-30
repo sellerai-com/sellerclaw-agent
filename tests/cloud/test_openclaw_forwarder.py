@@ -158,7 +158,23 @@ async def test_local_forwarder_abort_raises_on_non_2xx() -> None:
 
 def test_openclaw_gateway_base_url_respects_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCLAW_GATEWAY_HTTP_BASE", raising=False)
-    monkeypatch.setenv("OPENCLAW_PORT_GATEWAY", "8899")
+    monkeypatch.setenv("OPENCLAW_PORT_GATEWAY_LOCAL", "8899")
     assert openclaw_gateway_base_url() == "http://127.0.0.1:8899"
     monkeypatch.setenv("OPENCLAW_GATEWAY_HTTP_BASE", "http://custom:7777")
     assert openclaw_gateway_base_url() == "http://custom:7777"
+
+
+def test_openclaw_gateway_base_url_never_falls_back_to_the_nginx_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The published nginx port answers in-container callers with 403, so it is never a default.
+
+    A request that reaches the gateway through nginx from loopback carries a forwarded client
+    address that is itself loopback -- no client to attribute -- and OpenClaw refuses it with
+    ``proxy_attribution_required``. Falling back to that port made the readiness probe read a
+    healthy agent as "still starting" and pinned the owner on the launch screen.
+    """
+    monkeypatch.delenv("OPENCLAW_GATEWAY_HTTP_BASE", raising=False)
+    monkeypatch.delenv("OPENCLAW_PORT_GATEWAY_LOCAL", raising=False)
+    monkeypatch.setenv("OPENCLAW_PORT_GATEWAY", "7788")
+    assert openclaw_gateway_base_url() == "http://127.0.0.1:7789"
