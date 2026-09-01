@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.9.1-beta.1
+ARG OPENCLAW_TAG=2026.8.1
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -202,7 +202,12 @@ RUN cd /app/dist/extensions && \
 # the installer now stops with "Install cancelled; rerun with --force after reviewing the source".
 # The source here is the npm tarball we unpacked ourselves a few layers up at the pinned version —
 # reviewed by us, not third-party input — so confirming it non-interactively is the intended path.
-RUN runuser -u node -- env HOME=/home/node openclaw plugins install --force --link /opt/openclaw-plugins/openclaw-mem0 \
+#
+# `--accept-capabilities` is required for the same reason: mem0 is a legacy full-trust plugin
+# (`openclaw plugins info` reports "Shape: non-capability", "Capability mode: none"), and 2026.8.x
+# refuses to install one without explicit consent — "requires capability consent … with
+# --accept-capabilities, then retry" — which in a non-interactive build is a hard failure.
+RUN runuser -u node -- env HOME=/home/node openclaw plugins install --force --accept-capabilities --link /opt/openclaw-plugins/openclaw-mem0 \
     && rm -f /home/node/.openclaw/openclaw.json \
     && rm -rf /home/node/.openclaw/logs
 
