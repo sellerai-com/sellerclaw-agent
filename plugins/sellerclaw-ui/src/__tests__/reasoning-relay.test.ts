@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { sellerclawUiChannelPlugin } from "../channel.js";
-import { registerReasoningRelay } from "../reasoning-relay.js";
+import { __resetRelayedThinking, registerReasoningRelay } from "../reasoning-relay.js";
 import type { ScwUiAccount } from "../send.js";
+import { __resetSubagentOrigins } from "../subagent-origins.js";
 
 const CHAT_ID = "48729abf-b759-46bf-8802-6768891edc7e";
 const SESSION_KEY = `agent:supervisor:sellerclaw-ui:direct:${CHAT_ID}`;
@@ -68,10 +69,10 @@ function setup() {
     },
   } as unknown as OpenClawPluginApi;
   registerReasoningRelay(api);
-  const agentEnd = (event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
-    for (const handler of hooks.get("agent_end") ?? []) handler(event, ctx);
+  const fire = (name: string) => (event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+    for (const handler of hooks.get(name) ?? []) handler(event, ctx);
   };
-  return { api, agentEnd };
+  return { api, agentEnd: fire("agent_end"), subagentSpawned: fire("subagent_spawned") };
 }
 
 /** Bodies of every webhook call, paired with the endpoint they hit. */
@@ -90,11 +91,13 @@ describe("reasoning relay", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    __resetRelayedThinking();
     fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     globalThis.fetch = fetchMock as unknown as typeof fetch;
   });
 
   afterEach(() => {
+    __resetRelayedThinking();
     globalThis.fetch = originalFetch;
   });
 
@@ -122,6 +125,8 @@ describe("reasoning relay", () => {
     expect(thoughts.map((c) => c.body.seq)).toEqual([0, 1]);
     expect(thoughts.every((c) => c.body.chat_id === CHAT_ID)).toBe(true);
     expect(thoughts.every((c) => c.body.agent_id === "supervisor")).toBe(true);
+    // No parent: the supervisor's own thinking is the top level of the panel, never a folded block.
+    expect(thoughts.every((c) => c.body.parent_agent_id === undefined)).toBe(true);
     const messageId = thoughts[0].body.message_id as string;
     expect(new Set(thoughts.map((c) => c.body.message_id))).toEqual(new Set([messageId]));
 
@@ -246,6 +251,203 @@ describe("reasoning relay", () => {
 
     const thoughts = calls(fetchMock).filter((c) => c.url.endsWith("/thought"));
     expect(thoughts.map((c) => c.body.text)).toEqual(["Догоняю задачу."]);
+  });
+});
+
+describe("a specialist's reasoning", () => {
+  const CHILD_SESSION_KEY = "agent:marketing:subagent:9d1a1f0c-6b3f-4a5c-9f0e-2b7d5c1e4a88";
+  const originalFetch = globalThis.fetch;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    __resetSubagentOrigins();
+    __resetRelayedThinking();
+    fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    __resetSubagentOrigins();
+    __resetRelayedThinking();
+    globalThis.fetch = originalFetch;
+  });
+
+  /** The runtime's announcement that the supervisor handed work to a specialist. */
+  function spawn(
+    subagentSpawned: (event: Record<string, unknown>, ctx?: Record<string, unknown>) => void,
+    over: {
+      childSessionKey?: string;
+      agentId?: string;
+      requesterSessionKey?: string;
+      to?: string;
+    } = {},
+  ): void {
+    const requesterSessionKey = over.requesterSessionKey ?? SESSION_KEY;
+    subagentSpawned(
+      {
+        childSessionKey: over.childSessionKey ?? CHILD_SESSION_KEY,
+        agentId: over.agentId ?? "marketing",
+        label: "Ad Performance Review",
+        requester: { channel: "sellerclaw-ui", to: over.to ?? `sellerclaw-ui:direct:${CHAT_ID}` },
+      },
+      {
+        runId: "spawn-1",
+        childSessionKey: over.childSessionKey ?? CHILD_SESSION_KEY,
+        requesterSessionKey,
+      },
+    );
+  }
+
+  /** A specialist's own run: an ordinary dispatched turn, not a completion one. */
+  function specialistTranscript(...rounds: Record<string, unknown>[]): unknown[] {
+    return [{ role: "user", content: "Проверь расходы на рекламу за неделю." }, ...rounds];
+  }
+
+  it("lands in the chat that asked for the work, folded under the agent that delegated", async () => {
+    const { agentEnd, subagentSpawned } = setup();
+    spawn(subagentSpawned);
+
+    agentEnd(
+      {
+        runId: "child-run-1",
+        messages: specialistTranscript(
+          assistant("Тяну расходы Google Ads и Meta за 7 дней."),
+          assistant("Ни одна кампания не откручивается — показов ноль."),
+        ),
+      },
+      { sessionKey: CHILD_SESSION_KEY, agentId: "marketing" },
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+    const posted = calls(fetchMock);
+    const thoughts = posted.filter((c) => c.url.endsWith("/internal/openclaw/thought"));
+    expect(thoughts.map((c) => c.body.text)).toEqual([
+      "Тяну расходы Google Ads и Meta за 7 дней.",
+      "Ни одна кампания не откручивается — показов ноль.",
+    ]);
+    expect(thoughts.every((c) => c.body.agent_id === "marketing")).toBe(true);
+    expect(thoughts.every((c) => c.body.parent_agent_id === "supervisor")).toBe(true);
+    expect(thoughts.every((c) => c.body.chat_id === CHAT_ID)).toBe(true);
+    // Addressed with the chat's session: the child's own key encodes no chat at all.
+    expect(thoughts.every((c) => c.body.session_key === SESSION_KEY)).toBe(true);
+  });
+
+  it("says nothing for a specialist run it never saw spawned", async () => {
+    const { agentEnd } = setup();
+
+    agentEnd(
+      { runId: "child-run-1", messages: specialistTranscript(assistant("Работаю.")) },
+      { sessionKey: CHILD_SESSION_KEY, agentId: "marketing" },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("ignores a spawn that belongs to no chat of ours", async () => {
+    const { agentEnd, subagentSpawned } = setup();
+    spawn(subagentSpawned, {
+      requesterSessionKey: "agent:supervisor:cron:daily-scan:run:17",
+      to: "cron:daily-scan",
+    });
+
+    agentEnd(
+      { runId: "child-run-1", messages: specialistTranscript(assistant("Ночная работа.")) },
+      { sessionKey: CHILD_SESSION_KEY, agentId: "marketing" },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a specialist that declined to answer out of the panel", async () => {
+    const { agentEnd, subagentSpawned } = setup();
+    spawn(subagentSpawned);
+
+    agentEnd(
+      {
+        runId: "child-run-1",
+        messages: specialistTranscript({
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Отвечать тут нечего." },
+            { type: "text", text: "NO_REPLY" },
+          ],
+        }),
+      },
+      { sessionKey: CHILD_SESSION_KEY, agentId: "marketing" },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("follows a specialist that delegates further, under the specialist that asked", async () => {
+    const { agentEnd, subagentSpawned } = setup();
+    const GRANDCHILD = "agent:scout:subagent:0f6b2a71-4c19-4a52-9d0a-8f4c2b6e1d33";
+    spawn(subagentSpawned);
+    spawn(subagentSpawned, {
+      childSessionKey: GRANDCHILD,
+      agentId: "scout",
+      requesterSessionKey: CHILD_SESSION_KEY,
+      to: CHILD_SESSION_KEY,
+    });
+
+    agentEnd(
+      { runId: "grandchild-run", messages: specialistTranscript(assistant("Смотрю рынок.")) },
+      { sessionKey: GRANDCHILD, agentId: "scout" },
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    const thoughts = calls(fetchMock).filter((c) => c.url.endsWith("/thought"));
+    expect(thoughts.map((c) => c.body.agent_id)).toEqual(["scout"]);
+    expect(thoughts.map((c) => c.body.parent_agent_id)).toEqual(["marketing"]);
+    expect(thoughts.every((c) => c.body.chat_id === CHAT_ID)).toBe(true);
+  });
+
+  it("does not repeat itself when the same run ends twice", async () => {
+    // `agent_end` fires per finalized attempt, and the transcript of the second holds what the
+    // first already reported.
+    const { agentEnd, subagentSpawned } = setup();
+    spawn(subagentSpawned);
+
+    agentEnd(
+      { runId: "child-run-1", messages: specialistTranscript(assistant("Тяну расходы.")) },
+      { sessionKey: CHILD_SESSION_KEY, agentId: "marketing" },
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    agentEnd(
+      {
+        runId: "child-run-1",
+        messages: specialistTranscript(assistant("Тяну расходы."), assistant("Свожу выводы.")),
+      },
+      { sessionKey: CHILD_SESSION_KEY, agentId: "marketing" },
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+
+    const thoughts = calls(fetchMock).filter((c) => c.url.endsWith("/thought"));
+    expect(thoughts.map((c) => c.body.text)).toEqual(["Тяну расходы.", "Свожу выводы."]);
+  });
+
+  it("reports every turn of a session the supervisor keeps using", async () => {
+    const { agentEnd, subagentSpawned } = setup();
+    spawn(subagentSpawned);
+
+    agentEnd(
+      { runId: "child-run-1", messages: specialistTranscript(assistant("Первый заход.")) },
+      { sessionKey: CHILD_SESSION_KEY, agentId: "marketing" },
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    agentEnd(
+      { runId: "child-run-2", messages: specialistTranscript(assistant("Уточняю по Meta.")) },
+      { sessionKey: CHILD_SESSION_KEY, agentId: "marketing" },
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+
+    const thoughts = calls(fetchMock).filter((c) => c.url.endsWith("/thought"));
+    expect(thoughts.map((c) => c.body.text)).toEqual(["Первый заход.", "Уточняю по Meta."]);
+    // Each run gets its own placeholder turn, so the cloud adopts them independently.
+    expect(new Set(thoughts.map((c) => c.body.message_id)).size).toBe(2);
   });
 });
 

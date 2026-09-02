@@ -109,8 +109,8 @@ def format_session_log_line(*, event: str, payload: dict[str, Any]) -> str:
 
     parts = [TAG, f"agent={agent_id}", f"session={session_key}", f"type={event}"]
 
-    for key in ("stream", "runId", "reason", "phase", "status", "stopReason", "operation"):
-        value = payload.get(key)
+    for key in _PROMOTED_KEYS:
+        value = _promoted_scalar(payload, key)
         if value is not None:
             parts.append(f"{key}={_display_scalar(value)}")
 
@@ -125,6 +125,35 @@ def format_session_log_line(*, event: str, payload: dict[str, Any]) -> str:
         parts.append(f"data={_truncate(json.dumps(payload, ensure_ascii=False, sort_keys=True))}")
 
     return " ".join(parts)
+
+
+#: Keys lifted into their own ``key=value`` token so they stay greppable in shipped logs.
+#: The four run-lifecycle ones sit a level down, inside ``data``: before they were promoted they
+#: reached the log only inside the truncated ``data=`` dump, so "how did this run end" survived
+#: only when the JSON happened to fit under the limit — and the case that matters most, a run
+#: that stopped at a tool call, is exactly the one whose payload is long.
+_PROMOTED_KEYS: Final[tuple[str, ...]] = (
+    "stream",
+    "runId",
+    "reason",
+    "phase",
+    "status",
+    "stopReason",
+    "operation",
+    "aborted",
+    "livenessState",
+)
+
+
+def _promoted_scalar(payload: dict[str, Any], key: str) -> Any:
+    """First non-null value for ``key``, top level winning over the nested ``data`` block."""
+    for source in (payload, payload.get("data")):
+        if not isinstance(source, dict):
+            continue
+        value = source.get(key)
+        if value is not None:
+            return value
+    return None
 
 
 def _first_str(payload: dict[str, Any], *keys: str) -> str | None:
