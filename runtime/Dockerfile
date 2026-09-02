@@ -240,6 +240,10 @@ COPY sellerclaw-agent/runtime/commands/openclaw_browser_warm       /usr/local/bi
 # it refuses symlinks, path escapes and decompression bombs while unpacking, not just from the
 # zip's (forgeable) table of contents.
 COPY sellerclaw-agent/runtime/commands/sellerclaw_unzip            /usr/local/bin/sellerclaw_unzip
+# Reads a session message in full from the local transcript. `sessions_history` truncates every
+# message at 4000 chars with no way to ask for the rest, which silently eats the tail of any
+# subagent report longer than that (see the delegation skill).
+COPY sellerclaw-agent/runtime/commands/sellerclaw_read_message     /usr/local/bin/sellerclaw_read_message
 COPY sellerclaw-agent/runtime/nginx/openclaw-proxy.conf            /etc/nginx/openclaw-proxy.conf
 COPY sellerclaw-agent/runtime/healthchecks/openclaw_tcp_check      /usr/local/bin/openclaw_tcp_check
 COPY sellerclaw-agent/runtime/supervisord.conf                     /etc/supervisor/conf.d/openclaw.conf
@@ -253,6 +257,7 @@ RUN chmod +x \
     /usr/local/bin/kasmvnc_start \
     /usr/local/bin/openclaw_browser_warm \
     /usr/local/bin/sellerclaw_unzip \
+    /usr/local/bin/sellerclaw_read_message \
     /usr/local/bin/openclaw_tcp_check
 
 EXPOSE 7788 6080 6081 8001
