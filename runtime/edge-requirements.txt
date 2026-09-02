@@ -4,11 +4,4 @@
 # of the agent's own Python code (those live in pyproject.toml under the
 # `server` extra). Pin exact versions so image rebuilds are reproducible.
 
-sellerclaw-cli==2.2.0
-
-# Transitive pin, not a CLI of its own. typer 0.27.2 (2026-08-27) moved `Abort` out of its vendored
-# `typer._click.exceptions`, which the published sellerclaw-cli 2.1.0 references at import time — so
-# a fresh install of the unchanged pin crashed on `sellerclaw --version` and failed this build step.
-# sellerclaw-cli resolves it defensively and caps typer <0.28 from its next release; drop this line
-# once SELLERCLAW_CLI_VERSION is >= 2.1.1.
-typer==0.27.0
+sellerclaw-cli==2.3.0

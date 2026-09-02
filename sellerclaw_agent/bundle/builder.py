@@ -233,8 +233,9 @@ def _build_provider_models(
             "name": m.name,
             "input": list(m.input),
         }
-        # Optional sizing/reasoning keys flow through only when the manifest set them
-        # (frontier model only); otherwise OpenClaw applies its own defaults.
+        # Optional sizing/reasoning keys flow through only when the manifest set them (sizing is
+        # frontier-only; the reasoning flag also reaches the subagents' group at the higher effort
+        # levels); otherwise OpenClaw applies its own defaults.
         if m.reasoning is not None:
             entry["reasoning"] = m.reasoning
         if m.context_window is not None:

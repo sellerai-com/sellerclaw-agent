@@ -145,6 +145,48 @@ def test_long_summary_is_truncated() -> None:
     assert len(line) < 500
 
 
+def test_run_end_promotes_how_the_run_finished() -> None:
+    """A lifecycle frame keeps ``phase``/``stopReason`` one level down, inside ``data``.
+
+    Shape taken from a real announce run (staging chat c7ca1f27): the report reached the owner
+    and the run then ended at the ``message`` tool call rather than taking another turn. That
+    verdict used to survive only inside the truncated ``data=`` dump, which is why it could not
+    be counted across runs.
+    """
+    line = format_session_log_line(
+        event="agent",
+        payload={
+            "sessionKey": "agent:supervisor:sellerclaw-ui:direct:c7ca1f27",
+            "agentId": "supervisor",
+            "stream": "lifecycle",
+            "runId": "announce:v1:agent:scout:subagent:2244d26d",
+            "data": {
+                "aborted": False,
+                "livenessState": "working",
+                "phase": "end",
+                "stopReason": "toolUse",
+                "startedAt": 1788336975554,
+            },
+        },
+    )
+
+    fields = _fields(line)
+    assert fields["phase"] == "end"
+    assert fields["stopReason"] == "toolUse"
+    assert fields["aborted"] == "false"
+    assert fields["livenessState"] == "working"
+    assert fields["runId"] == "announce:v1:agent:scout:subagent:2244d26d"
+
+
+def test_a_top_level_key_wins_over_the_same_key_nested() -> None:
+    line = format_session_log_line(
+        event="session.tool",
+        payload={"sessionKey": "s1", "status": "running", "data": {"status": "queued"}},
+    )
+
+    assert _fields(line)["status"] == "running"
+
+
 def test_only_mirrored_event_families_produce_lines() -> None:
     assert session_log_lines(_event("session.message", {"sessionKey": "s1"}))
     assert session_log_lines(_event("agent", {"sessionKey": "s1"}))

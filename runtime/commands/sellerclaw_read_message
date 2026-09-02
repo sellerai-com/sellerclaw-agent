@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Read a session message in full, past the history reader's truncation.
+
+`sessions_history` cuts every single message at 4000 characters and appends `…(truncated)…`.
+No parameter raises that cap and no parameter fetches the remainder, so a subagent report longer
+than ~4 KB reaches its requester with the tail missing — and the tail is where the conclusions are.
+One live ad review lost its entire recommendations section this way and the supervisor spent four
+minutes re-running the specialist's own commands to rebuild what it had already been sent.
+
+The full text was never lost: OpenClaw writes every message to a per-agent SQLite transcript on
+this machine. This reads that transcript directly, read-only, and prints the message whole.
+
+Usage:
+  sellerclaw_read_message <session-key>              # newest assistant message, in full
+  sellerclaw_read_message <session-key> --seq 37     # one specific message
+  sellerclaw_read_message <session-key> --list       # what the transcript holds
+
+The session key is the one `sessions_history` took, e.g.
+`agent:marketing:subagent:5247cb5c-2b3c-400c-ae49-e4cc748138f7`.
+
+Prints the message text to stdout and nothing else, so it pipes and redirects cleanly. Exits
+non-zero with a one-line reason if the session or message cannot be found.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import sys
+from pathlib import Path
+from typing import Any
+
+#: Agent ids name a directory under the state root — keep them to a charset that cannot escape it.
+_SAFE_AGENT_ID = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+#: `agent:<agentId>:<kind>:<id>` — the shape every session key the agent tools hand out follows.
+_SESSION_KEY = re.compile(r"\Aagent:(?P<agent_id>[^:]+):")
+_ROLE_KEYS = ("role", "type")
+
+
+class ReadFailed(Exception):
+    """The transcript, session or message could not be read. Carries the owner-facing reason."""
+
+
+def _fail(reason: str) -> None:
+    print(f"sellerclaw_read_message: {reason}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def state_root() -> Path:
+    """Where OpenClaw keeps its state on this machine.
+
+    Derived from ``OPENCLAW_CONFIG_PATH`` (the config file sits at the root) so a relocated state
+    directory is followed rather than guessed; falls back to the stock ``~/.openclaw``.
+    """
+    configured = os.environ.get("OPENCLAW_CONFIG_PATH", "").strip()
+    if configured:
+        return Path(configured).expanduser().parent
+    return Path.home() / ".openclaw"
+
+
+def agent_id_from_session_key(session_key: str) -> str:
+    """The agent whose transcript holds this session — each agent has its own database."""
+    match = _SESSION_KEY.match(session_key.strip())
+    if match is None:
+        raise ReadFailed(
+            f"not a session key: {session_key!r} (expected 'agent:<agent-id>:<kind>:<id>')"
+        )
+    agent_id = match.group("agent_id")
+    if not _SAFE_AGENT_ID.match(agent_id):
+        raise ReadFailed(f"refusing suspicious agent id in session key: {agent_id!r}")
+    return agent_id
+
+
+def transcript_path(session_key: str, *, root: Path | None = None) -> Path:
+    base = root if root is not None else state_root()
+    agent_id = agent_id_from_session_key(session_key)
+    path = base / "agents" / agent_id / "agent" / "openclaw-agent.sqlite"
+    if not path.is_file():
+        raise ReadFailed(f"no transcript for agent {agent_id!r} at {path}")
+    return path
+
+
+def _connect(path: Path) -> sqlite3.Connection:
+    """Open the live database read-only — the agent it belongs to may be mid-write."""
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+
+
+def resolve_session_id(conn: sqlite3.Connection, session_key: str) -> str:
+    row = conn.execute(
+        "select current_session_id from session_nodes where session_key = ?", (session_key,)
+    ).fetchone()
+    if row is None or not row[0]:
+        raise ReadFailed(f"no session {session_key!r} in this agent's transcript")
+    return str(row[0])
+
+
+def message_text(event: dict[str, Any]) -> str:
+    """The readable text of one transcript event, joining multi-block content."""
+    content = (event.get("message") or {}).get("content", event.get("content"))
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [b.get("text") for b in content if isinstance(b, dict)]
+        return "\n".join(p for p in parts if isinstance(p, str))
+    return ""
+
+
+def message_role(event: dict[str, Any]) -> str:
+    message = event.get("message")
+    if isinstance(message, dict) and isinstance(message.get("role"), str):
+        return message["role"]
+    for key in _ROLE_KEYS:
+        value = event.get(key)
+        if isinstance(value, str):
+            return value
+    return "?"
+
+
+def read_events(conn: sqlite3.Connection, session_id: str) -> list[tuple[int, dict[str, Any]]]:
+    rows = conn.execute(
+        "select seq, event_json from transcript_events where session_id = ? order by seq",
+        (session_id,),
+    ).fetchall()
+    events: list[tuple[int, dict[str, Any]]] = []
+    for seq, raw in rows:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            events.append((int(seq), parsed))
+    return events
+
+
+def pick(
+    events: list[tuple[int, dict[str, Any]]], *, seq: int | None
+) -> tuple[int, dict[str, Any]]:
+    """The requested message, or — with no `--seq` — the newest assistant one (the report)."""
+    if seq is not None:
+        for found_seq, event in events:
+            if found_seq == seq:
+                return found_seq, event
+        raise ReadFailed(f"no message with seq {seq} in this session")
+    for found_seq, event in reversed(events):
+        if message_role(event) == "assistant" and message_text(event).strip():
+            return found_seq, event
+    raise ReadFailed("this session has no assistant message with text")
+
+
+def render_listing(events: list[tuple[int, dict[str, Any]]]) -> str:
+    lines = [f"{'seq':>5}  {'role':<12}  chars"]
+    for seq, event in events:
+        lines.append(f"{seq:>5}  {message_role(event):<12}  {len(message_text(event))}")
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> None:
+    if not argv or argv[0] in {"-h", "--help"}:
+        print(__doc__)
+        raise SystemExit(0 if argv else 2)
+
+    session_key = argv[0]
+    rest = argv[1:]
+    listing = "--list" in rest
+    seq: int | None = None
+    if "--seq" in rest:
+        index = rest.index("--seq")
+        if index + 1 >= len(rest):
+            _fail("--seq needs a number")
+        try:
+            seq = int(rest[index + 1])
+        except ValueError:
+            _fail(f"--seq needs a number, got {rest[index + 1]!r}")
+
+    try:
+        path = transcript_path(session_key)
+        conn = _connect(path)
+        try:
+            session_id = resolve_session_id(conn, session_key)
+            events = read_events(conn, session_id)
+        finally:
+            conn.close()
+        if listing:
+            print(render_listing(events))
+            return
+        _, event = pick(events, seq=seq)
+    except ReadFailed as exc:
+        _fail(str(exc))
+    except sqlite3.Error as exc:
+        _fail(f"could not read the transcript: {exc}")
+    else:
+        print(message_text(event))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

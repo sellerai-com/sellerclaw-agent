@@ -8,6 +8,8 @@ import {
 import { isCompletionRun, isSilentRun, lastUserMessageIndex } from "./completion-run.js";
 import { logError, logInfo, logWarn } from "./log.js";
 import { postThought, postTurnEnd, postTurnStart } from "./send.js";
+import { getSharedState } from "./shared-state.js";
+import { lookupSubagentOrigin, rememberSubagentOrigin } from "./subagent-origins.js";
 
 /**
  * Reports the thinking of runs this plugin does not dispatch, so the owner's "Thought" panel is
@@ -29,6 +31,13 @@ import { postThought, postTurnEnd, postTurnStart } from "./send.js";
  * treats such a turn as a release placeholder and hands its reasoning to the answer of this
  * exchange — the message the `message` tool published moments earlier — or parks it for the
  * answer still being composed. Nothing here needs to know which message that is.
+ *
+ * The same hook carries the other half of a delegated answer: the **specialist's** own thinking.
+ * Its run happens in a session that encodes no chat, so it used to be dropped here for want of an
+ * address; `subagent_spawned` supplies that address (see `subagent-origins.ts`), and the blocks go
+ * out marked with the specialist as their author and the agent that delegated as their parent —
+ * which is what folds them into one named block in the owner's panel instead of scattering them
+ * among the supervisor's own thoughts.
  */
 
 /** One thought item's size cap, mirroring the inbound relay's flush threshold. */
@@ -81,6 +90,60 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/**
+ * What a run has already reported, so a second `agent_end` for it cannot say it twice.
+ *
+ * The hook fires per finalized *attempt*, not per run: a turn that is retried, or sent back for
+ * one more model pass, ends more than once, and each time the transcript holds everything since
+ * the trigger — including the thinking already relayed. Without this the owner reads the same
+ * paragraph two and three times over. Keyed by run: two different runs saying the same sentence
+ * are two real thoughts, and both belong in the panel.
+ */
+const RELAYED_TTL_MS = 2 * 60 * 60 * 1000;
+const MAX_RELAYED_RUNS = 100;
+
+/**
+ * Blocks remembered per run. A run reports at most `MAX_THOUGHT_BLOCKS` per attempt, so this
+ * covers a heavily retried one and still cannot grow with the number of attempts.
+ */
+const MAX_RELAYED_TEXTS_PER_RUN = 500;
+
+const relayedByRun = getSharedState(
+  "reasoning-relay:relayed-by-run",
+  () => new Map<string, { texts: Set<string>; at: number }>(),
+);
+
+/** The blocks of this run not reported yet, remembering them as reported. */
+function unreportedTexts(runKey: string, texts: string[], now: number = Date.now()): string[] {
+  if (!runKey) return texts;
+  for (const [key, entry] of relayedByRun) {
+    if (now - entry.at > RELAYED_TTL_MS) relayedByRun.delete(key);
+  }
+  while (relayedByRun.size > MAX_RELAYED_RUNS) {
+    const oldest = relayedByRun.keys().next();
+    if (oldest.done) break;
+    relayedByRun.delete(oldest.value);
+  }
+  const entry = relayedByRun.get(runKey) ?? { texts: new Set<string>(), at: now };
+  const fresh = texts.filter((text) => !entry.texts.has(text));
+  for (const text of fresh) entry.texts.add(text);
+  while (entry.texts.size > MAX_RELAYED_TEXTS_PER_RUN) {
+    const oldest = entry.texts.values().next();
+    if (oldest.done) break;
+    entry.texts.delete(oldest.value);
+  }
+  entry.at = now;
+  // Re-insert so the eviction above drops the runs that went quiet, not the busiest one.
+  relayedByRun.delete(runKey);
+  relayedByRun.set(runKey, entry);
+  return fresh;
+}
+
+/** Test-only: forget what has been reported. */
+export function __resetRelayedThinking(): void {
+  relayedByRun.clear();
+}
+
 interface AgentEndEvent {
   runId?: unknown;
   messages?: unknown;
@@ -90,6 +153,18 @@ interface HookContext {
   sessionKey?: unknown;
   runId?: unknown;
   agentId?: unknown;
+  /** `subagent_spawned` only: the session the specialist was given. */
+  childSessionKey?: unknown;
+  /** `subagent_spawned` only: the session that asked for the work. */
+  requesterSessionKey?: unknown;
+}
+
+/** `subagent_spawned`: the runtime's announcement that a specialist has been given a session. */
+interface SubagentSpawnedEvent {
+  childSessionKey?: unknown;
+  /** The specialist the work went to. */
+  agentId?: unknown;
+  requester?: { to?: unknown } | null;
 }
 
 /** Post one run's thinking and close the empty turn that carries it. */
@@ -98,9 +173,11 @@ async function relayRunThinking(params: {
   sessionKey: string;
   chatId: string | null;
   agentId: string;
+  /** Set for a specialist's run: the agent it works for, which the panel groups it under. */
+  parentAgentId?: string | null;
   texts: string[];
 }): Promise<void> {
-  const { api, sessionKey, chatId, agentId } = params;
+  const { api, sessionKey, chatId, agentId, parentAgentId } = params;
   let account;
   try {
     account = resolveSellerclawUiAccount(api.config);
@@ -115,6 +192,7 @@ async function relayRunThinking(params: {
       await postThought(account, sessionKey, chatId, {
         message_id: messageId,
         agent_id: agentId,
+        ...(parentAgentId ? { parent_agent_id: parentAgentId } : {}),
         kind: "text",
         text: chunk,
         seq: seq++,
@@ -140,26 +218,56 @@ export function registerReasoningRelay(api: OpenClawPluginApi): void {
     logWarn(api, "sellerclaw-ui: reasoning relay not installed (api.on unavailable)");
     return;
   }
+  // Spawns are what connect a specialist's session to the chat it works for. Cheap and silent:
+  // a spawn with no chat behind it (cron, task runs, another channel) is dropped on the spot.
+  api.on("subagent_spawned", (event: SubagentSpawnedEvent, ctx?: HookContext): undefined => {
+    const childSessionKey = asString(event?.childSessionKey ?? ctx?.childSessionKey);
+    const requesterSessionKey = asString(ctx?.requesterSessionKey);
+    const origin = rememberSubagentOrigin({
+      childSessionKey,
+      agentId: asString(event?.agentId),
+      requesterSessionKey,
+      requesterTarget: asString(event?.requester?.to) || null,
+    });
+    if (origin) {
+      logInfo(
+        api,
+        `sellerclaw-ui: following ${origin.agentId} for chat ${origin.chatId} ` +
+          `(session ${childSessionKey})`,
+      );
+    }
+    return undefined;
+  });
   api.on("agent_end", (event: AgentEndEvent, ctx?: HookContext): undefined => {
     const sessionKey = asString(ctx?.sessionKey);
     const address = sessionKey ? extractTargetFromSessionKey(sessionKey) : null;
-    if (!address) return undefined;
+    // A run in the chat's own session, or a specialist's run we know the chat for. Anything else
+    // (cron, task runs, other channels) has no place in the owner's Thought panel.
+    const origin = address ? null : lookupSubagentOrigin(sessionKey);
+    if (!address && !origin) return undefined;
     const runId = asString(event?.runId ?? ctx?.runId);
     // A live chat turn streams its own reasoning through the dispatch; only the runs we cannot
-    // pass callbacks into are reported from here.
-    if (!isCompletionRun(runId, event?.messages)) return undefined;
+    // pass callbacks into are reported from here. A specialist's run is never one of ours — no
+    // callback reaches it, so every one of its turns is reported.
+    if (address && !isCompletionRun(runId, event?.messages)) return undefined;
     // A run that answered NO_REPLY wrote nothing the owner will read — typically a duplicate
     // completion event waking the supervisor to conclude it has already answered. Its thinking is
     // about the plumbing, and relaying it would put that in the Thought panel next to an answer it
     // had no part in.
     if (isSilentRun(event?.messages)) return undefined;
-    const texts = readRunThinking(event?.messages).slice(-MAX_THOUGHT_BLOCKS);
+    const texts = unreportedTexts(
+      runId ? `${sessionKey}\u0000${runId}` : "",
+      readRunThinking(event?.messages).slice(-MAX_THOUGHT_BLOCKS),
+    );
     if (texts.length === 0) return undefined;
     void relayRunThinking({
       api,
-      sessionKey,
-      chatId: extractChatIdFromAddress(address),
-      agentId: asString(ctx?.agentId) || "supervisor",
+      // Thoughts are addressed with the chat's session either way: a child's session key encodes
+      // no chat, and the cloud routes reasoning by the address it is given.
+      sessionKey: origin ? origin.requesterSessionKey : sessionKey,
+      chatId: origin ? origin.chatId : extractChatIdFromAddress(address as string),
+      agentId: asString(ctx?.agentId) || origin?.agentId || "supervisor",
+      parentAgentId: origin?.parentAgentId ?? null,
       texts,
     }).catch((err: unknown) => {
       logError(
