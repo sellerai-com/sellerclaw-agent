@@ -4,7 +4,15 @@
 declare module "openclaw/plugin-sdk/runtime-store" {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   export type PluginRuntime = any;
-  export function createPluginRuntimeStore(errorMessage: string): {
+  /**
+   * ``pluginId`` matters: that form parks the slot on ``globalThis`` (keyed by the id), so every
+   * evaluation of every module sees the same runtime. The legacy string form keeps the slot in
+   * the calling module instance, which loses the runtime as soon as the module is evaluated
+   * twice — and OpenClaw evaluates plugin modules on every registry pass.
+   */
+  export function createPluginRuntimeStore(
+    options: string | { pluginId: string; errorMessage: string },
+  ): {
     setRuntime(runtime: PluginRuntime): void;
     clearRuntime(): void;
     tryGetRuntime(): PluginRuntime | null;
