@@ -2,14 +2,14 @@ import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 
 /**
- * The plugin runtime, parked where every evaluation of this module can reach it.
+ * The OpenClaw runtime handed to this plugin, in a slot shared by every copy of this module.
  *
- * Passing ``pluginId`` (rather than the legacy bare error string) is what puts the slot on
- * ``globalThis`` instead of inside this module instance. That matters twice over: OpenClaw
- * re-evaluates plugin modules on every registry pass (see ``shared-state.ts``), and the bundled
- * channel entry loads its sidecars through a boundary of its own, so a second evaluation of this
- * file is normal. With a module-local slot, whichever instance received ``setRuntime`` would be
- * the only one able to answer ``getRuntime`` — and the route handlers asking are in another.
+ * Keyed by plugin id on purpose. `createPluginRuntimeStore` has two shapes: a bare error string
+ * gives a MODULE-LOCAL slot, an options object gives a globally named one. Module-local is wrong
+ * for us because this file is evaluated more than once — OpenClaw re-evaluates plugin modules on
+ * every registry pass, and the bundled channel entry pulls its pieces in through a loader
+ * boundary of its own. With a module-local slot the runtime would be set on one copy and read
+ * from another, and the read would throw as if the plugin had never been initialized.
  */
 const store = createPluginRuntimeStore({
   pluginId: "sellerclaw-ui",

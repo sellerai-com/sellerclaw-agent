@@ -123,6 +123,41 @@ declare module "openclaw/plugin-sdk/core" {
      */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     on?: (hookName: string, handler: (event: any, ctx?: any) => any, opts?: unknown) => void;
+    /**
+     * Sequenced agent events, for the runs no callback of ours can reach.
+     *
+     * Unlike a hook, a subscription sees EVERY run in the gateway process — announce/settle runs
+     * and subagents included — and sees it while it happens. `sessionKey` is stamped on
+     * `lifecycle` events unconditionally but stripped from the other streams for channels the
+     * Control UI does not own (ours is one), so a subscriber that needs an address builds it from
+     * the lifecycle events. Optional: absent in metadata-only registration passes.
+     */
+    registerAgentEventSubscription?: AgentEventSubscriptionRegistrar;
+    agent?: {
+      events?: {
+        registerAgentEventSubscription?: AgentEventSubscriptionRegistrar;
+      };
+    };
+  };
+
+  /** Registers one agent-event subscription. */
+  export type AgentEventSubscriptionRegistrar = (subscription: {
+    id: string;
+    description?: string;
+    streams?: string[];
+    handle: (event: AgentEventPayload) => void | Promise<void>;
+  }) => void;
+
+  /** One sequenced agent event as a subscriber receives it. */
+  export type AgentEventPayload = {
+    runId: string;
+    seq: number;
+    stream: string;
+    ts: number;
+    data: Record<string, unknown>;
+    sessionKey?: string;
+    sessionId?: string;
+    agentId?: string;
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -223,6 +258,68 @@ declare module "openclaw/plugin-sdk/channel-entry-contract" {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     loadSetupPlugin: (options?: unknown) => any;
   };
+}
+
+declare module "openclaw/plugin-sdk/channel-entry-contract" {
+  import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+
+  /**
+   * Where a bundled entry finds one of its own modules: a specifier resolved against the
+   * entry's ``importMetaUrl``, plus which export to take from it. The point of the
+   * indirection is laziness — OpenClaw imports the referenced module only when it actually
+   * needs that piece, so metadata-only registry passes no longer pull the whole channel in.
+   */
+  export type BundledEntryModuleRef = {
+    specifier: string;
+    exportName?: string;
+  };
+
+  export type BundledChannelEntryContract = {
+    kind: "bundled-channel-entry";
+    id: string;
+    name: string;
+    description: string;
+    register: (api: OpenClawPluginApi) => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    loadChannelPlugin: (options?: unknown) => any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [key: string]: any;
+  };
+
+  export type BundledChannelSetupEntryContract = {
+    kind: "bundled-channel-setup-entry";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    loadSetupPlugin: (options?: unknown) => any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [key: string]: any;
+  };
+
+  export function defineBundledChannelEntry(opts: {
+    id: string;
+    name: string;
+    description: string;
+    importMetaUrl: string;
+    plugin: BundledEntryModuleRef;
+    outbound?: BundledEntryModuleRef;
+    secrets?: BundledEntryModuleRef;
+    runtime?: BundledEntryModuleRef;
+    accountInspect?: BundledEntryModuleRef;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    configSchema?: any;
+    features?: { accountInspect?: boolean };
+    registerCliMetadata?: (api: OpenClawPluginApi) => void;
+    registerFull?: (api: OpenClawPluginApi) => void;
+    registerCapabilities?: (api: OpenClawPluginApi) => void;
+  }): BundledChannelEntryContract;
+
+  export function defineBundledChannelSetupEntry(opts: {
+    importMetaUrl: string;
+    plugin: BundledEntryModuleRef;
+    secrets?: BundledEntryModuleRef;
+    runtime?: BundledEntryModuleRef;
+    registerSetupRuntime?: (api: OpenClawPluginApi) => void;
+    features?: { legacySessionSurfaces?: boolean };
+  }): BundledChannelSetupEntryContract;
 }
 
 declare module "openclaw/plugin-sdk/reply-payload" {

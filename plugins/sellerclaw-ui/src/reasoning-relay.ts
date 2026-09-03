@@ -10,6 +10,7 @@ import { logError, logInfo, logWarn } from "./log.js";
 import { postThought, postTurnEnd, postTurnStart } from "./send.js";
 import { getSharedState } from "./shared-state.js";
 import { lookupSubagentOrigin, rememberSubagentOrigin } from "./subagent-origins.js";
+import { finishStreamedRun, ownsRunReasoning } from "./thinking-stream.js";
 
 /**
  * Reports the thinking of runs this plugin does not dispatch, so the owner's "Thought" panel is
@@ -38,6 +39,14 @@ import { lookupSubagentOrigin, rememberSubagentOrigin } from "./subagent-origins
  * out marked with the specialist as their author and the agent that delegated as their parent —
  * which is what folds them into one named block in the owner's panel instead of scattering them
  * among the supervisor's own thoughts.
+ *
+ * A specialist's thinking normally no longer waits for this hook: `thinking-stream.ts` reports it
+ * as it happens, which is what the owner actually needs while the work is still going. This
+ * module keeps two jobs. It stays the only source for a **completion run** in the chat's own
+ * session, whose thinking has to be judged on the finished transcript — a run whose whole answer
+ * is the silent token contributes nothing the owner reads. And it is the fallback for a specialist
+ * run the live stream never saw, which is what a model that streams no reasoning deltas looks
+ * like. `ownsRunReasoning` is the line between the two; the spawn bookkeeping above serves both.
  */
 
 /** One thought item's size cap, mirroring the inbound relay's flush threshold. */
@@ -246,6 +255,16 @@ export function registerReasoningRelay(api: OpenClawPluginApi): void {
     const origin = address ? null : lookupSubagentOrigin(sessionKey);
     if (!address && !origin) return undefined;
     const runId = asString(event?.runId ?? ctx?.runId);
+    // The live stream owns this run's reasoning (`thinking-stream.ts`): it has been telling it
+    // block by block while the run went, and whatever has not reached the flush threshold is
+    // still buffered there. Reading the same paragraphs out of the transcript would put them in
+    // the panel twice. Closing the run is the one thing still owed — the live path does it on the
+    // terminal lifecycle event, and this is the other order in which it can happen, so hand over
+    // rather than return. `finishStreamedRun` is idempotent; whichever arrives first wins.
+    if (ownsRunReasoning(runId)) {
+      finishStreamedRun(api, runId);
+      return undefined;
+    }
     // A live chat turn streams its own reasoning through the dispatch; only the runs we cannot
     // pass callbacks into are reported from here. A specialist's run is never one of ours — no
     // callback reaches it, so every one of its turns is reported.
