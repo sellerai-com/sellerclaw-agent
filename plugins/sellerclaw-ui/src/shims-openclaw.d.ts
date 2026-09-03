@@ -12,6 +12,17 @@ declare module "openclaw/plugin-sdk/runtime-store" {
   };
 }
 
+declare module "openclaw/plugin-sdk/plugin-runtime" {
+  export function getPluginRuntimeGatewayRequestScope():
+    | {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        context?: { resolveGatewayContext?: () => any } & Record<string, any>;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        resolveGatewayContext?: () => any;
+      }
+    | undefined;
+}
+
 declare module "openclaw/plugin-sdk/channel-inbound" {
   export function dispatchInboundDirectDmWithRuntime(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

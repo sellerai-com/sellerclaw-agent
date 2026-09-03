@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { dispatchInboundDirectDmWithReasoning } from "./inbound-reply-with-reasoning.js";
 import { isReasoningReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { readJsonWebhookBodyOrReject } from "openclaw/plugin-sdk/webhook-ingress";
+import { ensureRouteScopeGatewayResolver } from "./gateway-scope.js";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import {
   abortAgentHarnessRun,
@@ -918,6 +919,9 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
     path: "/api/channels/sellerclaw-ui/inbound",
     auth: "gateway",
     handler: async (req, res) => {
+      // Must run before the turn is dispatched: OpenClaw's route scope has no gateway resolver,
+      // and without it a turn that spawns 2+ subagents can never wake this chat again.
+      ensureRouteScopeGatewayResolver();
       let account: ScwUiAccount;
       try {
         account = resolveSellerclawUiAccount(api.config);
@@ -1024,6 +1028,9 @@ export function registerScheduledRunRoute(api: OpenClawPluginApi): void {
     path: "/api/channels/sellerclaw-ui/scheduled-run",
     auth: "gateway",
     handler: async (req, res) => {
+      // Must run before the turn is dispatched: OpenClaw's route scope has no gateway resolver,
+      // and without it a turn that spawns 2+ subagents can never wake this chat again.
+      ensureRouteScopeGatewayResolver();
       let account: ScwUiAccount;
       try {
         account = resolveSellerclawUiAccount(api.config);
@@ -1218,6 +1225,9 @@ export function registerFeasibilityCheckRoute(api: OpenClawPluginApi): void {
     path: "/api/channels/sellerclaw-ui/feasibility-check",
     auth: "gateway",
     handler: async (req, res) => {
+      // Must run before the turn is dispatched: OpenClaw's route scope has no gateway resolver,
+      // and without it a turn that spawns 2+ subagents can never wake this chat again.
+      ensureRouteScopeGatewayResolver();
       let account: ScwUiAccount;
       try {
         account = resolveSellerclawUiAccount(api.config);
