@@ -14,13 +14,24 @@ import {
   resolveOutboundMediaUrl,
   type ScwUiAccount,
 } from "./send.js";
+import { getSharedState } from "./shared-state.js";
 
 export type { ScwUiAccount };
 
-let _pluginConfig: OpenClawConfig | null = null;
+/**
+ * The config the plugin was registered with, for the outbound paths that get none of their own.
+ *
+ * In the process-wide slot rather than a module variable: this file is loaded twice over. OpenClaw
+ * re-evaluates plugin modules on every registry pass, and the bundled channel entry pulls this
+ * module in through a loader boundary of its own — so the instance that answered
+ * ``setPluginConfig`` need not be the instance the outbound adapter came from.
+ */
+const pluginConfigSlot = getSharedState("channel:plugin-config", () => ({
+  value: null as OpenClawConfig | null,
+}));
 
 export function setPluginConfig(cfg: OpenClawConfig): void {
-  _pluginConfig = cfg;
+  pluginConfigSlot.value = cfg;
 }
 
 function readSellerclawUiSection(cfg: OpenClawConfig): Record<string, unknown> | undefined {
@@ -195,7 +206,7 @@ function resolveOutboundAccount(p: OutboundParams): ScwUiAccount {
   const account =
     p.account ??
     (p.config ? resolveSellerclawUiAccount(p.config) : null) ??
-    (_pluginConfig ? resolveSellerclawUiAccount(_pluginConfig) : null);
+    (pluginConfigSlot.value ? resolveSellerclawUiAccount(pluginConfigSlot.value) : null);
   if (!account) {
     throw new Error("sellerclaw-ui: missing account/config in outbound params");
   }
