@@ -157,7 +157,9 @@ RUN npm install --no-save --no-audit --no-fund --prefix /tmp/tr46-shim "tr46@${T
 #   anthropic, google                         -> back the `anthropic`/`google` providers
 #                                                (model refs anthropic/claude-*, google/veo-*)
 #   document-extract                          -> bundled plugin enabled for the PDF tool
-# (web search is sellerclaw-web-search, an external plugin under /opt/openclaw-plugins.)
+# Our own two plugins (sellerclaw-ui, sellerclaw-web-search) are in the keep list defensively
+# only: they are COPYed into this directory further down, i.e. AFTER this prune runs. The entries
+# cost nothing and stop a future reordering from silently deleting the product's own plugins.
 # whatsapp backs the personal-account WhatsApp channel (Baileys + QR pairing); it activates
 # only when an agent's generated config has channels.whatsapp.enabled. Its baileys /
 # whatsapp-rust-bridge deps live in node_modules (not pruned here), so keeping the extension
@@ -170,6 +172,7 @@ RUN cd /app/dist/extensions && \
     for dir in */; do \
         case "${dir%/}" in \
             browser|telegram|whatsapp|litellm|memory-core|anthropic|google|document-extract) ;; \
+            sellerclaw-ui|sellerclaw-web-search) ;; \
             *) rm -rf "$dir" ;; \
         esac; \
     done
@@ -212,7 +215,20 @@ RUN runuser -u node -- env HOME=/home/node openclaw plugins install --force --ac
     && rm -rf /home/node/.openclaw/logs
 
 # Our own OpenClaw plugins: the SellerClaw web UI chat delivery channel and web search.
-# Files must stay root-owned: OpenClaw blocks config-origin plugins with non-root ownership.
+#
+# Both go into OpenClaw's BUNDLED plugin root (/app/dist/extensions), not /opt/openclaw-plugins:
+# they are parts of the product, not optional extensions, and OpenClaw gates real capabilities on
+# `origin === "bundled"`. The one that bites is `api.session.workflow.scheduleSessionTurn` — for a
+# non-bundled plugin it is a SILENT no-op (returns undefined, no error, no log), and it is the
+# supported way to schedule a turn in a chat session. Also bundled-only: host-owned agent event
+# streams (lifecycle/tool/assistant/error/item/plan), trusted tool policies without a `contracts`
+# declaration, reserved command ownership, `system.notify`, and native Control UI route placement.
+#
+# Ownership is node:node to match the sibling bundled extensions. The "config-origin plugins must
+# be root-owned" rule now applies only to the vendored third-party mem0 above.
+#
+# Keep both OUT of plugins.load.paths (see config_generator): a bundled plugin that is also on a
+# load path is discovered twice under one id and OpenClaw warns about the duplicate.
 #
 # Deliberately placed AFTER the mem0 steps above, not before: these directories are edited on
 # almost every contributor branch, and Docker invalidates every later layer on the first change
@@ -220,8 +236,8 @@ RUN runuser -u node -- env HOME=/home/node openclaw plugins install --force --ac
 # the registry pre-build — ~3 minutes of network + CPU per `make up-dev`, for a plugin that had
 # not changed. Nothing between here and the base runtime depends on these paths, so the cheap,
 # frequently-changing layers belong last.
-COPY sellerclaw-agent/plugins/sellerclaw-ui /opt/openclaw-plugins/sellerclaw-ui
-COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/sellerclaw-web-search
+COPY --chown=node:node sellerclaw-agent/plugins/sellerclaw-ui /app/dist/extensions/sellerclaw-ui
+COPY --chown=node:node sellerclaw-agent/plugins/sellerclaw-web-search /app/dist/extensions/sellerclaw-web-search
 
 # KasmVNC server-wide configuration (HTTP mode, no SSL, port 6080).
 COPY sellerclaw-agent/runtime/kasmvnc/kasmvnc.yaml /etc/kasmvnc/kasmvnc.yaml
