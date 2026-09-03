@@ -154,6 +154,69 @@ declare module "openclaw/plugin-sdk/core" {
   }): ChannelOutboundSessionRoute;
 }
 
+declare module "openclaw/plugin-sdk/channel-entry-contract" {
+  import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+
+  /**
+   * A sidecar module this entry owns, named the way OpenClaw resolves it: the specifier is
+   * relative to the entry file and written with a ``.js`` extension even though we ship
+   * TypeScript (the loader tries ``.js`` then the matching ``.ts``).
+   */
+  export type BundledEntryModuleRef = { specifier: string; exportName?: string };
+
+  /**
+   * Declares the entry as a BUNDLED channel, i.e. one OpenClaw discovers itself under
+   * ``<packageRoot>/dist/extensions`` rather than loading from a configured path.
+   *
+   * The sidecars named here are loaded through the entry boundary, on demand — which is the
+   * point: metadata-only registry passes stop pulling the whole channel in. It also means a
+   * sidecar can be evaluated a SECOND time, separately from this entry's own static imports, so
+   * nothing shared may live in a module-level variable (see ``shared-state.ts``).
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  export function defineBundledChannelEntry(opts: {
+    id: string;
+    name: string;
+    description: string;
+    /** Always ``import.meta.url`` — every sidecar specifier is resolved against it. */
+    importMetaUrl: string;
+    plugin: BundledEntryModuleRef;
+    outbound?: BundledEntryModuleRef;
+    secrets?: BundledEntryModuleRef;
+    /** Export taking the plugin runtime; called on every pass that registers the channel. */
+    runtime?: BundledEntryModuleRef;
+    accountInspect?: BundledEntryModuleRef;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    configSchema?: any;
+    features?: { accountInspect?: boolean };
+    registerCliMetadata?: (api: OpenClawPluginApi) => void;
+    registerFull?: (api: OpenClawPluginApi) => void;
+    registerCapabilities?: (api: OpenClawPluginApi) => void;
+  }): {
+    kind: "bundled-channel-entry";
+    id: string;
+    name: string;
+    description: string;
+    register: (api: OpenClawPluginApi) => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    loadChannelPlugin: (options?: unknown) => any;
+  };
+
+  /** The onboarding/migration half of the same contract. */
+  export function defineBundledChannelSetupEntry(opts: {
+    importMetaUrl: string;
+    plugin: BundledEntryModuleRef;
+    secrets?: BundledEntryModuleRef;
+    runtime?: BundledEntryModuleRef;
+    registerSetupRuntime?: (api: OpenClawPluginApi) => void;
+    features?: { legacySessionSurfaces?: boolean };
+  }): {
+    kind: "bundled-channel-setup-entry";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    loadSetupPlugin: (options?: unknown) => any;
+  };
+}
+
 declare module "openclaw/plugin-sdk/reply-payload" {
   /** Classify a deliver payload as the runtime's reasoning ("thinking") channel. */
   export function isReasoningReplyPayload(payload: Record<string, unknown>): boolean;
