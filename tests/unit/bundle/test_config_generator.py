@@ -14,8 +14,8 @@ from sellerclaw_agent.bundle.config_generator import (
     OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
     OPENCLAW_LOCAL_AGENT_BASE_URL,
     OPENCLAW_PLUGIN_PATH_MEM0,
-    OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI,
-    OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH,
+    OPENCLAW_BUNDLED_DIR_SELLERCLAW_UI,
+    OPENCLAW_BUNDLED_DIR_SELLERCLAW_WEB_SEARCH,
     MEM0_PLUGIN_ID,
     SELLERCLAW_WEB_SEARCH_PLUGIN_ID,
     ModelDefaults,
@@ -478,10 +478,10 @@ def test_generate_openclaw_config_web_search_enabled_wires_sellerclaw_plugin(
     assert entry["config"]["webSearch"]["authToken"] == "sca_test_token"
     assert payload["tools"]["web"]["search"]["enabled"] is True
     assert payload["tools"]["web"]["search"]["provider"] == SELLERCLAW_WEB_SEARCH_PLUGIN_ID
-    assert payload["plugins"]["load"]["paths"] == [
-        OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI,
-        OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH,
-    ]
+    # Both of our plugins are bundled into the image, so neither may be on a load path.
+    assert payload["plugins"]["load"]["paths"] == []
+    assert OPENCLAW_BUNDLED_DIR_SELLERCLAW_UI not in payload["plugins"]["load"]["paths"]
+    assert OPENCLAW_BUNDLED_DIR_SELLERCLAW_WEB_SEARCH not in payload["plugins"]["load"]["paths"]
 
 
 def test_generate_openclaw_config_web_search_baseurl_falls_back_to_sellerclaw_api_url(
@@ -507,7 +507,7 @@ def test_generate_openclaw_config_web_search_disabled_has_no_plugin_or_provider(
     assert SELLERCLAW_WEB_SEARCH_PLUGIN_ID not in payload["plugins"]["allow"]
     assert SELLERCLAW_WEB_SEARCH_PLUGIN_ID not in payload["plugins"]["entries"]
     assert payload["tools"]["web"]["search"] == {"enabled": False}
-    assert payload["plugins"]["load"]["paths"] == [OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI]
+    assert payload["plugins"]["load"]["paths"] == []
 
 
 def test_generate_openclaw_config_memory_enabled_wires_mem0_platform_plugin(
