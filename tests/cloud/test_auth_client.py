@@ -73,6 +73,41 @@ async def test_login_server_error() -> None:
         await client.login(email="u@example.com", password="secret")
 
 
+@pytest.mark.parametrize(
+    "sign_in",
+    [
+        pytest.param(
+            lambda client: client.login(email="u@example.com", password="secret"), id="password"
+        ),
+        pytest.param(lambda client: client.poll_device_token(device_code="devc"), id="device"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_sign_in_says_this_is_an_unattended_agent(sign_in) -> None:
+    """The cloud grades what a token may answer for the owner by who holds it — so we say."""
+    uid = "35922ddf-4020-5179-b163-3d90bcb86b00"
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        return httpx.Response(
+            200,
+            json={
+                "agent_token": "sca_test_plaintext",
+                "user": {"id": uid, "email": "u@example.com", "name": "User"},
+            },
+        )
+
+    client = SellerClawAuthClient(
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    await sign_in(client)
+
+    assert seen[0]["X-Client-Kind"] == "agent"
+    assert seen[0]["X-Client-Name"] == "SellerClaw agent"
+
+
 @pytest.mark.asyncio
 async def test_request_device_code_success() -> None:
     def handler(request: httpx.Request) -> httpx.Response:

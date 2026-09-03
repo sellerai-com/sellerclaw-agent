@@ -11,6 +11,14 @@ from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
 from sellerclaw_agent.http_clients import async_client
 
 _DEFAULT_TIMEOUT = httpx.Timeout(10.0)
+#: What this runtime tells the cloud it is when it signs in. ``agent`` means it works unattended —
+#: including while its owner sleeps — so nothing it reports may stand as the owner's answer to an
+#: approval. A sign-in that says nothing lands on the same strict treatment by default, but only by
+#: accident: saying so is what makes the cloud name this holder correctly wherever it is shown.
+_CLIENT_IDENTITY_HEADERS = {
+    "X-Client-Kind": "agent",
+    "X-Client-Name": "SellerClaw agent",
+}
 
 
 @dataclass(frozen=True)
@@ -106,7 +114,7 @@ class SellerClawAuthClient:
                 response = await client.post(
                     url,
                     json={"email": email, "password": password},
-                    headers={"Content-Type": "application/json"},
+                    headers={"Content-Type": "application/json", **_CLIENT_IDENTITY_HEADERS},
                 )
         except httpx.RequestError as exc:
             raise CloudConnectionError(str(exc)) from exc
@@ -196,7 +204,7 @@ class SellerClawAuthClient:
                 response = await client.post(
                     url,
                     json={"device_code": device_code},
-                    headers={"Content-Type": "application/json"},
+                    headers={"Content-Type": "application/json", **_CLIENT_IDENTITY_HEADERS},
                 )
         except httpx.RequestError as exc:
             raise CloudConnectionError(str(exc)) from exc
