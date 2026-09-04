@@ -35,27 +35,47 @@ vi.mock("openclaw/plugin-sdk/core", () => ({
   },
 }));
 
-/** Shared holder — mirrors SDK slot used by runtime-store.ts (single module instance). */
-let mockRuntimeHolder: unknown;
+/**
+ * Slots keyed the way the real SDK keys them, so a store opened twice for the same plugin id is
+ * the same slot — that sharing is the whole reason ``runtime-store.ts`` passes ``pluginId``.
+ */
+const mockRuntimeSlots = new Map<string, { runtime: unknown }>();
 
 vi.mock("openclaw/plugin-sdk/runtime-store", () => ({
-  createPluginRuntimeStore: (_msg: string) => ({
-    setRuntime(v: unknown) {
-      mockRuntimeHolder = v;
-    },
-    clearRuntime() {
-      mockRuntimeHolder = undefined;
-    },
-    tryGetRuntime() {
-      return mockRuntimeHolder ?? null;
-    },
-    getRuntime() {
-      if (mockRuntimeHolder === undefined) {
-        throw new Error("PluginRuntime not set");
-      }
-      return mockRuntimeHolder;
-    },
-  }),
+  createPluginRuntimeStore: (options: string | { pluginId: string; errorMessage: string }) => {
+    const key = typeof options === "string" ? options : `plugin-runtime:${options.pluginId}`;
+    let slot = mockRuntimeSlots.get(key);
+    if (!slot) {
+      slot = { runtime: undefined };
+      mockRuntimeSlots.set(key, slot);
+    }
+    const held = slot;
+    return {
+      setRuntime(v: unknown) {
+        held.runtime = v;
+      },
+      clearRuntime() {
+        held.runtime = undefined;
+      },
+      tryGetRuntime() {
+        return held.runtime ?? null;
+      },
+      getRuntime() {
+        if (held.runtime === undefined) {
+          throw new Error("PluginRuntime not set");
+        }
+        return held.runtime;
+      },
+    };
+  },
+}));
+
+// The gateway request scope our route handlers repair before starting a turn
+// (``gateway-scope.ts``). Unmocked, every test file that reaches ``inbound.ts`` fails to resolve
+// it. The default is "no scope at all", which is what a unit test's plain function call looks
+// like to that module; tests that care override it.
+vi.mock("openclaw/plugin-sdk/plugin-runtime", () => ({
+  getPluginRuntimeGatewayRequestScope: vi.fn(() => undefined),
 }));
 
 vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({

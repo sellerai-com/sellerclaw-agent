@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.8.1
+ARG OPENCLAW_TAG=2026.9.1
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -132,46 +132,66 @@ RUN mkdir -p /opt/openclaw-plugins/openclaw-mem0 \
     && chown -R root:root /opt/openclaw-plugins/openclaw-mem0
 
 
-# Repair an incomplete dependency tree in the base image: the bundled Telegram channel loads
-# grammy, whose vendored whatwg@5 requires `tr46`, but that package is missing from
-# ghcr.io/openclaw/openclaw:2026.8.1-beta.2 (and earlier). The channel then dies at load time with
-# `Cannot find module 'tr46'` (ERR_MODULE_NOT_FOUND), so every agent with Telegram enabled
-# silently loses it — OpenClaw's own advice, `openclaw doctor --fix`, cannot help because the
-# runtime never runs doctor. Installed beside grammy so the fix stays scoped to the package
-# that needs it, and re-checked immediately: if a later base image ships the dependency (or
-# drops grammy), the resolve below still passes, but a broken shim fails the build loudly.
-# Version follows whatwg-url@5's own `tr46: ~0.0.3` constraint.
-ARG TR46_SHIM_VERSION=0.0.3
-RUN npm install --no-save --no-audit --no-fund --prefix /tmp/tr46-shim "tr46@${TR46_SHIM_VERSION}" \
-    && cp -r /tmp/tr46-shim/node_modules/tr46 /app/node_modules/grammy/node_modules/tr46 \
-    && rm -rf /tmp/tr46-shim \
-    && node -e "require.resolve('tr46', { paths: ['/app/node_modules/grammy/node_modules/whatwg-url'] })"
+# Guard the bundled Telegram channel's dependency tree in the base image: it loads grammy, whose
+# node-fetch/whatwg-url@5 shim requires `tr46`. That package was missing from
+# ghcr.io/openclaw/openclaw:2026.8.1-beta.2 (and earlier), so the channel died at load time with
+# `Cannot find module 'tr46'` (ERR_MODULE_NOT_FOUND) and every agent with Telegram enabled
+# silently lost it — OpenClaw's own advice, `openclaw doctor --fix`, cannot help because the
+# runtime never runs doctor. We used to repair it by copying tr46@0.0.3 into
+# /app/node_modules/grammy/node_modules; 2026.9.1 installs its dependencies with pnpm (grammy is a
+# symlink into /app/node_modules/.pnpm and has no nested node_modules), so that copy had nowhere to
+# land and failed the build. The dependency itself is complete from 2026.8.2 on, so only the check
+# remains: loading grammy the way the channel does is layout-agnostic (Node resolves through the
+# real package path) and still fails loudly on 2026.8.1-beta.2, i.e. it would catch a regression.
+# If it ever fires again, re-add a shim next to the whatwg-url that grammy actually resolves —
+# look the path up at build time, never hard-code a node_modules layout.
+RUN node --input-type=module -e "await import('grammy')"
 
 # Remove unused bundled extensions from the base image to speed up cold start.
 # OpenClaw scans all directories in the bundled extensions dir at startup, even when
-# allow/load filters are set. Pruning 90+ unused extensions (~119 MB) avoids that overhead.
+# allow/load filters are set, so the prune is about that scan, not disk: in 2026.9.1 the dir holds
+# 62 extensions and we drop the 54 we do not use — ~6 MB of the ~12 MB total (older images were
+# fatter; the per-extension code has since moved into the shared bundle / pnpm store).
 # Keep only extensions referenced by the generated openclaw.json. This list must stay in
 # sync with every provider used in an agent model ref (models.providers / agents.*.model)
 # and every bundled plugin the config enables (plugins.allow + plugins.entries):
-#   browser, telegram, whatsapp, litellm, memory-core -> chat + tools + memory
+#   browser, telegram, litellm, memory-core   -> chat + tools + memory
 #   anthropic, google                         -> back the `anthropic`/`google` providers
 #                                                (model refs anthropic/claude-*, google/veo-*)
 #   document-extract                          -> bundled plugin enabled for the PDF tool
-# (web search is sellerclaw-web-search, an external plugin under /opt/openclaw-plugins.)
-# whatsapp backs the personal-account WhatsApp channel (Baileys + QR pairing); it activates
-# only when an agent's generated config has channels.whatsapp.enabled. Its baileys /
-# whatsapp-rust-bridge deps live in node_modules (not pruned here), so keeping the extension
-# dir is enough. Pairing writes the session to OpenClaw's default whatsapp authDir, which must
-# sit on a persistent volume so the link survives container restarts.
+#   web-readability                           -> article extraction for web_fetch; without it
+#                                                every HTML page reaches the agent as whole-page
+#                                                markdown (nav/footer/banners) cut at the fetch
+#                                                char limit. Enabled in config_generator too —
+#                                                keeping the dir alone does nothing.
+# Our own two plugins (sellerclaw-ui, sellerclaw-web-search) are kept defensively only: they are
+# COPYed into this directory further down, i.e. AFTER this prune runs. The entries cost nothing
+# and stop a future reordering from silently deleting the product's own plugins.
+# NOT in the list: whatsapp. The personal-account WhatsApp channel (Baileys + QR pairing) is part
+# of OpenClaw's core bundle, not a bundled extension — no upstream image we have shipped (2026.8.1
+# through 2026.9.1) has an extensions/whatsapp dir, and its baileys dep lives in node_modules,
+# which this prune never touches. The channel activates purely from config
+# (channels.whatsapp.enabled in the generated openclaw.json); pairing writes the session to
+# OpenClaw's default whatsapp authDir, which must sit on a persistent volume so the link survives
+# container restarts. Listing it here kept nothing and only implied a dir that does not exist.
 # Each provider/plugin extension registers itself at extension-load time; pruning it makes
 # OpenClaw fail to resolve that provider's API or plugin even though the config references
 # it — e.g. the google prune surfaced as `No video-generation provider registered for google`.
+# The post-prune check turns silent drift into a build failure: if upstream renames or moves an
+# extension we depend on, the name we keep matches nothing, the real dir is deleted as "unused",
+# and the breakage only surfaces at runtime as a missing provider/plugin. Our own two plugins are
+# deliberately not checked — they arrive later in the build.
 RUN cd /app/dist/extensions && \
+    keep="browser telegram litellm memory-core anthropic google document-extract web-readability" && \
+    ours="sellerclaw-ui sellerclaw-web-search" && \
     for dir in */; do \
-        case "${dir%/}" in \
-            browser|telegram|whatsapp|litellm|memory-core|anthropic|google|document-extract) ;; \
+        case " $keep $ours " in \
+            *" ${dir%/} "*) ;; \
             *) rm -rf "$dir" ;; \
         esac; \
+    done && \
+    for name in $keep; do \
+        [ -d "$name" ] || { echo "FATAL: bundled extension '$name' is not in the base image (renamed, moved into core, or dropped upstream) — update the keep list in runtime/Dockerfile" >&2; exit 1; }; \
     done
 
 # Pre-build OpenClaw's persisted plugin registry with the vendored mem0 plugin already installed.
@@ -212,7 +232,20 @@ RUN runuser -u node -- env HOME=/home/node openclaw plugins install --force --ac
     && rm -rf /home/node/.openclaw/logs
 
 # Our own OpenClaw plugins: the SellerClaw web UI chat delivery channel and web search.
-# Files must stay root-owned: OpenClaw blocks config-origin plugins with non-root ownership.
+#
+# Both go into OpenClaw's BUNDLED plugin root (/app/dist/extensions), not /opt/openclaw-plugins:
+# they are parts of the product, not optional extensions, and OpenClaw gates real capabilities on
+# `origin === "bundled"`. The one that bites is `api.session.workflow.scheduleSessionTurn` — for a
+# non-bundled plugin it is a SILENT no-op (returns undefined, no error, no log), and it is the
+# supported way to schedule a turn in a chat session. Also bundled-only: host-owned agent event
+# streams (lifecycle/tool/assistant/error/item/plan), trusted tool policies without a `contracts`
+# declaration, reserved command ownership, `system.notify`, and native Control UI route placement.
+#
+# Ownership is node:node to match the sibling bundled extensions. The "config-origin plugins must
+# be root-owned" rule now applies only to the vendored third-party mem0 above.
+#
+# Keep both OUT of plugins.load.paths (see config_generator): a bundled plugin that is also on a
+# load path is discovered twice under one id and OpenClaw warns about the duplicate.
 #
 # Deliberately placed AFTER the mem0 steps above, not before: these directories are edited on
 # almost every contributor branch, and Docker invalidates every later layer on the first change
@@ -220,8 +253,8 @@ RUN runuser -u node -- env HOME=/home/node openclaw plugins install --force --ac
 # the registry pre-build — ~3 minutes of network + CPU per `make up-dev`, for a plugin that had
 # not changed. Nothing between here and the base runtime depends on these paths, so the cheap,
 # frequently-changing layers belong last.
-COPY sellerclaw-agent/plugins/sellerclaw-ui /opt/openclaw-plugins/sellerclaw-ui
-COPY sellerclaw-agent/plugins/sellerclaw-web-search /opt/openclaw-plugins/sellerclaw-web-search
+COPY --chown=node:node sellerclaw-agent/plugins/sellerclaw-ui /app/dist/extensions/sellerclaw-ui
+COPY --chown=node:node sellerclaw-agent/plugins/sellerclaw-web-search /app/dist/extensions/sellerclaw-web-search
 
 # KasmVNC server-wide configuration (HTTP mode, no SSL, port 6080).
 COPY sellerclaw-agent/runtime/kasmvnc/kasmvnc.yaml /etc/kasmvnc/kasmvnc.yaml

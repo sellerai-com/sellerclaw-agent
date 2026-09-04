@@ -54,10 +54,22 @@ OPENCLAW_BUNDLE_ALLOWED_SKILLS: tuple[str, ...] = ("healthcheck",)
 # assert the emitted config.
 OPENCLAW_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:8001"
 
-# Keyless web search: plugin id, OpenClaw web-search provider id, and directory under /opt/openclaw-plugins/.
+# Keyless web search: plugin id and OpenClaw web-search provider id.
 SELLERCLAW_WEB_SEARCH_PLUGIN_ID = "sellerclaw-web-search"
-OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI = "/opt/openclaw-plugins/sellerclaw-ui"
-OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH = "/opt/openclaw-plugins/sellerclaw-web-search"
+# Both of our own plugins ship as BUNDLED plugins: the image copies them into
+# ``/app/dist/extensions/`` (OpenClaw's own bundled-plugin root), so they are discovered with
+# ``origin: "bundled"`` and must NOT appear in ``plugins.load.paths`` — a path-loaded copy of the
+# same id makes OpenClaw warn about a duplicate plugin id and override one with the other.
+#
+# Why bundled and not a load path: these are parts of the product, not optional extensions,
+# and OpenClaw gates several plugin APIs on ``origin === "bundled"``. Most importantly
+# ``api.session.workflow.scheduleSessionTurn`` (schedule a turn in a chat session) is a SILENT
+# no-op for a non-bundled plugin — it returns undefined with no error and no log line. Same gate
+# applies to the host-owned agent event streams (lifecycle/tool/assistant/error/item/plan),
+# trusted tool policies without a ``contracts`` declaration, reserved command ownership,
+# ``system.notify`` and native Control UI route placement.
+OPENCLAW_BUNDLED_DIR_SELLERCLAW_UI = "/app/dist/extensions/sellerclaw-ui"
+OPENCLAW_BUNDLED_DIR_SELLERCLAW_WEB_SEARCH = "/app/dist/extensions/sellerclaw-web-search"
 # Long-term memory: the official mem0 plugin in platform mode, pointed at the cloud's
 # Mem0-compatible adapter (`{agent_api_base}/mem0`). Bundled into the image at this path.
 MEM0_PLUGIN_ID = "openclaw-mem0"
@@ -68,6 +80,17 @@ OPENCLAW_PLUGIN_PATH_MEM0 = "/opt/openclaw-plugins/openclaw-mem0"
 # enable the document-extract plugin to process application/pdf files`. Bundled with
 # the OpenClaw runtime, so no load path needed — just allow + enable.
 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID = "document-extract"
+
+# Bundled OpenClaw plugin that turns a fetched HTML page into the article text (Readability).
+# ``web_fetch`` asks for a content extractor on every text/html response and, finding none,
+# falls back to converting the WHOLE page to markdown — navigation, footer, cookie banners and
+# all — then truncates at the fetch char limit, so a long article can lose its body to
+# boilerplate. Upstream enables it by default, but our ``plugins.allow`` is non-empty and
+# OpenClaw disables every bundled plugin missing from a non-empty allowlist, so it needs both
+# the allow entry and an explicit enable (the enable also survives upstream flipping its
+# enabledByDefault). The image must keep the extension dir too — see the prune in
+# runtime/Dockerfile.
+OPENCLAW_WEB_READABILITY_PLUGIN_ID = "web-readability"
 
 # The bundled telegram/whatsapp channel plugins are deliberately NOT in ``plugins.allow``. Every
 # boot warns that a configured channel's plugin is "omitted from plugins.allow" and auto-enables it
@@ -238,9 +261,10 @@ def generate_openclaw_config(
                 "SellerClaw API base URL is required when web search is enabled (SELLERCLAW_API_URL)."
             )
 
-    plugin_load_paths: list[str] = [OPENCLAW_PLUGIN_PATH_SELLERCLAW_UI]
-    if web_search_enabled:
-        plugin_load_paths.append(OPENCLAW_PLUGIN_PATH_SELLERCLAW_WEB_SEARCH)
+    # Both of our own plugins are bundled into the image (see OPENCLAW_BUNDLED_DIR_* above), so
+    # they are discovered without a load path. Only path-loaded plugins go in this list, which
+    # today means the vendored third-party mem0 below.
+    plugin_load_paths: list[str] = []
     # mem0 MUST stay in plugins.load.paths. It is referenced by plugins.slots.memory, and
     # OpenClaw resolves slot/allow/entries against load.paths + the installed registry: drop
     # the load path and config validation hard-fails with "plugins.slots.memory: plugin not
@@ -569,6 +593,7 @@ def generate_openclaw_config(
                 "sellerclaw-ui",
                 "browser",
                 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
+                OPENCLAW_WEB_READABILITY_PLUGIN_ID,
                 *(
                     [web_search_plugin_id]
                     if web_search_enabled and web_search_plugin_id is not None
@@ -589,6 +614,7 @@ def generate_openclaw_config(
                     "config": sellerclaw_ui_plugin_config,
                 },
                 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID: {"enabled": True},
+                OPENCLAW_WEB_READABILITY_PLUGIN_ID: {"enabled": True},
                 **(
                     {web_search_plugin_id: web_search_plugin_entry}
                     if web_search_enabled

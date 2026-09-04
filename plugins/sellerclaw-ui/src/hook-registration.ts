@@ -5,6 +5,7 @@ import { logWarn } from "./log.js";
 import { registerReasoningRelay } from "./reasoning-relay.js";
 import { getSharedState } from "./shared-state.js";
 import { registerRunOutcomeTracker } from "./run-outcome.js";
+import { registerLiveThinkingStream } from "./thinking-stream.js";
 
 /**
  * Registers the plugin's lifecycle hooks on EVERY plugin-registry pass, not just the "full" one.
@@ -22,6 +23,11 @@ import { registerRunOutcomeTracker } from "./run-outcome.js";
  * `api.on` is present in the "full", "discovery" and "tool-discovery" modes and absent in
  * metadata-only passes — those are skipped silently. Each pass hands a fresh `api` bound to the
  * fresh registry; the WeakSet only guards against the same `api` being offered twice.
+ *
+ * The live thinking subscription rides along for the same reason: agent-event subscriptions live
+ * in the plugin registry too, and the event bridge is re-pointed at whichever registry is active
+ * (`syncPluginAgentEventBridge`), so one registered in the first pass would stop being dispatched
+ * to. Its id is unique per registry, which is exactly what re-registering per pass needs.
  */
 
 /**
@@ -49,6 +55,7 @@ export function registerLifecycleHooks(api: OpenClawPluginApi): void {
   registerCompletionDeliveryGuard(api);
   registerRunOutcomeTracker(api);
   registerReasoningRelay(api);
+  registerLiveThinkingStream(api);
 }
 
 type RegistrableEntry = { register: (api: OpenClawPluginApi) => void };

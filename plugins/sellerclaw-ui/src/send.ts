@@ -1,3 +1,5 @@
+import { getSharedState } from "./shared-state.js";
+
 export type ScwUiAccount = {
   apiBaseUrl: string;
   userId: string;
@@ -13,7 +15,19 @@ export type ScwUiAccount = {
 export const WEBHOOK_MAX_ATTEMPTS = 4;
 export const WEBHOOK_BASE_DELAY_MS = 250;
 
-const sendQueues = new Map<string, Promise<unknown>>();
+/**
+ * The per-session send chains, in the process-wide slot.
+ *
+ * Two evaluations of this module would otherwise each keep their own chain, and outbound work
+ * split across them would stop being ordered — the one guarantee this queue exists to give. Both
+ * evaluations happen for real: OpenClaw re-evaluates plugin modules on every registry pass, and
+ * the bundled channel entry loads ``channel.ts`` (and with it this file) through a loader boundary
+ * of its own. See ``shared-state.ts``.
+ */
+const sendQueues = getSharedState(
+  "send:queues-by-session",
+  () => new Map<string, Promise<unknown>>(),
+);
 
 /**
  * Serialize outbound work per session key so parallel sends complete in submission order.
