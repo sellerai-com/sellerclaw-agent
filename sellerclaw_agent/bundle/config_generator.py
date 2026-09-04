@@ -81,6 +81,17 @@ OPENCLAW_PLUGIN_PATH_MEM0 = "/opt/openclaw-plugins/openclaw-mem0"
 # the OpenClaw runtime, so no load path needed — just allow + enable.
 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID = "document-extract"
 
+# Bundled OpenClaw plugin that turns a fetched HTML page into the article text (Readability).
+# ``web_fetch`` asks for a content extractor on every text/html response and, finding none,
+# falls back to converting the WHOLE page to markdown — navigation, footer, cookie banners and
+# all — then truncates at the fetch char limit, so a long article can lose its body to
+# boilerplate. Upstream enables it by default, but our ``plugins.allow`` is non-empty and
+# OpenClaw disables every bundled plugin missing from a non-empty allowlist, so it needs both
+# the allow entry and an explicit enable (the enable also survives upstream flipping its
+# enabledByDefault). The image must keep the extension dir too — see the prune in
+# runtime/Dockerfile.
+OPENCLAW_WEB_READABILITY_PLUGIN_ID = "web-readability"
+
 # The bundled telegram/whatsapp channel plugins are deliberately NOT in ``plugins.allow``. Every
 # boot warns that a configured channel's plugin is "omitted from plugins.allow" and auto-enables it
 # for that run, which reads like an oversight — it is not. Allow-listing whatsapp promotes its
@@ -582,6 +593,7 @@ def generate_openclaw_config(
                 "sellerclaw-ui",
                 "browser",
                 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
+                OPENCLAW_WEB_READABILITY_PLUGIN_ID,
                 *(
                     [web_search_plugin_id]
                     if web_search_enabled and web_search_plugin_id is not None
@@ -602,6 +614,7 @@ def generate_openclaw_config(
                     "config": sellerclaw_ui_plugin_config,
                 },
                 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID: {"enabled": True},
+                OPENCLAW_WEB_READABILITY_PLUGIN_ID: {"enabled": True},
                 **(
                     {web_search_plugin_id: web_search_plugin_entry}
                     if web_search_enabled

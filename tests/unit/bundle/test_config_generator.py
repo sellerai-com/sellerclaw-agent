@@ -12,6 +12,7 @@ from sellerclaw_agent.bundle.config_generator import (
     OPENCLAW_BUNDLE_CONSOLE_STYLE,
     OPENCLAW_BUNDLE_LOG_LEVEL,
     OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
+    OPENCLAW_WEB_READABILITY_PLUGIN_ID,
     OPENCLAW_LOCAL_AGENT_BASE_URL,
     OPENCLAW_PLUGIN_PATH_MEM0,
     OPENCLAW_BUNDLED_DIR_SELLERCLAW_UI,
@@ -935,3 +936,16 @@ def test_generate_openclaw_config_enables_document_extract_plugin_for_pdf_fallba
     plugins = payload["plugins"]
     assert OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID in plugins["allow"]
     assert plugins["entries"][OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID] == {"enabled": True}
+
+
+def test_generate_openclaw_config_enables_web_readability_plugin_for_web_fetch(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """`web_fetch` falls back to whole-page markdown (nav/footer/banners, truncated at the fetch
+    char limit) unless a content extractor is enabled. Upstream enables the bundled Readability
+    plugin by default, but a non-empty `plugins.allow` disables everything missing from it — so
+    the plugin needs both the allow entry and an explicit enable."""
+    payload = _generate_default_config(make_assembled_agent)
+    plugins = payload["plugins"]
+    assert OPENCLAW_WEB_READABILITY_PLUGIN_ID in plugins["allow"]
+    assert plugins["entries"][OPENCLAW_WEB_READABILITY_PLUGIN_ID] == {"enabled": True}
