@@ -28,7 +28,11 @@ if [ "${RESET_STATE:-}" = "1" ]; then
   # whose state predates the SQLite store, and for the archive the import leaves behind.
   rm -f "$STATE_DIR"/agents/*/agent/openclaw-agent.sqlite* 2>/dev/null || true
   rm -rf "$STATE_DIR"/agents/*/session-sqlite-import-archive
-  find "$STATE_DIR"/agents -type f \( -name "*.jsonl" -o -name "*.lock" \) -path "*/sessions/*" -delete 2>/dev/null || true
+  # sessions.json is the legacy store's index. Left behind, it alone is enough to stop the
+  # gateway ("Legacy session store requires migration"), so a clean start that swept the
+  # transcripts but kept the index would still boot into a crash loop.
+  find "$STATE_DIR"/agents -type f \( -name "*.jsonl" -o -name "*.lock" -o -name "sessions.json" \) \
+    -path "*/sessions/*" -delete 2>/dev/null || true
 fi
 
 # Developer-only: if compose mounted a real sellerclaw-cli checkout at
