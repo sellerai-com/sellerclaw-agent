@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.9.1
+ARG OPENCLAW_TAG=2026.9.2
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788

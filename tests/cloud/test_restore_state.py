@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import tarfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -114,3 +116,39 @@ def test_run_restore_noop_on_404(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     run_restore_if_needed()
     assert not (tmp_path / "browser").exists()
     assert not (tmp_path / "chrome-profile").exists()
+
+
+def test_run_restore_does_not_plant_a_legacy_session_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cold start against a pre-2026-08-20 archive must not resurrect OpenClaw sessions.
+
+    Such an archive holds nothing but sessions, and unpacking them made the gateway refuse to
+    start ("Legacy session store requires migration") on every boot of a freshly built machine.
+    """
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AGENT_API_KEY", "secret-token")
+    monkeypatch.setenv("SELLERCLAW_API_URL", "http://example.com")
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tf:
+        for name, raw in (
+            ("agents/supervisor/sessions/sessions.json", b"{}"),
+            ("agents/supervisor/sessions/6aaf.jsonl", b'{"role":"user"}\n'),
+        ):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(raw)
+            tf.addfile(info, io.BytesIO(raw))
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=buffer.getvalue())
+
+    def _client_factory(**kwargs: Any) -> httpx.Client:
+        kwargs.pop("transport", None)
+        return HttpxClient(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr("sellerclaw_agent.cloud.restore_state.httpx.Client", _client_factory)
+    run_restore_if_needed()
+
+    assert not (tmp_path / "agents").exists()

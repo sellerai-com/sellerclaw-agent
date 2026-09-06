@@ -5,6 +5,7 @@ import { logWarn } from "./log.js";
 import { registerReasoningRelay } from "./reasoning-relay.js";
 import { getSharedState } from "./shared-state.js";
 import { registerRunOutcomeTracker } from "./run-outcome.js";
+import { registerSessionEnv } from "./session-env.js";
 import { registerLiveThinkingStream } from "./thinking-stream.js";
 
 /**
@@ -56,6 +57,7 @@ export function registerLifecycleHooks(api: OpenClawPluginApi): void {
   registerRunOutcomeTracker(api);
   registerReasoningRelay(api);
   registerLiveThinkingStream(api);
+  registerSessionEnv(api);
 }
 
 type RegistrableEntry = { register: (api: OpenClawPluginApi) => void };

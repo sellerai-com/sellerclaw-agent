@@ -143,7 +143,12 @@ async def _consume_unified_sse(
                 elif event_name == "cancel":
                     await forward_cancel(payload, forwarder=forwarder)
                 elif event_name == "hook_event":
-                    await forward_hook_event(payload, forwarder=forwarder, openclaw_gate=openclaw_gate)
+                    await forward_hook_event(
+                        payload,
+                        forwarder=forwarder,
+                        openclaw_gate=openclaw_gate,
+                        agent_token=agent_token,
+                    )
 
 
 async def run_edge_unified_sse_loop(

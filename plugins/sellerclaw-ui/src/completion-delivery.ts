@@ -7,6 +7,7 @@ import {
   resolveSellerclawUiAccount,
 } from "./channel.js";
 import { ANNOUNCE_RUN_ID_PREFIX, isCompletionRun } from "./completion-run.js";
+import { droppedSilentProse, isSilentAnswer, visibleAnswerText } from "./silent-token.js";
 import { logDelivery, logDeliveryFailure } from "./log.js";
 import { getSharedState } from "./shared-state.js";
 
@@ -126,9 +127,6 @@ const RACED_ANSWER_MAX_AGE_MS = 10_000;
  */
 const TOOL_SEND_GRACE_MS = 3_000;
 
-/** The silent token: an answer of exactly this means "deliver nothing". */
-const SILENT_REPLY_TOKEN = "NO_REPLY";
-
 interface PendingAnswer {
   /** The supervisor's answer, or "" when the run produced no visible text at all. */
   answer: string;
@@ -230,10 +228,6 @@ interface MessageSendingResult {
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
-}
-
-function isSilentAnswer(text: string): boolean {
-  return text.trim().toUpperCase() === SILENT_REPLY_TOKEN;
 }
 
 function sweepMessagedRuns(now: number): void {
@@ -437,22 +431,30 @@ function registerAnswerCapture(api: OpenClawPluginApi): void {
       clearPending(sessionKey);
       return undefined;
     }
-    if (!answer || isSilentAnswer(answer)) {
+    if (isSilentAnswer(answer)) {
       // Remembered as empty rather than left unset, so the runtime's fallback is still recognised
       // as belonging to this run and gets cancelled instead of reaching the owner as raw internals.
       // Whether there is really nothing to say is decided at delivery time, once ``llm_output``
       // for the final round has landed — see ``registerDeliveryRewrite``.
       rememberAnswer(api, sessionKey, "");
+      const dropped = droppedSilentProse(answer);
+      // Recorded because this is the one branch that can lose something the owner wanted: the run
+      // asked for silence, and whatever it wrote before the token goes no further. Nothing has been
+      // seen doing that with a real report — but if one ever does, this line is where it shows.
       logDeliveryFailure(
         api,
-        `no answer at run end (may land with the final llm_output) session_key=${sessionKey}`,
+        dropped
+          ? `silent run: dropped its own text before the token session_key=${sessionKey} ` +
+            `chars=${dropped.length}`
+          : `no answer at run end (may land with the final llm_output) session_key=${sessionKey}`,
       );
       return undefined;
     }
-    rememberAnswer(api, sessionKey, answer);
+    const visible = visibleAnswerText(answer);
+    rememberAnswer(api, sessionKey, visible);
     logDelivery(
       api,
-      `completion answer captured for delivery session_key=${sessionKey} chars=${answer.length}`,
+      `completion answer captured for delivery session_key=${sessionKey} chars=${visible.length}`,
     );
     return undefined;
   });
@@ -491,7 +493,7 @@ function adoptRacedCompletionAnswer(
   // The silent token is a refusal to speak, not something to say. Remembered as empty so the
   // runtime's fallback is cancelled — the outcome the run asked for — instead of the word itself
   // being handed to the owner as though it were the answer.
-  const answer = isSilentAnswer(seen.text) ? "" : seen.text;
+  const answer = isSilentAnswer(seen.text) ? "" : visibleAnswerText(seen.text);
   rememberAnswer(api, sessionKey, answer);
   logDelivery(
     api,

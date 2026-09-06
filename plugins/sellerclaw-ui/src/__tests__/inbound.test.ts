@@ -938,6 +938,21 @@ describe("registerInboundRoute", () => {
       ).toEqual({ text: "", mediaUrls: ["/ok.png"], isError: false });
     });
 
+    it("never hands the silent token to the chat as content", () => {
+      // Three staging chats were shown the bare word: the announce path had a check for it, this
+      // one never did. A token-only reply is silence; a token after a real answer is plumbing the
+      // owner should not read, and the answer itself still goes out.
+      expect(readDeliverPayload({ text: "NO_REPLY" }).text).toBe("");
+      expect(readDeliverPayload({ text: "Готово.\n\nNO_REPLY" }).text).toBe("Готово.");
+      expect(readDeliverPayload({ text: "Готово." }).text).toBe("Готово.");
+    });
+
+    it("leaves an engine failure notice worded as it is", () => {
+      // Not the agent's wording, so the silent-reply contract has no business rewriting it;
+      // ``finishTurn`` is what decides whether the owner sees anything about the failure.
+      expect(readDeliverPayload({ text: "NO_REPLY", isError: true }).text).toBe("NO_REPLY");
+    });
+
     it("reads the engine's error flag, and only when it is exactly true", () => {
       // The flag is what separates "the agent answered" from "the engine gave up and wrote a
       // notice"; a truthy-but-not-true value is not that signal.

@@ -301,8 +301,67 @@ async def test_ping_payload_shape() -> None:
         "recent_errors",
         "log_errors",
         "error",
+        "running_sessions",
     }
     assert payload["state"] == "working"
+
+
+async def test_running_sessions_name_each_live_run() -> None:
+    stale_ms = _NOW_MS - 600_000
+    gateway = _FakeGateway(
+        sessions={
+            "sessions": [
+                _row(key="agent:woocommerce:subagent:s1", lastActivityAt=stale_ms, hasActiveRun=True),
+                _row(key="agent:wix:subagent:s2", hasActiveRun=False),
+            ],
+            "totalCount": 2,
+        }
+    )
+
+    probe = await _reader(gateway).probe()
+
+    assert probe.running_sessions == [
+        {"session_key": "agent:woocommerce:subagent:s1", "agent_id": "woocommerce", "age_seconds": 600.0}
+    ]
+
+
+async def test_a_running_row_without_a_key_still_ships_a_string() -> None:
+    """One null would fail validation for the whole ping, taking the connection down with it."""
+    gateway = _FakeGateway(
+        sessions={"sessions": [_row(key="", hasActiveRun=True)], "totalCount": 1}
+    )
+
+    probe = await _reader(gateway).probe()
+
+    assert probe.running_sessions == [
+        {"session_key": "", "agent_id": "unknown", "age_seconds": 0.0}
+    ]
+
+
+async def test_running_sessions_empty_when_nothing_is_in_flight() -> None:
+    gateway = _FakeGateway(sessions={"sessions": [_row()], "totalCount": 1})
+
+    probe = await _reader(gateway).probe()
+
+    assert probe.running_sessions == []
+
+
+async def test_running_sessions_unknown_when_the_gateway_cannot_be_asked() -> None:
+    gateway = _FakeGateway(connect_unreachable="connection refused")
+
+    probe = await _reader(gateway).probe()
+
+    assert probe.running_sessions is None
+
+
+async def test_running_sessions_capped() -> None:
+    rows = [_row(key=f"agent:wix:subagent:s{i}", hasActiveRun=True) for i in range(40)]
+    gateway = _FakeGateway(sessions={"sessions": rows, "totalCount": len(rows)})
+
+    probe = await _reader(gateway).probe()
+
+    assert probe.running_sessions is not None
+    assert len(probe.running_sessions) == 25
 
 
 async def test_log_errors_extracted_from_process_log(tmp_path: Path) -> None:

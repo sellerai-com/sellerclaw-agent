@@ -11,6 +11,7 @@ import {
 
 import { resolveSellerclawUiAccount } from "./channel.js";
 import { logDelivery, logError, logInfo, logWarn } from "./log.js";
+import { visibleAnswerText } from "./silent-token.js";
 import {
   claimContinuation,
   consumeOwnerAbort,
@@ -359,6 +360,13 @@ export function pickDeltaJoin(prevTail: string, nextHead: string): string {
  * directives and markdown images are surfaced here as `mediaUrls` / the legacy
  * single `mediaUrl`; we merge both into one deduped list.
  *
+ * The silent token is stripped here because this is the one seam every delivered payload passes
+ * through — a live chat turn, a scheduled run's summary, a resumed turn. It is a control word, not
+ * content: an answer that is only the token means "say nothing", and a token trailing a real
+ * answer is a habit of the model, not something the owner should read. Without this the word
+ * reached owners verbatim (three staging chats), and the announce path's own check never saw those
+ * turns at all — it only ever guarded the completion road. See ``silent-token.ts``.
+ *
  * Exported for unit-testing without spinning up the HTTP route.
  */
 export function readDeliverPayload(raw: unknown): {
@@ -368,7 +376,10 @@ export function readDeliverPayload(raw: unknown): {
 } {
   if (!raw || typeof raw !== "object") return { text: "", mediaUrls: [], isError: false };
   const p = raw as Record<string, unknown>;
-  const text = typeof p.text === "string" ? p.text : "";
+  const rawText = typeof p.text === "string" ? p.text : "";
+  // An engine failure notice is never the agent's own wording, so it keeps its text untouched;
+  // ``finishTurn`` is what decides whether the owner sees anything about it.
+  const text = p.isError === true ? rawText : visibleAnswerText(rawText);
   const isError = p.isError === true;
   const mediaUrls: string[] = [];
   const push = (value: unknown) => {

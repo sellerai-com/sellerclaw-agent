@@ -6,6 +6,10 @@
  * chat turn streams its own through `replyOptions`, so relaying there would double it).
  */
 
+import { SILENT_REPLY_TOKEN, isSilentAnswer } from "./silent-token.js";
+
+export { SILENT_REPLY_TOKEN };
+
 /** Announce (subagent-completion) runs carry this prefix on their run id. */
 export const ANNOUNCE_RUN_ID_PREFIX = "announce:";
 
@@ -60,19 +64,19 @@ export function isCompletionRun(runId: unknown, messages: unknown): boolean {
   return COMPLETION_TRIGGER_MARKERS.some((marker) => trigger.startsWith(marker));
 }
 
-/** The silent token: a run whose whole answer is this one word deliberately said nothing. */
-export const SILENT_REPLY_TOKEN = "NO_REPLY";
-
 /**
- * Whether this run declined to answer — its visible text is exactly the silent token.
+ * Whether this run declined to answer — its visible text says nothing the owner should read.
  *
  * A duplicate completion event wakes the supervisor for a turn whose only conclusion is "I have
  * already answered this". That turn contributes nothing to what the owner reads, so its thinking
  * does not belong beside the answer: it is commentary on runtime plumbing (retried events, reply
  * sentinels), and shown in the Thought panel it displaces the reasoning that produced the answer.
+ *
+ * The reading of "said nothing" is the engine's own — see ``silent-token.ts``. A run that wrote a
+ * real answer is never silent here, however its last word happens to read.
  */
 export function isSilentRun(messages: unknown): boolean {
-  return lastAssistantText(messages).trim() === SILENT_REPLY_TOKEN;
+  return isSilentAnswer(lastAssistantText(messages));
 }
 
 /** Visible text of the run's last assistant message — its answer, thinking blocks excluded. */

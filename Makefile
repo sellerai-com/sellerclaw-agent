@@ -1,4 +1,4 @@
-.PHONY: install setup up up-stage up-dev down test test_unit test_unit_dirs test_cloud lint check \
+.PHONY: install setup up up-stage up-dev down agent-start test test_unit test_unit_dirs test_cloud lint check \
 	openclaw-skills openclaw-plugins openclaw-measure-gateway-memory openclaw-measure-gateway-memory-cold \
 	release release-preflight release-latest release-beta stage-cli-wheel dev-cli-local dev-cli-pypi
 
@@ -77,6 +77,74 @@ up-stage: stage-cli-wheel
 
 up-dev: stage-cli-wheel
 	$(DOCKER_COMPOSE) --env-file .env.local $(COMPOSE_SECRETS) up --build
+
+# Start the OpenClaw runtime inside an already-running container: the same thing the "Start"
+# button on the agent page in the web UI does, without the browser round-trip. supervisord keeps
+# `[program:openclaw]` at autostart=false (runtime/supervisord*.conf), so the container comes up
+# with the agent server alone and the runtime waits for a start command. That makes this the step
+# left over after `make up-dev` — and after any `docker compose restart server`, which stops the
+# runtime and never brings it back — before chat, hooks or the browser do anything at all.
+#
+# Requires the container to be up and deliberately does not bring it up: the profile it runs under
+# (.env.local / .env.staging / .env.production) is the developer's choice, and picking one here
+# would quietly point the agent at the wrong cloud. Stack down => a clear error and no compose
+# side effects. An already-running runtime is a no-op success, so repeating the target is safe.
+#
+# AGENT_START_TIMEOUT (seconds) bounds the wait for readiness, not the start call itself:
+# supervisord reports RUNNING within a second, while the gateway's HTTP listener and plugin
+# registry need tens of seconds more, and only its /ready endpoint reflects that. Messages
+# delivered in between are dropped, so the target is not done until /ready says so.
+AGENT_START_TIMEOUT ?= 180
+
+agent-start:
+	@$(DOCKER_COMPOSE) ps --services --status running 2>/dev/null | grep -qx server || { \
+		echo "agent-start: the agent container is not running — start it first with 'make up-dev' (local cloud), 'make up-stage' or 'make up'." >&2; \
+		exit 1; \
+	}
+	@$(DOCKER_COMPOSE) exec -T server bash -lc '\
+		set -eu; \
+		key=$${SELLERCLAW_LOCAL_API_KEY:-}; \
+		if [ -z "$$key" ]; then \
+			key=$$(python3 -c "import json;print(json.load(open(\"$${SELLERCLAW_DATA_DIR:-/data}/secrets.json\"))[\"local_api_key\"])" 2>/dev/null || true); \
+		fi; \
+		if [ -z "$$key" ]; then \
+			echo "agent-start: no local control-plane key in the container (neither SELLERCLAW_LOCAL_API_KEY nor data/secrets.json). Is the agent server up? docker compose logs server" >&2; \
+			exit 1; \
+		fi; \
+		echo "agent-start: starting the OpenClaw runtime..."; \
+		resp=$$(mktemp); \
+		trap "rm -f $$resp" EXIT; \
+		code=$$(curl -sS -m 300 -o "$$resp" -w "%{http_code}" -X POST -H "Authorization: Bearer $$key" http://127.0.0.1:8001/openclaw/start) || code=000; \
+		payload=$$(cat "$$resp" 2>/dev/null || true); \
+		case "$$code" in \
+			200) \
+				outcome=$$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get(\"outcome\",\"\"))" "$$resp" 2>/dev/null || true); \
+				if [ "$$outcome" != "completed" ]; then \
+					echo "agent-start: the agent server refused to start the runtime: $$payload" >&2; \
+					exit 1; \
+				fi ;; \
+			409) echo "agent-start: the OpenClaw runtime is already running — nothing to do."; exit 0 ;; \
+			404) \
+				echo "agent-start: this agent has no config bundle yet, so there is nothing to start. Sign in ('\''make setup'\'') and start it once from the web UI; the cloud then leaves a manifest behind and this command works from then on." >&2; \
+				exit 1 ;; \
+			401) echo "agent-start: the control-plane key was rejected. Is secrets.env in sync with the running container?" >&2; exit 1 ;; \
+			000) echo "agent-start: the agent server on 127.0.0.1:8001 did not answer. docker compose logs server" >&2; exit 1 ;; \
+			*) echo "agent-start: start failed (HTTP $$code): $$payload" >&2; exit 1 ;; \
+		esac; \
+		echo "agent-start: waiting for the gateway to accept traffic (up to $(AGENT_START_TIMEOUT)s)..."; \
+		base=$${OPENCLAW_GATEWAY_HTTP_BASE:-http://127.0.0.1:7789}; \
+		deadline=$$(( $$(date +%s) + $(AGENT_START_TIMEOUT) )); \
+		while :; do \
+			if curl -sS -m 5 "$$base/ready" 2>/dev/null | grep -Eq "\"ready\"[[:space:]]*:[[:space:]]*true"; then \
+				echo "agent-start: OpenClaw is ready."; \
+				exit 0; \
+			fi; \
+			if [ "$$(date +%s)" -ge "$$deadline" ]; then \
+				echo "agent-start: the runtime started but its gateway was not ready within $(AGENT_START_TIMEOUT)s. Raise AGENT_START_TIMEOUT or look at: docker compose logs -f server" >&2; \
+				exit 1; \
+			fi; \
+			sleep 2; \
+		done'
 
 down:
 	$(DOCKER_COMPOSE) down --remove-orphans

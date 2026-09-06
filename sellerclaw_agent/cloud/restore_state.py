@@ -41,7 +41,11 @@ def run_restore_if_needed() -> None:
     if response.status_code == 404:
         return
     response.raise_for_status()
-    restore_state_backup(state_dir, response.content)
+    outcome = restore_state_backup(state_dir, response.content)
+    print(
+        f"[restore_state] restored {outcome.restored} browser sign-in file(s), "
+        f"dropped {outcome.skipped} file(s) outside the allowlist"
+    )
 
 
 def main() -> None:

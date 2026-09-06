@@ -5,6 +5,16 @@ that in process memory, and `sessions.list` reports it per session as ``hasActiv
 Everything else here — when a session was last touched, which ones are recent, which ended
 badly — comes off the same call, so one round trip answers the whole probe.
 
+That per-session answer is reported as well as summarised. ``state`` collapses the whole
+machine into one word, which is all the "is it safe to redeploy" and "hold the digest"
+callers ever needed; a caller asking about *one* specialist cannot use it, and the cloud
+was left inferring liveness from how recently that specialist had written to its task row.
+A five-minute tool call writes nothing, so a live executor read as dead and a supervisor
+killed it mid-run (staging chat f0e2835a, 2026-09-04). ``running_sessions`` carries the
+gateway's own answer for each session with a run in flight, so that question has a fact
+behind it. Only the running ones: they are what the question is about, and the list stays
+small enough to ride on every ping.
+
 A gateway we cannot reach is not a failed probe: it means no runs are in flight, because
 runs only exist inside that process. We report ``idle`` with the reason attached, so the
 cloud's "is it safe to redeploy" check reads it correctly rather than holding forever.
@@ -43,6 +53,11 @@ _SUMMARY_LIMIT = 240
 # Rows come back newest-first, and only the recent ones are ever counted as active, so this
 # is a safety rail against an unbounded frame rather than a real limit on what we look at.
 _SESSION_ROW_LIMIT = 200
+
+# Ceiling on the per-session liveness rows a ping carries. Only sessions with a run in flight
+# are listed and a machine runs a handful at a time, so this is a rail against a pathological
+# frame rather than a limit anyone should reach.
+_MAX_RUNNING_SESSIONS = 25
 
 # Session run outcomes that mean the run did not deliver. "done" and "running" are the
 # healthy states; anything else is worth showing the operator.
@@ -107,6 +122,10 @@ class AgentActivityProbe:
     recent_errors: list[dict[str, Any]]  # sessions whose last run did not deliver
     log_errors: list[str]  # recent error lines from the OpenClaw process log (crashes/startup)
     error: str | None  # probe-level failure (e.g. gateway unreachable)
+    #: One row per session the gateway reports a run in flight for, or ``None`` when we could
+    #: not ask it. The distinction is the whole point: an empty list is "nothing is running",
+    #: which a caller may act on, while ``None`` is "unknown", which it may not.
+    running_sessions: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -151,6 +170,9 @@ class AgentActivityReader:
                 recent_errors=[],
                 log_errors=log_errors,
                 error=f"{reason}: {str(exc)[:400]}",
+                # Unknown, not empty: we never got to ask, and a caller must not read that
+                # as "this specialist's run has ended".
+                running_sessions=None,
             )
         except Exception as exc:  # noqa: BLE001 - surfaced as probe error
             _log.warning("agent_activity_probe_failed", error=str(exc))
@@ -165,6 +187,7 @@ class AgentActivityReader:
                 recent_errors=[],
                 log_errors=log_errors,
                 error=str(exc)[:500],
+                running_sessions=None,
             )
         return self._summarise(rows, sessions_total, latest, log_errors)
 
@@ -225,6 +248,7 @@ class AgentActivityReader:
                 recent_errors=[],
                 log_errors=log_errors,
                 error=None,
+                running_sessions=[],
             )
 
         now = time()
@@ -264,7 +288,36 @@ class AgentActivityReader:
             recent_errors=self._recent_errors(active),
             log_errors=log_errors,
             error=None,
+            running_sessions=self._running_sessions(stamped, now=now),
         )
+
+    def _running_sessions(
+        self, stamped: list[tuple[dict[str, Any], int | None]], *, now: float
+    ) -> list[dict[str, Any]]:
+        """The sessions the gateway says have a run in flight, one row each.
+
+        Deliberately not filtered by the recent window that ``sessions_active`` uses: the window
+        is a clock and ``hasActiveRun`` outranks it, which is the entire reason a caller would ask
+        this rather than read ``idle_seconds``. ``age_seconds`` still rides along because a live
+        run that has not written for a long time is worth seeing — it just is not evidence of
+        death.
+        """
+        out: list[dict[str, Any]] = []
+        for row, ms in stamped:
+            if not row.get("hasActiveRun"):
+                continue
+            out.append(
+                {
+                    # Never ``None``: the cloud types this as a string, and one null would fail
+                    # validation for the whole ping, not just this row.
+                    "session_key": _row_session_key(row) or "",
+                    "agent_id": _row_agent_id(row),
+                    "age_seconds": None if ms is None else round(max(0.0, now - ms / 1000), 1),
+                }
+            )
+            if len(out) >= _MAX_RUNNING_SESSIONS:
+                break
+        return out
 
     def _recent_errors(self, active: list[tuple[dict[str, Any], int]]) -> list[dict[str, Any]]:
         # `status` is the whole error surface of a session row: the gateway does not put
@@ -335,6 +388,7 @@ def agent_activity_ping_payload(probe: AgentActivityProbe) -> dict[str, Any]:
         "recent_errors": probe.recent_errors,
         "log_errors": probe.log_errors,
         "error": probe.error,
+        "running_sessions": probe.running_sessions,
     }
 
 

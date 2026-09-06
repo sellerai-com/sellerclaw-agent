@@ -554,17 +554,14 @@ def generate_openclaw_config(
         "messages": {
             "visibleReplies": "automatic",
             "queue": {"mode": "steer"},
-            # Never surface OpenClaw's synthesized "⚠️ <Tool> failed: …" notices in the chat.
-            # A failed tool call is normal mid-turn noise — the agent sees the error in its
-            # context and usually recovers on the next call — but the notice reads to the user
-            # like a product bug even when the turn ended successfully. It is also a payload
-            # the agent never wrote: it arrives on the final road while the agent's own reply
-            # was already streamed as preview blocks, so the cloud treats it as the reply's
-            # final wording and drops the streamed text (see ``append_text_part`` cloud-side).
-            # The engine only emits it when it cannot tell the assistant already acknowledged
-            # the failure, and that check is an English-only regex — so a Russian-speaking
-            # agent triggers it on essentially every failed command.
-            "suppressToolErrors": True,
+            # ``suppressToolErrors`` used to sit here, keeping OpenClaw's synthesized
+            # "⚠️ <Tool> failed: …" notice out of the chat: it arrived on the final road after the
+            # agent's own reply had streamed as preview blocks, and committing it dropped that
+            # streamed text (``append_text_part`` cloud-side) — the owner was left with the notice
+            # instead of the answer. Retired upstream in 2026.9.2, which now emits the notice only
+            # when the run ends without a reply of its own, so the collision it caused cannot
+            # happen. Kept here it only made ``openclaw doctor`` strip it and announce that on every
+            # start.
         },
         "bindings": [
             *telegram_bindings,

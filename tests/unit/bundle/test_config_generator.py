@@ -850,17 +850,16 @@ def test_generate_openclaw_config_subagent_run_timeout_in_defaults(
 def test_generate_openclaw_config_suppresses_tool_error_warnings(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """A failed tool call must never reach the user as an engine-synthesized notice.
+    """The chat road stays on automatic delivery, and carries no retired keys.
 
-    The agent sees the error in its own context and normally recovers on the next call, so
-    "⚠️ <Tool> failed: …" only reads as a product bug. Cloud-side it is worse than noise: it
-    arrives on the final road after the agent's own reply was streamed as preview blocks, and
-    committing it drops that streamed text — the user is left with the notice instead of the
-    answer.
+    ``visibleReplies`` is what makes the agent's own reply stream into the chat; on
+    ``message_tool`` the owner would see nothing until the agent explicitly sent something.
+    ``suppressToolErrors`` used to sit beside it and is retired upstream — writing it now only
+    earns a doctor migration notice on every agent start.
     """
     messages = json.loads(_generate(_supervisor_only(make_assembled_agent)))["messages"]
-    assert messages["suppressToolErrors"] is True
     assert messages["visibleReplies"] == "automatic"
+    assert "suppressToolErrors" not in messages
 
 
 def test_generate_openclaw_config_web_search_enabled_requires_auth_token(

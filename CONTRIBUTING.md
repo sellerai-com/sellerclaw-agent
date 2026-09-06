@@ -81,7 +81,14 @@ For iterating on the agent server:
 make up          # docker compose up server --build, .env.production profile
 make up-stage    # same, against the staging cloud (.env.staging)
 make up-dev      # same, against a local cloud (.env.local)
+make agent-start # start the OpenClaw runtime inside the running container
 ```
+
+The container comes up with the agent server only: the OpenClaw runtime waits for a start command,
+normally sent by the "Start" button in the web UI. `make agent-start` sends that command locally
+instead, and waits until the gateway actually accepts traffic. It needs the container to be running
+(it never starts one, so it cannot pick a cloud profile for you) and does nothing when the runtime
+is already up.
 
 Building or publishing a runtime image from a fork is described under [Building the runtime image](docs/cli.md#building-the-runtime-image) in [`docs/cli.md`](docs/cli.md).
 
