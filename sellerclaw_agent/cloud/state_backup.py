@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import tarfile
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -14,6 +15,14 @@ _BROWSER_PROFILE_ROOTS = ("browser/openclaw/user-data", "chrome-profile")
 _BROWSER_PROFILE_ROOT_FILES = frozenset({"Local State"})
 _BROWSER_PROFILE_DEFAULT_FILES = frozenset({"Cookies", "Login Data", "Preferences"})
 _BROWSER_PROFILE_DEFAULT_DIRS = ("Local Storage", "Session Storage")
+
+
+@dataclass(frozen=True)
+class RestoreOutcome:
+    """How a restore ended: files written, and files an old archive offered but we refused."""
+
+    restored: int
+    skipped: int
 
 
 def _is_browser_login_state(path: Path, state_dir: Path) -> bool:
@@ -81,23 +90,40 @@ def build_state_backup_archive(state_dir: Path) -> bytes | None:
     return buffer.getvalue()
 
 
-def restore_state_backup(state_dir: Path, archive: bytes) -> None:
-    """Extract a gzip tar produced by :func:`build_state_backup_archive` into ``state_dir``."""
+def restore_state_backup(state_dir: Path, archive: bytes) -> RestoreOutcome:
+    """Extract browser sign-in files from a state backup into ``state_dir``.
+
+    The allowlist is enforced here as well as in :func:`build_state_backup_archive`, because
+    what an archive contains is decided by whichever agent version wrote it, possibly long ago.
+    Archives written before the backup was narrowed carry whole OpenClaw sessions, and putting
+    those back on a freshly created machine plants a legacy session store that current OpenClaw
+    refuses to start against ("Legacy session store requires migration") — a crash loop that
+    recreating the machine cannot clear, because the same archive is downloaded again on every
+    cold start. Anything outside the allowlist is therefore dropped rather than restored.
+    """
     state_dir.mkdir(parents=True, exist_ok=True)
+    root = state_dir.resolve()
+    restored = 0
+    skipped = 0
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         for member in tar.getmembers():
             if not member.isfile():
                 continue
             dest = (state_dir / member.name).resolve()
             try:
-                dest.relative_to(state_dir.resolve())
+                dest.relative_to(root)
             except ValueError as exc:
                 raise ValueError(f"Unsafe path in state backup archive: {member.name!r}") from exc
+            if not _is_browser_login_state(dest, root):
+                skipped += 1
+                continue
             dest.parent.mkdir(parents=True, exist_ok=True)
             extracted = tar.extractfile(member)
             if extracted is None:
                 continue
             dest.write_bytes(extracted.read())
+            restored += 1
+    return RestoreOutcome(restored=restored, skipped=skipped)
 
 
 def state_dir_has_restoreable_data(state_dir: Path) -> bool:

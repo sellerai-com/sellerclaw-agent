@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from sellerclaw_agent.cloud.state_backup import (
+    RestoreOutcome,
     build_state_backup_archive,
     iter_state_backup_files,
     read_applied_config_version,
@@ -159,3 +160,44 @@ def test_restore_rejects_path_traversal(tmp_path: Path) -> None:
         tf.addfile(info, io.BytesIO(raw))
     with pytest.raises(ValueError, match="Unsafe path"):
         restore_state_backup(state_dir, buffer.getvalue())
+
+
+def _archive_of(payload: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tf:
+        for name, raw in payload.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(raw)
+            tf.addfile(info, io.BytesIO(raw))
+    return buffer.getvalue()
+
+
+def test_restore_drops_everything_outside_the_allowlist(tmp_path: Path) -> None:
+    """Archives predating the narrowed backup hold sessions; restoring those breaks the gateway."""
+    archive = _archive_of(
+        {
+            "agents/supervisor/sessions/sessions.json": b"{}",
+            "agents/supervisor/sessions/6aaf.jsonl": b'{"role":"user"}\n',
+            "workspace-w1/MEMORY.md": b"# m",
+            "browser/openclaw/user-data/Default/Cookies": b"jar",
+        }
+    )
+    state_dir = tmp_path / "st"
+
+    outcome = restore_state_backup(state_dir, archive)
+
+    assert outcome == RestoreOutcome(restored=1, skipped=3)
+    assert (state_dir / "browser" / "openclaw" / "user-data" / "Default" / "Cookies").read_bytes() == b"jar"
+    assert not (state_dir / "agents").exists()
+    assert not (state_dir / "workspace-w1").exists()
+
+
+def test_restore_of_a_sessions_only_archive_writes_nothing(tmp_path: Path) -> None:
+    """The shape that put a real agent in a crash loop: no logins, sessions only."""
+    archive = _archive_of({"agents/supervisor/sessions/sessions.json": b"{}"})
+    state_dir = tmp_path / "st"
+
+    outcome = restore_state_backup(state_dir, archive)
+
+    assert outcome == RestoreOutcome(restored=0, skipped=1)
+    assert list(state_dir.rglob("*")) == []
