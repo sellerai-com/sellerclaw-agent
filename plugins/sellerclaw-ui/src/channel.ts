@@ -414,7 +414,14 @@ const sellerclawUiChatPlugin = createChatChannelPlugin<ScwUiAccount>({
   base: createChannelPluginBase({
     id: "sellerclaw-ui",
     capabilities: {
-      chatTypes: ["direct", "agent"],
+      // OpenClaw validates this list against a closed set (direct | group | channel | thread) and
+      // rejects the WHOLE channel registration when anything else appears in it — silently, as one
+      // startup diagnostic. "agent" was never one of those values; it only survived because older
+      // runtimes did not check. On 2026.9.2 it cost every outbound send: the channel stayed in the
+      // config, its plugin was dropped from the catalog, and the message tool answered "Outbound
+      // not configured for channel: sellerclaw-ui" for a whole afternoon of finished work nobody
+      // was told about. Every chat we address is a direct one, here and on the inbound side.
+      chatTypes: ["direct"],
       reactions: false,
       threads: false,
       media: true,

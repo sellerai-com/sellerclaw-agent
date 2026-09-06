@@ -48,14 +48,75 @@ _log = structlog.get_logger(__name__)
 # will fall into its normal backoff+reconnect path.
 _SSE_TIMEOUT = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=30.0)
 
+# Short on purpose: the report is bookkeeping about a hook that has already been handled, and the
+# cloud re-sends what it never hears about anyway.
+_DELIVERY_REPORT_TIMEOUT = httpx.Timeout(15.0)
+
+#: Gateway endpoints the cloud is allowed to address through a hook event. Only ``/hooks/agent``:
+#: the gateway's event queue (``/hooks/wake``) was tried for background nudges and dropped — a
+#: queued event runs only once the session goes idle, and it is accepted with a 200 either way,
+#: so a hook could sit unrun for minutes while the report below called it delivered.
+_HOOK_ENDPOINTS = frozenset({"agent"})
+
+
+async def report_hook_delivery(
+    *, agent_token: str, hook_id: str, delivered: bool, error: str | None
+) -> None:
+    """Tell the cloud whether this hook actually reached the local gateway.
+
+    The cloud can only see that a live edge subscriber took the payload off its stream, and that
+    is not the same as the gateway accepting it: a run refused admission, a gateway that is down,
+    a hook forwarded while OpenClaw was restarting. Without this the cloud counts all of those as
+    delivered and the updates they carried are never shown again.
+
+    Best-effort by design. A cloud too old to know this endpoint answers 404, and a report that
+    does not arrive leaves the cloud exactly where it was before this existed — so nothing here is
+    allowed to interfere with the forwarding it describes.
+    """
+    base = get_sellerclaw_api_url().rstrip("/")
+    try:
+        async with async_client(timeout=_DELIVERY_REPORT_TIMEOUT) as client:
+            response = await client.post(
+                f"{base}/agent/hooks/delivery",
+                headers={"Authorization": f"Bearer {agent_token}"},
+                json={"hook_id": hook_id, "delivered": delivered, "error": error},
+            )
+        response.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 - reporting must never break forwarding
+        _log.info("hook_delivery_report_failed", hook_id=hook_id, error=str(exc))
+
 
 async def forward_hook_event(
     payload: dict[str, Any],
     *,
     forwarder: LocalOpenClawForwarder,
     openclaw_gate: OpenClawGate,
+    agent_token: str | None = None,
 ) -> None:
-    """Forward a ``hook_event`` to local OpenClaw ``/hooks/agent`` (gated on readiness)."""
+    """Forward a ``hook_event`` to the local OpenClaw gateway (gated on readiness).
+
+    Two shapes arrive here. Most senders publish the gateway body directly and it goes to
+    ``/hooks/agent`` — that is every hook there has ever been. A sender that needs more says so in
+    an envelope (``endpoint`` / ``body`` / ``hookId``): a name for the hook so what became of it
+    can be reported back — including the gateway refusing a run it could not admit in time,
+    which is the one outcome the cloud cannot see for itself. The cloud only sends envelopes to
+    agents whose protocol version says they are understood, so an unknown ``endpoint`` here is a
+    bug rather than an old peer — it is refused and reported rather than guessed at.
+    """
+    endpoint, body, hook_id = _read_hook_envelope(payload)
+    tracked = agent_token is not None and bool(hook_id)
+
+    async def _report(delivered: bool, error: str | None) -> None:
+        if tracked and agent_token is not None and hook_id is not None:
+            await report_hook_delivery(
+                agent_token=agent_token, hook_id=hook_id, delivered=delivered, error=error
+            )
+
+    if endpoint not in _HOOK_ENDPOINTS:
+        _log.warning("hook_event_dropped", reason="unknown_endpoint", endpoint=endpoint)
+        await _report(False, f"unknown_endpoint: {endpoint}")
+        return
+
     running, oc_status, oc_err = await openclaw_gate()
     if not running:
         _log.info(
@@ -64,15 +125,40 @@ async def forward_hook_event(
             openclaw_status=oc_status,
             openclaw_error=oc_err,
         )
+        await _report(False, f"openclaw_not_running status={oc_status} error={oc_err}")
         return
     try:
-        await forwarder.post_hooks_agent_json(payload)
+        await forwarder.post_hooks_agent_json(body)
     except httpx.ConnectError as exc:
         _log.info("hook_event_dropped", reason="gateway_unreachable", error=str(exc))
+        await _report(False, f"gateway_unreachable: {exc}")
     except httpx.TimeoutException as exc:
         _log.info("hook_event_dropped", reason="gateway_timeout", error=str(exc))
-    except Exception:
+        await _report(False, f"gateway_timeout: {exc}")
+    except Exception as exc:  # noqa: BLE001 - the outcome is reported, then left in the log
         _log.exception("hooks_forward_failed")
+        await _report(False, str(exc)[:500])
+    else:
+        await _report(True, None)
+
+
+def _read_hook_envelope(payload: dict[str, Any]) -> tuple[str, dict[str, Any], str | None]:
+    """Split an incoming hook into (endpoint, gateway body, hook id).
+
+    A payload without an ``endpoint`` key is the plain gateway body every sender has always used;
+    it goes to ``/hooks/agent`` unnamed, exactly as before. ``endpoint`` is never a valid field of
+    a gateway body itself, so there is nothing to collide with.
+    """
+    raw_endpoint = payload.get("endpoint")
+    if not isinstance(raw_endpoint, str):
+        return "agent", payload, None
+    body = payload.get("body")
+    hook_id = payload.get("hookId")
+    return (
+        raw_endpoint,
+        body if isinstance(body, dict) else {},
+        hook_id if isinstance(hook_id, str) and hook_id else None,
+    )
 
 
 async def _consume_hooks_sse(
@@ -107,7 +193,12 @@ async def _consume_hooks_sse(
                     continue
                 if not isinstance(payload, dict):
                     continue
-                await forward_hook_event(payload, forwarder=forwarder, openclaw_gate=openclaw_gate)
+                await forward_hook_event(
+                    payload,
+                    forwarder=forwarder,
+                    openclaw_gate=openclaw_gate,
+                    agent_token=agent_token,
+                )
 
 
 async def run_edge_hooks_sse_loop(
