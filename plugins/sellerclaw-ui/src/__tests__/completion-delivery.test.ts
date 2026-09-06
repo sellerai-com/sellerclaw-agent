@@ -384,6 +384,38 @@ describe("completion delivery", () => {
     });
   });
 
+  it("stays silent when the run wrote its reasoning and then the token", () => {
+    // Staging chat f0e2835a, 2026-09-04: the old exact-match check saw an ordinary answer, so the
+    // plugin substituted the lot — token and all — for the child's report. Ending on the token is
+    // the ask; what stands before it was written to the plumbing.
+    const { answerRun, sending } = setup();
+
+    answerRun({
+      runId: ANNOUNCE_RUN_ID,
+      text: "Всё уже отправлено — отчёт ушёл минуту назад.\n\nNO_REPLY",
+    });
+
+    expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toMatchObject({
+      cancel: true,
+    });
+  });
+
+  it.each([
+    ["punctuated", "NO_REPLY."],
+    ["bold", "**NO_REPLY**"],
+    ["json envelope", '{"action":"NO_REPLY"}'],
+  ])("delivers nothing for the engine's other silent shapes (%s)", (_label, text) => {
+    // The shapes OpenClaw's own contract recognises. Reproducing that contract with a string
+    // comparison is what let each of them reach the owner as an ordinary message.
+    const { answerRun, sending } = setup();
+
+    answerRun({ runId: ANNOUNCE_RUN_ID, text });
+
+    expect(sending({ content: CHILD_REPORT }, { sessionKey: SESSION_KEY })).toMatchObject({
+      cancel: true,
+    });
+  });
+
   it("passes media through untouched", () => {
     const { answerRun, sending } = setup();
     answerRun({ runId: ANNOUNCE_RUN_ID, text: ANSWER });

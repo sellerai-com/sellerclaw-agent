@@ -98,6 +98,66 @@ vi.mock("openclaw/plugin-sdk/channel-reply-pipeline", () => ({
   createChannelReplyPipeline: vi.fn(() => ({ onModelSelected: vi.fn() })),
 }));
 
+// The engine's silent-reply contract (``src/auto-reply/tokens.ts``), reproduced closely enough for
+// the shapes our code relies on: a token-only reply, case-insensitive, tolerant of repeats and of
+// punctuation at the edges, plus the JSON-wrapped and reasoning-prefixed forms the payload-aware
+// variant adds. The real module lives inside the OpenClaw container.
+vi.mock("openclaw/plugin-sdk/reply-chunking", () => {
+  const TOKEN = "NO_REPLY";
+  const exactRe = new RegExp(`^\\s*${TOKEN}(?:\\s+${TOKEN})*\\s*$`, "i");
+  const stripEdgePunctuation = (text: string) =>
+    text.replace(/^\p{P}+/u, "").replace(/\p{P}+$/u, "");
+  const isSilentReplyText = (text: string) =>
+    Boolean(text) && (exactRe.test(text) || exactRe.test(stripEdgePunctuation(text.trim())));
+  const isJsonString = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('"') || !trimmed.endsWith('"') || !trimmed.includes(TOKEN)) return false;
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      return typeof parsed === "string" && parsed.trim() === TOKEN;
+    } catch {
+      return false;
+    }
+  };
+  const isJsonEnvelope = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith("{") || !trimmed.endsWith("}") || !trimmed.includes(TOKEN)) return false;
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      const keys = Object.keys(parsed);
+      return (
+        keys.length === 1 &&
+        keys[0] === "action" &&
+        (parsed as { action?: unknown }).action === TOKEN
+      );
+    } catch {
+      return false;
+    }
+  };
+  const reasoningPrefixRe =
+    /^\s*(?:<\s*(?:think(?:ing)?|thought)\b[^<>]*>[\s\S]*?<\s*\/\s*(?:think(?:ing)?|thought)\s*>|(?:think(?:ing)?|thought|analysis|reasoning)\s*:?\s*\r?\n)/i;
+  const silentIntentRe =
+    /^(?:i|we)(?:'ll| will)? ?(?:have nothing (?:to|for) (?:say|add)|stay (?:quiet|silent)|(?:do not|don't|won't) reply)\.?$/i;
+  const isReasoningPrefixedSilent = (text: string) => {
+    const trimmed = text.trim();
+    if (!reasoningPrefixRe.test(trimmed)) return false;
+    const rest = trimmed.replace(reasoningPrefixRe, "").trim();
+    if (isSilentReplyText(rest)) return true;
+    const withoutToken = rest.replace(new RegExp(`(?:^|[\\s*.])${TOKEN}\\s*$`, "i"), "").trim();
+    return withoutToken !== rest && (!withoutToken || silentIntentRe.test(withoutToken));
+  };
+  return {
+    SILENT_REPLY_TOKEN: TOKEN,
+    isSilentReplyText,
+    isSilentReplyPayloadText: (text: string) =>
+      isSilentReplyText(text) ||
+      isJsonString(text) ||
+      isJsonEnvelope(text) ||
+      isReasoningPrefixedSilent(text),
+  };
+});
+
 vi.mock("openclaw/plugin-sdk/reply-payload", () => ({
   // Lightweight reproduction of the SDK's check: a payload is reasoning when
   // ``isReasoning === true`` or the text starts with ``reasoning:`` / ``thinking…_``.
