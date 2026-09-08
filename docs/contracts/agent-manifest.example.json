@@ -59,6 +59,7 @@
     "browser_enabled_default": true,
     "image_generation_default": false,
     "video_generation_default": false,
+    "heartbeat": { "every": "0m", "target": "none" },
     "main_agent": {
       "id": "supervisor",
       "name": "Supervisor",

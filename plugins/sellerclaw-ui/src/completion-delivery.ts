@@ -127,6 +127,15 @@ const RACED_ANSWER_MAX_AGE_MS = 10_000;
  */
 const TOOL_SEND_GRACE_MS = 3_000;
 
+/**
+ * How long a run's silence ask stays enforceable against the delivery that carries it.
+ *
+ * The trailing reply follows the run's end within a second or two, so this only has to bridge
+ * that gap; short keeps the entry from ever meeting an unrelated later delivery whose text
+ * happens to be identical (a repeated status line in the same chat).
+ */
+const SILENCED_TEXT_TTL_MS = 15_000;
+
 interface PendingAnswer {
   /** The supervisor's answer, or "" when the run produced no visible text at all. */
   answer: string;
@@ -192,6 +201,26 @@ const lastVisibleTexts = getSharedState(
 const toolSendsInFlight = getSharedState(
   "completion-delivery:tool-sends-in-flight",
   () => new Map<string, number>(),
+);
+
+/**
+ * What a run asked to keep to itself, so the delivery that carries it anyway can be recognised.
+ *
+ * A completion run that already spoke to the owner through the ``message`` tool ends its turn
+ * with a line addressed to the plumbing — "task closed, report sent, waiting on the owner" — and
+ * closes it with the silent token. The guard stands down for such a run (it did the right thing),
+ * but the runtime still delivers that trailing reply, and by the time it reaches
+ * ``message_sending`` the engine has stripped the token off it: what arrives looks exactly like
+ * an ordinary answer. The text itself is then the only thing left to recognise it by, which is
+ * what this remembers (staging chat 1d925fb0, 2026-09-07 — the owner read "Задача закрыта.
+ * Отчёт отправлен." seconds after reading the report it refers to).
+ *
+ * Content-matched rather than a blanket suppression window: a live turn's own delivery in the
+ * same chat must never be cancelled by it.
+ */
+const silencedTexts = getSharedState(
+  "completion-delivery:silenced-texts",
+  () => new Map<string, { text: string; expiresAt: number }>(),
 );
 
 interface LlmOutputEvent {
@@ -278,6 +307,90 @@ function readLastVisible(
     completion: entry.completion,
     capturedAt: entry.capturedAt,
   };
+}
+
+/**
+ * Text as it is compared on the outbound road: whitespace collapsed, ends trimmed.
+ *
+ * The engine re-chunks and re-joins a reply on its way out, so the prose it delivers need not be
+ * byte-identical to the prose the model wrote; what survives that trip is the words.
+ */
+function comparableText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** Record the text a run asked to keep internal, for {@link refuseSilencedDelivery}. */
+function rememberSilenceAsk(sessionKey: string, answer: string): void {
+  const prose = comparableText(droppedSilentProse(answer));
+  if (!prose) return;
+  silencedTexts.set(sessionKey, { text: prose, expiresAt: Date.now() + SILENCED_TEXT_TTL_MS });
+}
+
+/**
+ * The prose a just-finished completion run asked to keep internal, read off the capture map
+ * when its ``agent_end`` has not landed yet.
+ *
+ * Same race as ``adoptRacedCompletionAnswer`` rescues, seen from the other side: ``agent_end`` is
+ * fire-and-forget, so the runtime's delivery of the run's trailing reply can arrive before the
+ * silence ask was recorded. The capture map is filled per model call and is already complete at
+ * that moment. Same discriminators, too — a completion run's text, fresh enough to be this
+ * delivery's — and only for a run that messaged the owner: any other completion text is a pending
+ * answer's business and was consumed by the adopt above.
+ */
+function racedSilenceAsk(sessionKey: string): string {
+  const seen = readLastVisible(sessionKey);
+  if (!seen || !seen.completion || !seen.text) return "";
+  if (Date.now() - seen.capturedAt > RACED_ANSWER_MAX_AGE_MS) return "";
+  if (!hasMessagedOwner(seen.runId, sessionKey)) return "";
+  if (!isSilentAnswer(seen.text)) return "";
+  return comparableText(droppedSilentProse(seen.text));
+}
+
+/**
+ * Cancel a runtime delivery that carries what a run wanted kept internal.
+ *
+ * Two shapes reach here, and both are the same ask:
+ *
+ *  * the silent token still attached — an outbound road that does not strip it, which is how a
+ *    heartbeat run's reply arrives (the runtime prepends its own housekeeping notice to it, so
+ *    the owner reads a paragraph about `agents.defaults.heartbeat.target` as well);
+ *  * the token already stripped, leaving the prose the run wrote to the plumbing — the trailing
+ *    reply of a completion run that had messaged the owner. Recognised by
+ *    {@link rememberSilenceAsk}'s record of what that run actually said, or — when the delivery
+ *    outran the run's end — by {@link racedSilenceAsk}.
+ *
+ * Only called when no completion answer is pending for this session: a pending entry is a
+ * decision about this very delivery and stays authoritative.
+ */
+function refuseSilencedDelivery(
+  api: OpenClawPluginApi,
+  sessionKey: string,
+  content: string,
+): MessageSendingResult | undefined {
+  const text = comparableText(content);
+  // Media-only payloads arrive with no text and must pass: they are the deliverable itself.
+  if (!text) return undefined;
+  if (isSilentAnswer(content)) {
+    logDelivery(
+      api,
+      `silent-token delivery cancelled session_key=${sessionKey} chars=${text.length}`,
+    );
+    return { cancel: true, cancelReason: "sender asked for silence" };
+  }
+  const silenced = silencedTexts.get(sessionKey);
+  if (silenced && silenced.expiresAt <= Date.now()) silencedTexts.delete(sessionKey);
+  const recorded = silenced && silenced.expiresAt > Date.now() ? silenced.text : "";
+  if (recorded !== text && racedSilenceAsk(sessionKey) !== text) return undefined;
+  silencedTexts.delete(sessionKey);
+  // Consumed either way: ``agent_end``, when it lands, must not record the same ask again for
+  // a delivery that has already been dealt with.
+  lastVisibleTexts.delete(sessionKey);
+  logDelivery(
+    api,
+    `internal run note cancelled after the run had messaged the owner ` +
+      `session_key=${sessionKey} chars=${text.length}`,
+  );
+  return { cancel: true, cancelReason: "run asked for silence after messaging the owner" };
 }
 
 function clearPending(sessionKey: string): void {
@@ -429,6 +542,10 @@ function registerAnswerCapture(api: OpenClawPluginApi): void {
     if (hasMessagedOwner(event?.runId ?? ctx?.runId, sessionKey)) {
       // The run did the right thing on its own; the runtime will not fall back at all.
       clearPending(sessionKey);
+      // It does, however, still deliver this run's own trailing reply — and a run that has
+      // already messaged the owner ends by talking to the plumbing, token and all. Remember
+      // that ask so the delivery carrying it can be recognised and cancelled.
+      if (isSilentAnswer(answer)) rememberSilenceAsk(sessionKey, answer);
       return undefined;
     }
     if (isSilentAnswer(answer)) {
@@ -517,9 +634,12 @@ function registerDeliveryRewrite(api: OpenClawPluginApi): void {
         toolSendsInFlight.delete(sessionKey);
         if (Date.now() - toolSendMarkedAt <= TOOL_SEND_GRACE_MS) return undefined;
       }
-      const pending = readPending(sessionKey) ?? adoptRacedCompletionAnswer(api, sessionKey);
-      if (!pending) return undefined;
       const content = asString(event?.content);
+      const pending = readPending(sessionKey) ?? adoptRacedCompletionAnswer(api, sessionKey);
+      // No decision pending for this session: the delivery is the runtime's own — a completion
+      // run's trailing reply, a heartbeat run's output — and the only question left is whether
+      // whoever wrote it asked for it to stay internal.
+      if (!pending) return refuseSilencedDelivery(api, sessionKey, content);
       // A media-only payload arrives with empty text. Generated images and files are the
       // child's deliverables, not its internal report — they must reach the owner untouched.
       if (!content.trim()) return undefined;
@@ -581,4 +701,5 @@ export function __resetCompletionDeliveryState(): void {
   messagedRuns.clear();
   lastVisibleTexts.clear();
   toolSendsInFlight.clear();
+  silencedTexts.clear();
 }

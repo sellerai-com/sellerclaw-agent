@@ -432,6 +432,137 @@ describe("registerInboundRoute", () => {
     }
   });
 
+  it("re-dispatches a turn the runtime refused to admit, instead of losing the message", async () => {
+    // Admitting a user turn is a compare-and-swap on the session entry, and background runs share
+    // that session — so an owner who writes while one is settling can have their message refused
+    // outright. It reached a real seller as a failed bubble for a message the agent never read
+    // ("я одобряю кампании", staging chat f64c690f, 2026-09-07): the same text, dispatched a
+    // moment later, is admitted normally.
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "я одобряю кампании" },
+      });
+      dispatchMock
+        .mockRejectedValueOnce(new Error("restart recovery claim changed before agent adoption"))
+        .mockResolvedValueOnce(undefined);
+
+      const { api, registerHttpRoute } = buildApi();
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = getHandler(registerHttpRoute);
+
+      const req = { headers: {} } as IncomingMessage;
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+      await handler(req, res);
+
+      await vi.waitFor(
+        () => {
+          const endCall = fetchMock.mock.calls.find((c) =>
+            /\/internal\/openclaw\/turn\/[0-9a-f-]+\/end$/.test(String(c[0])),
+          );
+          expect(endCall).toBeDefined();
+          const body = JSON.parse(String((endCall![1] as RequestInit).body)) as Record<
+            string,
+            string
+          >;
+          expect(body.status).toBe("completed");
+        },
+        { timeout: 5000 },
+      );
+      expect(dispatchMock).toHaveBeenCalledTimes(2);
+      // The retry goes in as a fresh OpenClaw turn: a session-level dedup on the first id must
+      // not swallow the re-run.
+      const firstId = (dispatchMock.mock.calls[0]![0] as { messageId: string }).messageId;
+      const retryId = (dispatchMock.mock.calls[1]![0] as { messageId: string }).messageId;
+      expect(retryId).not.toBe(firstId);
+      // Same words, though — this is the owner's message, not a synthesized continuation.
+      expect((dispatchMock.mock.calls[1]![0] as { rawBody: string }).rawBody).toContain(
+        "я одобряю кампании",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not re-dispatch a rejection that is not an admission race", async () => {
+    // A crashed run fails the same way twice; retrying it would only delay telling the owner.
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "hi" },
+      });
+      dispatchMock.mockRejectedValue(new Error("model run aborted"));
+
+      const { api, registerHttpRoute } = buildApi();
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = getHandler(registerHttpRoute);
+
+      const req = { headers: {} } as IncomingMessage;
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+      await handler(req, res);
+
+      await vi.waitFor(() => {
+        const endCall = fetchMock.mock.calls.find((c) =>
+          /\/internal\/openclaw\/turn\/[0-9a-f-]+\/end$/.test(String(c[0])),
+        );
+        expect(endCall).toBeDefined();
+        const body = JSON.parse(String((endCall![1] as RequestInit).body)) as Record<string, string>;
+        expect(body.status).toBe("failed");
+      });
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("gives up after the bounded retries and fails the turn", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "hi" },
+      });
+      dispatchMock.mockRejectedValue(
+        new Error("restart recovery claim changed before agent adoption"),
+      );
+
+      const { api, registerHttpRoute } = buildApi();
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = getHandler(registerHttpRoute);
+
+      const req = { headers: {} } as IncomingMessage;
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+      await handler(req, res);
+
+      await vi.waitFor(
+        () => {
+          const endCall = fetchMock.mock.calls.find((c) =>
+            /\/internal\/openclaw\/turn\/[0-9a-f-]+\/end$/.test(String(c[0])),
+          );
+          expect(endCall).toBeDefined();
+          const body = JSON.parse(String((endCall![1] as RequestInit).body)) as Record<
+            string,
+            string
+          >;
+          expect(body.status).toBe("failed");
+        },
+        { timeout: 8000 },
+      );
+      // The first dispatch plus the two bounded retries, and no more.
+      expect(dispatchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("ends an empty but successful dispatch as completed (benign NO_REPLY stays silent)", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));

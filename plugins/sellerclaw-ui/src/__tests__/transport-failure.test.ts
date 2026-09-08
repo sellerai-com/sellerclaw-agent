@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isTransportTurnFailure } from "../run-outcome.js";
+import { isAdmissionRaceFailure, isTransportTurnFailure } from "../run-outcome.js";
 
 /**
  * Which failures a turn may re-ask on its own.
@@ -50,5 +50,30 @@ describe("isTransportTurnFailure", () => {
     // Both families named in one message: the request would be refused again, so the
     // human-needed side wins regardless of the transport wording.
     expect(isTransportTurnFailure("503 Service Unavailable: rate limit exceeded")).toBe(false);
+  });
+});
+
+/**
+ * Rejections thrown before the turn was admitted at all — a different question from the one
+ * above: not "may the answer be re-asked", but "did the agent ever see the message".
+ */
+describe("isAdmissionRaceFailure", () => {
+  it.each([
+    ["Error: restart recovery claim changed before agent adoption", "claim moved under the turn"],
+    ["session changed before durable user-turn admission", "entry moved under the turn"],
+  ])("re-dispatches %s (%s)", (text) => {
+    expect(isAdmissionRaceFailure(text)).toBe(true);
+  });
+
+  it.each([
+    ["", "no message"],
+    ["model run aborted", "the run itself died"],
+    ["LLM request timed out.", "a transport failure is the other classifier's business"],
+    [
+      "channel restart recovery requires source-keyed user-turn admission",
+      "a contract mismatch would be refused identically on a retry",
+    ],
+  ])("does not re-dispatch %s (%s)", (text) => {
+    expect(isAdmissionRaceFailure(text)).toBe(false);
   });
 });

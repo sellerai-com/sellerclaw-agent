@@ -86,6 +86,27 @@ def test_parse_heartbeat_every_from_mapping_and_absent() -> None:
     assert bundle_manifest_from_mapping(data2).agents.heartbeat_every == "0m"
 
 
+def test_parse_heartbeat_target_from_mapping_and_absent() -> None:
+    """``agents.heartbeat.target`` parses from the mapping; absent -> 'none' (internal).
+
+    Never OpenClaw's default, which delivers heartbeat output into the owner's own chat — the
+    route that leaked the runtime's "First heartbeat alert" notice into a live conversation.
+    """
+    data = _v2()
+    data["agents"]["heartbeat"] = {"every": "0m", "target": "last"}
+    assert bundle_manifest_from_mapping(data).agents.heartbeat_target == "last"
+
+    data2 = _v2()
+    data2["agents"].pop("heartbeat", None)
+    assert bundle_manifest_from_mapping(data2).agents.heartbeat_target == "none"
+
+    # A cadence-only heartbeat block (the manifest every cloud release before 2026-09-06 sent)
+    # must not inherit the runtime default either.
+    data3 = _v2()
+    data3["agents"]["heartbeat"] = {"every": "30m"}
+    assert bundle_manifest_from_mapping(data3).agents.heartbeat_target == "none"
+
+
 def test_parse_model_info_optional_sizing_fields() -> None:
     """Only the frontier model carries reasoning/context/output sizing; the rest are None."""
     manifest = bundle_manifest_from_mapping(_v2())

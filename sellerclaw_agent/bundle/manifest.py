@@ -152,6 +152,12 @@ class AgentsManifest:
     # OpenClaw heartbeat cadence (``agents.defaults.heartbeat.every``). Cloud-owned policy.
     # ``"0m"`` disables the periodic poll; absent in older manifests -> stay disabled.
     heartbeat_every: str = "0m"
+    # Where OpenClaw delivers what a heartbeat run produces
+    # (``agents.defaults.heartbeat.target``). Cloud-owned policy, like the cadence above.
+    # ``"none"`` keeps it internal; absent in older manifests -> stay internal, because the
+    # runtime's own default is the owner's thread — and it carries runtime housekeeping
+    # ("First heartbeat alert: ...") into the chat the owner is reading.
+    heartbeat_target: str = "none"
 
 
 @dataclass(frozen=True)
@@ -560,6 +566,9 @@ def _parse_agents(value: object) -> AgentsManifest:
     heartbeat = data.get("heartbeat")
     heartbeat_data = heartbeat if isinstance(heartbeat, dict) else {}
     heartbeat_every = str(heartbeat_data.get("every") or "0m").strip() or "0m"
+    # Heartbeat delivery target (cloud-owned). Absent -> "none" (internal); never falls back to
+    # the OpenClaw default, which delivers into the owner's own chat.
+    heartbeat_target = str(heartbeat_data.get("target") or "none").strip() or "none"
 
     subagents_raw = data.get("subagents") or []
     if not isinstance(subagents_raw, (list, tuple)):
@@ -606,6 +615,7 @@ def _parse_agents(value: object) -> AgentsManifest:
         main_agent=main_agent,
         subagents=tuple(subagent_specs),
         heartbeat_every=heartbeat_every,
+        heartbeat_target=heartbeat_target,
     )
 
 
@@ -878,7 +888,7 @@ def _agents_to_mapping(agents: AgentsManifest) -> dict[str, object]:
         "browser_enabled_default": agents.browser_enabled_default,
         "image_generation_default": agents.image_generation_default,
         "video_generation_default": agents.video_generation_default,
-        "heartbeat": {"every": agents.heartbeat_every},
+        "heartbeat": {"every": agents.heartbeat_every, "target": agents.heartbeat_target},
         "main_agent": _agent_spec_to_mapping(agents.main_agent),
         "subagents": [_agent_spec_to_mapping(s) for s in agents.subagents],
     }
