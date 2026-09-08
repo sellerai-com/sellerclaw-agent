@@ -419,6 +419,7 @@ class BundleBuilder:
             thinking_default=manifest.agents.thinking_default,
             reasoning_default=manifest.agents.reasoning_default,
             heartbeat_every=manifest.agents.heartbeat_every,
+            heartbeat_target=manifest.agents.heartbeat_target,
             cron_enabled=manifest.cron_enabled,
             web_fetch_enabled=manifest.web_fetch_enabled,
             memory_enabled=manifest.memory_enabled,

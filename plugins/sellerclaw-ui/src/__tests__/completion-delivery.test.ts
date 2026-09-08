@@ -588,3 +588,153 @@ describe("completion delivery", () => {
     expect(() => registerCompletionDeliveryGuard(api)).not.toThrow();
   });
 });
+
+/**
+ * Deliveries nobody is waiting for: the runtime sending something on a run's behalf when no
+ * completion answer is pending. Both shapes reached a real owner on 2026-09-07 (staging chat
+ * 1d925fb0), seventeen seconds apart.
+ */
+describe("internal text on the outbound road", () => {
+  const INTERNAL_NOTE = "Задача закрыта. Отчёт отправлен. Жду решения владельца по Google Ads.";
+
+  it("cancels a delivery that still carries the silent token", () => {
+    // A heartbeat run's output: the runtime glues its own housekeeping notice in front of the
+    // model's text and delivers the lot, token included. Nothing here is addressed to the owner.
+    const { sending } = setup();
+    const heartbeatDelivery =
+      `First heartbeat alert: your bot runs periodic background checks and messages you only ` +
+      `when something needs attention. Set agents.defaults.heartbeat.target: "none" to keep ` +
+      `these internal.\nВся работа завершена, отчёт отправлен.\n\nNO_REPLY`;
+
+    expect(sending({ content: heartbeatDelivery }, { sessionKey: SESSION_KEY })).toMatchObject({
+      cancel: true,
+    });
+  });
+
+  it("cancels the trailing note of a completion run that had already messaged the owner", () => {
+    // The run did the right thing — it sent the report with the ``message`` tool — and then wrote
+    // one line to the plumbing and asked for silence. The runtime delivers that line anyway, with
+    // the token stripped off, so only the text itself identifies it.
+    const { toolCall, answerRun, sending } = setup();
+    toolCall(
+      {
+        toolName: "message",
+        runId: ANNOUNCE_RUN_ID,
+        params: { action: "send", target: `sellerclaw-ui:direct:${CHAT_ID}`, message: ANSWER },
+      },
+      { sessionKey: SESSION_KEY, runId: ANNOUNCE_RUN_ID },
+    );
+    expect(sending({ content: ANSWER }, { sessionKey: SESSION_KEY })).toBeUndefined();
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: `${INTERNAL_NOTE}\n\nNO_REPLY` });
+
+    expect(sending({ content: INTERNAL_NOTE }, { sessionKey: SESSION_KEY })).toMatchObject({
+      cancel: true,
+    });
+  });
+
+  it("cancels the note even when its delivery outruns the run's end", () => {
+    // ``agent_end`` is fire-and-forget, so the runtime's delivery can arrive before the silence
+    // ask was recorded; the capture map (filled per model call) already holds the text. The
+    // engine also re-joins the prose on its way out, so whitespace must not decide the match.
+    const { hooks, toolCall, sending } = setup();
+    const fire = (name: string, event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+      for (const handler of hooks.get(name) ?? []) handler(event, ctx);
+    };
+    toolCall(
+      {
+        toolName: "message",
+        runId: ANNOUNCE_RUN_ID,
+        params: { action: "send", target: `sellerclaw-ui:direct:${CHAT_ID}`, message: ANSWER },
+      },
+      { sessionKey: SESSION_KEY, runId: ANNOUNCE_RUN_ID },
+    );
+    sending({ content: ANSWER }, { sessionKey: SESSION_KEY });
+    fire(
+      "llm_output",
+      { runId: ANNOUNCE_RUN_ID, assistantTexts: [`${INTERNAL_NOTE}\n\nNO_REPLY`] },
+      { sessionKey: SESSION_KEY },
+    );
+
+    const rejoined = INTERNAL_NOTE.replace("Отчёт отправлен. ", "Отчёт отправлен.\n\n");
+    expect(sending({ content: rejoined }, { sessionKey: SESSION_KEY })).toMatchObject({
+      cancel: true,
+    });
+    // The late run end finds nothing left to record, and a later identical line passes.
+    fire("agent_end", { runId: ANNOUNCE_RUN_ID, messages: [] }, { sessionKey: SESSION_KEY });
+    expect(sending({ content: INTERNAL_NOTE }, { sessionKey: SESSION_KEY })).toBeUndefined();
+  });
+
+  it("does not read a real answer off the capture map as a silence ask", () => {
+    // A completion run that messaged the owner and then wrote a genuine closing line without the
+    // token: nothing asked for silence, so the runtime's delivery of it is left alone.
+    const { hooks, toolCall, sending } = setup();
+    const fire = (name: string, event: Record<string, unknown>, ctx?: Record<string, unknown>) => {
+      for (const handler of hooks.get(name) ?? []) handler(event, ctx);
+    };
+    toolCall(
+      {
+        toolName: "message",
+        runId: ANNOUNCE_RUN_ID,
+        params: { action: "send", target: `sellerclaw-ui:direct:${CHAT_ID}`, message: ANSWER },
+      },
+      { sessionKey: SESSION_KEY, runId: ANNOUNCE_RUN_ID },
+    );
+    sending({ content: ANSWER }, { sessionKey: SESSION_KEY });
+    fire(
+      "llm_output",
+      { runId: ANNOUNCE_RUN_ID, assistantTexts: [INTERNAL_NOTE] },
+      { sessionKey: SESSION_KEY },
+    );
+
+    expect(sending({ content: INTERNAL_NOTE }, { sessionKey: SESSION_KEY })).toBeUndefined();
+  });
+
+  it("cancels that note only once, and only in the chat that produced it", () => {
+    const { toolCall, answerRun, sending } = setup();
+    toolCall(
+      {
+        toolName: "message",
+        runId: ANNOUNCE_RUN_ID,
+        params: { action: "send", target: `sellerclaw-ui:direct:${CHAT_ID}`, message: ANSWER },
+      },
+      { sessionKey: SESSION_KEY, runId: ANNOUNCE_RUN_ID },
+    );
+    sending({ content: ANSWER }, { sessionKey: SESSION_KEY });
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: `${INTERNAL_NOTE}\n\nNO_REPLY` });
+
+    // Another chat is another conversation; its deliveries are none of this run's business.
+    expect(sending({ content: INTERNAL_NOTE }, { sessionKey: OTHER_SESSION_KEY })).toBeUndefined();
+    expect(sending({ content: INTERNAL_NOTE }, { sessionKey: SESSION_KEY })).toMatchObject({
+      cancel: true,
+    });
+    // Spent: an identical line later in the same chat is somebody else's message.
+    expect(sending({ content: INTERNAL_NOTE }, { sessionKey: SESSION_KEY })).toBeUndefined();
+  });
+
+  it("forgets the silence ask once its window closes", () => {
+    const { toolCall, answerRun, sending } = setup();
+    toolCall(
+      {
+        toolName: "message",
+        runId: ANNOUNCE_RUN_ID,
+        params: { action: "send", target: `sellerclaw-ui:direct:${CHAT_ID}`, message: ANSWER },
+      },
+      { sessionKey: SESSION_KEY, runId: ANNOUNCE_RUN_ID },
+    );
+    sending({ content: ANSWER }, { sessionKey: SESSION_KEY });
+    answerRun({ runId: ANNOUNCE_RUN_ID, text: `${INTERNAL_NOTE}\n\nNO_REPLY` });
+    vi.advanceTimersByTime(60_000);
+
+    expect(sending({ content: INTERNAL_NOTE }, { sessionKey: SESSION_KEY })).toBeUndefined();
+  });
+
+  it("leaves an ordinary delivery and media alone", () => {
+    // Nothing asked for silence here: a runtime delivery carrying a real answer, and a media-only
+    // payload (empty text) which is the deliverable itself.
+    const { sending } = setup();
+
+    expect(sending({ content: ANSWER }, { sessionKey: SESSION_KEY })).toBeUndefined();
+    expect(sending({ content: "" }, { sessionKey: SESSION_KEY })).toBeUndefined();
+    expect(sending({ content: "   " }, { sessionKey: SESSION_KEY })).toBeUndefined();
+  });
+});

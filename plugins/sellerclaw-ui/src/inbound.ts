@@ -15,6 +15,7 @@ import { visibleAnswerText } from "./silent-token.js";
 import {
   claimContinuation,
   consumeOwnerAbort,
+  isAdmissionRaceFailure,
   isTransportTurnFailure,
   markOwnerAbort,
   MAX_CONTINUATIONS,
@@ -408,6 +409,22 @@ const CONTINUATION_PROMPT =
   "internal plumbing — no need to apologise for it or explain it.";
 
 /**
+ * Re-dispatches allowed for one message the runtime refused to admit (see
+ * {@link isAdmissionRaceFailure}). Two, because the race is with a state change that is already
+ * landing: if the message is still not admitted after two waits, something other than timing is
+ * wrong and the owner should be told rather than kept waiting.
+ */
+const MAX_ADMISSION_REDISPATCHES = 2;
+
+/**
+ * Base wait before re-dispatching, multiplied by the attempt number.
+ *
+ * Long enough for the run that held the session to finish settling, short enough that the owner
+ * reads it as the assistant thinking rather than as a stall.
+ */
+const ADMISSION_REDISPATCH_DELAY_MS = 750;
+
+/**
  * Run one chat turn: dispatch it to the agent, stream its parts to the cloud, finalize it, and —
  * when the run budget cut it short — resume it.
  *
@@ -476,7 +493,16 @@ async function startInboundTurn(params: {
     }
   };
 
-  const dispatchPromise = (async () => {
+  /**
+   * Hand this turn to the agent.
+   *
+   * A function rather than a bare IIFE so a dispatch the runtime refused *before admitting the
+   * turn* can simply be repeated — see {@link isAdmissionRaceFailure} and the retry below.
+   * ``redispatchAttempt`` is 0 for the first try; a retry re-runs everything here, attachments
+   * included (they are materialized into the agent's own workspace, so re-materializing costs an
+   * upload, not a duplicate in the chat).
+   */
+  const runDispatch = async (redispatchAttempt: number): Promise<void> => {
     const attachmentMarkers = await materializeAttachmentsForAgent(
       api,
       account,
@@ -572,10 +598,12 @@ async function startInboundTurn(params: {
       // A catch-up re-delivery dispatches as a fresh OpenClaw turn: a new MessageSid so
       // any session-level dedup on the original id can't suppress the re-run. The cloud
       // turn is paired to the still-PROCESSING user message by chat, not by this id, so
-      // the re-run correctly completes the stuck message.
-      messageId: payload.redelivery
-        ? crypto.randomUUID()
-        : (payload.message_id ?? crypto.randomUUID()),
+      // the re-run correctly completes the stuck message. A retry after a refused admission
+      // needs the same treatment, and for the same reason.
+      messageId:
+        payload.redelivery || redispatchAttempt > 0
+          ? crypto.randomUUID()
+          : (payload.message_id ?? crypto.randomUUID()),
       timestamp: Date.now(),
       commandAuthorized: true,
       // Structured copy of the per-message effort level (also present as a
@@ -743,7 +771,11 @@ async function startInboundTurn(params: {
         logError(api, `sellerclaw-ui: inbound ${info.kind} reply error: ${String(err)}`);
       },
     });
-  })();
+  };
+
+  // Started eagerly, exactly as before: the HTTP route has already answered 202 and the owner is
+  // watching the chat, so the turn must not wait on anything before it begins.
+  const dispatchPromise = runDispatch(0);
 
   /**
    * How this turn ends, once the dispatch has settled.
@@ -904,9 +936,51 @@ async function startInboundTurn(params: {
     }
   };
 
-  try {
+  /**
+   * Re-dispatch a turn the runtime refused before it admitted it.
+   *
+   * Bounded and conditional, because a retry is only ever right for a race:
+   *
+   *  * the rejection must name one (see {@link isAdmissionRaceFailure}) — anything else would
+   *    fail identically and belongs in front of the owner;
+   *  * nothing may have reached the chat yet. A dispatch that already streamed part of an answer
+   *    was admitted; whatever killed it afterwards is a different failure, and re-running it
+   *    would say the same things twice.
+   *
+   * The wait lets whatever held the session (a settle wake, a finishing subagent) land its own
+   * state change first; without it the retry races the same claim again.
+   */
+  const dispatchWithAdmissionRetries = async (): Promise<void> => {
+    let lastError: unknown;
     try {
       await dispatchPromise;
+      return;
+    } catch (err: unknown) {
+      lastError = err;
+    }
+    for (let attempt = 1; attempt <= MAX_ADMISSION_REDISPATCHES; attempt += 1) {
+      if (!isAdmissionRaceFailure(String(lastError)) || deliveryCount > 0 || partsTurnStarted) {
+        break;
+      }
+      logDelivery(
+        api,
+        `inbound dispatch refused by an admission race, retrying ` +
+          `attempt=${attempt}/${MAX_ADMISSION_REDISPATCHES} session_key=${sessionKey}`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, ADMISSION_REDISPATCH_DELAY_MS * attempt));
+      try {
+        await runDispatch(attempt);
+        return;
+      } catch (err: unknown) {
+        lastError = err;
+      }
+    }
+    throw lastError;
+  };
+
+  try {
+    try {
+      await dispatchWithAdmissionRetries();
       await finishTurn();
     } catch (err: unknown) {
       logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);

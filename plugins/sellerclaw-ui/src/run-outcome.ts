@@ -262,6 +262,33 @@ export function isTransportTurnFailure(errorText: string): boolean {
   return TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+/**
+ * Rejections thrown while the runtime was still deciding whether to *accept* the turn.
+ *
+ * Admitting a user turn is a compare-and-swap on the session entry: the runtime reads the entry,
+ * decides, and writes — and refuses if anything moved in between. Something usually is moving in
+ * our chats, because background runs (a subagent finishing, a settle wake) share the session key
+ * with the owner's own turns. The owner then loses the message outright: the dispatch rejects
+ * before the agent ever sees the text, and the chat shows a failed bubble for a message the agent
+ * never read (staging chat f64c690f, 2026-09-07 — "я одобряю кампании" had to be typed twice).
+ *
+ * The refusal is a race, not a verdict on the message: the same text dispatched a moment later is
+ * admitted normally. Kept to the exact wordings the runtime uses for that CAS, because everything
+ * else about a rejected dispatch — a crashed run, a misconfigured session — would fail the same
+ * way twice and is better shown to the owner than retried behind their back.
+ */
+const ADMISSION_RACE_PATTERNS: readonly RegExp[] = [
+  /restart recovery claim changed before agent adoption/i,
+  /session changed before durable user-turn admission/i,
+];
+
+/** Whether a rejected dispatch is worth re-dispatching as-is. */
+export function isAdmissionRaceFailure(errorText: string): boolean {
+  const text = (errorText ?? "").trim();
+  if (!text) return false;
+  return ADMISSION_RACE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 /** Test-only: drop all cross-run state so cases cannot leak into each other. */
 export function __resetRunOutcomeState(): void {
   runOutcomes.clear();
