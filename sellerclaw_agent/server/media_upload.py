@@ -152,7 +152,10 @@ class UploadLocalResponse(BaseModel):
     content_type: str
     size_bytes: int
     download_url: str
-    expires_at: str
+    #: Only for a cloud that still expires stored files. The cloud dropped file expiry, so it no
+    #: longer sends this — and a missing one must never cost the caller their upload: the bytes are
+    #: already stored and ``download_url`` already works.
+    expires_at: str | None = None
 
 
 router = APIRouter(
@@ -243,6 +246,7 @@ async def upload_local_file(payload: UploadLocalRequest) -> UploadLocalResponse:
         content_type=_content_type_for(Path(filename).suffix.lower()),
         bearer=bearer,
     )
+    expires_at = cloud.get("expires_at")
     try:
         return UploadLocalResponse(
             file_id=str(cloud["file_id"]),
@@ -250,7 +254,7 @@ async def upload_local_file(payload: UploadLocalRequest) -> UploadLocalResponse:
             content_type=str(cloud["content_type"]),
             size_bytes=int(cloud["size_bytes"]),
             download_url=str(cloud["download_url"]),
-            expires_at=str(cloud["expires_at"]),
+            expires_at=None if expires_at is None else str(expires_at),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail="cloud_response_missing_fields") from exc

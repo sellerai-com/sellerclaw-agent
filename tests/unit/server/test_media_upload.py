@@ -322,6 +322,68 @@ class TestUploadLocalEndpoint:
         assert kwargs["content_type"] == "image/png"
         assert kwargs["content"] == allowed_file.read_bytes()
 
+    def test_upload_survives_a_cloud_that_sends_no_expiry(
+        self,
+        app_client: TestClient,
+        data_dir: Path,
+        allowed_file: Path,
+        stub_bearer: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The cloud dropped file expiry and stopped sending ``expires_at``.
+
+        The bytes are stored and ``download_url`` works, so the upload has succeeded — refusing it
+        over the absent field is what silently killed every chat screenshot.
+        """
+        _seed_manifest(data_dir, hooks_token="secret")
+
+        async def _no_expiry_cloud(
+            *, content: bytes, filename: str, content_type: str, bearer: str
+        ) -> dict[str, Any]:
+            return {
+                "file_id": "fid-123",
+                "filename": filename,
+                "content_type": content_type,
+                "size_bytes": len(content),
+                "download_url": "https://cloud.example/files/fid-123/shot.png",
+            }
+
+        monkeypatch.setattr(media_upload, "_proxy_to_cloud", _no_expiry_cloud)
+        res = app_client.post(
+            "/internal/openclaw/media/upload-local",
+            headers={"Authorization": "Bearer secret"},
+            json={"local_path": str(allowed_file)},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["download_url"] == "https://cloud.example/files/fid-123/shot.png"
+        assert body["expires_at"] is None
+
+    def test_returns_502_when_cloud_omits_the_download_url(
+        self,
+        app_client: TestClient,
+        data_dir: Path,
+        allowed_file: Path,
+        stub_bearer: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missing ``download_url`` is a real broken answer — nobody can fetch the file."""
+        _seed_manifest(data_dir, hooks_token="secret")
+
+        async def _broken_cloud(
+            *, content: bytes, filename: str, content_type: str, bearer: str
+        ) -> dict[str, Any]:
+            return {"file_id": "fid-123", "filename": filename, "content_type": content_type}
+
+        monkeypatch.setattr(media_upload, "_proxy_to_cloud", _broken_cloud)
+        res = app_client.post(
+            "/internal/openclaw/media/upload-local",
+            headers={"Authorization": "Bearer secret"},
+            json={"local_path": str(allowed_file)},
+        )
+        assert res.status_code == 502
+        assert res.json()["detail"] == "cloud_response_missing_fields"
+
     def test_returns_401_on_bad_bearer(
         self,
         app_client: TestClient,
