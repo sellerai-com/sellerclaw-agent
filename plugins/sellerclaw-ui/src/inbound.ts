@@ -9,13 +9,21 @@ import {
   resolveActiveEmbeddedRunSessionId,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 
-import { resolveSellerclawUiAccount } from "./channel.js";
+import { outboundDeliveredSince, resolveSellerclawUiAccount } from "./channel.js";
 import { logDelivery, logError, logInfo, logWarn } from "./log.js";
+import {
+  abortOwnerTurns,
+  closeOwnerTurn,
+  openOwnerTurn,
+  rememberEngineMessageId,
+  replyDeliveredSince,
+} from "./owner-turns.js";
 import { visibleAnswerText } from "./silent-token.js";
 import {
   claimContinuation,
   consumeOwnerAbort,
   isAdmissionRaceFailure,
+  isHumanNeededFailure,
   isTransportTurnFailure,
   markOwnerAbort,
   MAX_CONTINUATIONS,
@@ -409,6 +417,47 @@ const CONTINUATION_PROMPT =
   "internal plumbing — no need to apologise for it or explain it.";
 
 /**
+ * Prompt that re-asks a turn which left the owner's message without a reply.
+ *
+ * The run ended by the model's own choice — on the silent token, on a yield, on a failed tool call —
+ * and nothing reached the chat. The model reasons its way into that ending ("I already sent them the
+ * status"), from text it wrote but the owner never received, so the prompt states the one fact it
+ * could not see: nothing arrived.
+ */
+export const UNANSWERED_PROMPT =
+  "[internal] Your last turn ended without a reply reaching the owner — nothing you wrote in it " +
+  "was delivered. Answer their last message now, as the final text of this turn. If work is " +
+  "still running, say what is running and that the result will land here. Don't mention this note.";
+
+/**
+ * One of our own prompts, marked the way the owner's messages are.
+ *
+ * The supervisor tells live chat — where the turn must end with a reply to the owner — from its
+ * background runs by the ``[request-effort: …]`` line the cloud puts on every owner message. A
+ * prompt of ours in the same chat without it matches none of the markers the agent knows, and is
+ * open to being read as a background event that owes nobody an answer.
+ */
+export function asLiveChatPrompt(prompt: string, effort: string | null | undefined): string {
+  return effort ? `[request-effort: ${effort}]\n${prompt}` : prompt;
+}
+
+/**
+ * Whether the engine handed the message to a run already going in the session.
+ *
+ * In the ``steer`` queue mode a message that arrives mid-run is injected into that run when it can
+ * take it; the dispatch then returns at once, and the answer is delivered through the running
+ * turn. The engine reports this on its turn result (``dispatchResult.deferredToActiveRun``), and
+ * uses the same field to keep such a message out of its own "dispatched with no reply" warning.
+ */
+export function deferredToActiveRun(turnResult: unknown): "steer" | "followup" | null {
+  if (!turnResult || typeof turnResult !== "object") return null;
+  const dispatchResult = (turnResult as { dispatchResult?: unknown }).dispatchResult;
+  if (!dispatchResult || typeof dispatchResult !== "object") return null;
+  const mode = (dispatchResult as { deferredToActiveRun?: unknown }).deferredToActiveRun;
+  return mode === "steer" || mode === "followup" ? mode : null;
+}
+
+/**
  * Re-dispatches allowed for one message the runtime refused to admit (see
  * {@link isAdmissionRaceFailure}). Two, because the race is with a state change that is already
  * landing: if the message is still not admitted after two waits, something other than timing is
@@ -423,6 +472,15 @@ const MAX_ADMISSION_REDISPATCHES = 2;
  * reads it as the assistant thinking rather than as a stall.
  */
 const ADMISSION_REDISPATCH_DELAY_MS = 750;
+
+/**
+ * Longest a turn keeps the owner's message pending while it waits in the engine's queue.
+ *
+ * The engine settles every queued message it holds — run, dropped or cancelled — so this is a
+ * backstop for a lifecycle the engine lost, not a timeout anyone should reach: long enough for a
+ * subagent report being written ahead of it, short of leaving the turn open for good.
+ */
+const QUEUED_TURN_MAX_WAIT_MS = 60 * 60_000;
 
 /**
  * Run one chat turn: dispatch it to the agent, stream its parts to the cloud, finalize it, and —
@@ -442,11 +500,34 @@ async function startInboundTurn(params: {
   inboundMessageId: string;
   /** 1-based attempt number when this turn is itself a self-recovery continuation. */
   continuationAttempt?: number;
+  /** Set once the chain has re-asked an unanswered message — it is re-asked at most once. */
+  unansweredReasked?: boolean;
+  /**
+   * The assistant message a re-ask carries on, when the turn it follows never opened one. Its
+   * thoughts are already streaming under this id, so ``thoughtSeqStart`` continues their count:
+   * the cloud and the chat both drop a thought whose number they have seen for the message.
+   */
+  partsMessageId?: string;
+  thoughtSeqStart?: number;
+  /**
+   * Cloud id of the owner message this turn answers. Our own follow-ups (a continuation, a re-ask)
+   * carry the original's: they finish its answer, and dispatch without an id of their own.
+   */
+  questionId?: string;
 }): Promise<void> {
   const { api, account, runtime, payload, sessionKey, inboundMessageId } = params;
+  const questionId = params.questionId ?? (payload.message_id?.trim() || "");
+  /**
+   * This turn among the chat's open ones: what an owner's stop aborts, and what the engine is
+   * handed so it drops the message wherever it is still waiting — in its queue, or parked for
+   * the next step of the run it is to be added to.
+   */
+  const ownerTurn = openOwnerTurn(payload.chat_id, questionId);
   // One streaming assistant message per turn, started lazily on the first delivered
   // part (or eagerly at finish for an empty dispatch) and finalized after dispatch.
-  const partsMessageId = crypto.randomUUID();
+  const partsMessageId = params.partsMessageId ?? crypto.randomUUID();
+  // Monotonic counter for thought stream parts (per assistant message). Frontend dedupes by seq.
+  let thoughtSeq = params.thoughtSeqStart ?? 0;
   /**
    * Delivery timeline for this turn, logged at warn so it survives ``logging.level: warn``
    * and reaches the shipped logs.
@@ -482,11 +563,34 @@ async function startInboundTurn(params: {
   let postedAnyContent = false;
   /** Attempt number of the continuation ``finishTurn`` decided to start, if any. */
   let pendingContinuationAttempt: number | null = null;
+  /** Set when ``finishTurn`` decided the owner's message has to be asked again. */
+  let pendingUnansweredReask = false;
+  /**
+   * Set when the engine handed this message to a run already going in the session instead of
+   * starting one for it. The answer is then delivered by that run's turn — this dispatch sees none
+   * of it, and its silence is not the agent's.
+   */
+  let deferredTo: "steer" | "followup" | null = null;
+  /**
+   * Set when the re-ask carries on in this turn's assistant message instead of closing it.
+   *
+   * Possible only while the turn never opened one — nothing reached the chat, so there is nothing
+   * to finalize. The owner's message stays pending, the chat keeps showing the agent at work, and
+   * the re-asked reply lands as the answer to that message: closed and re-opened, it would arrive
+   * as an unprompted update, with the owner's question already marked answered by nothing.
+   */
+  let heldOpenForReask = false;
   const ensurePartsTurn = async (): Promise<void> => {
     if (partsTurnStarted) return;
     partsTurnStarted = true;
     try {
-      await postTurnStart(account, sessionKey, partsMessageId, payload.chat_id);
+      await postTurnStart(
+        account,
+        sessionKey,
+        partsMessageId,
+        payload.chat_id,
+        questionId ? { replyTo: questionId } : undefined,
+      );
     } catch (err) {
       partsTurnStarted = false;
       logError(api, `sellerclaw-ui: turn-start failed session_key=${sessionKey}: ${String(err)}`);
@@ -532,8 +636,6 @@ async function startInboundTurn(params: {
     let committedAnyText = false;
     // Source paths/URLs already delivered as media this turn (same reason).
     const sentMedia = new Set<string>();
-    // Monotonic counter for thought stream parts (per turn). Frontend dedupes by seq.
-    let thoughtSeq = 0;
     const thoughtAgentId = payload.agent_id || "supervisor";
 
     // Reasoning ("thinking") stream → transient /thought channel. OpenClaw streams the
@@ -583,7 +685,21 @@ async function startInboundTurn(params: {
       postThoughtText(rest);
     };
 
-    await dispatchInboundDirectDmWithReasoning({
+    // A catch-up re-delivery dispatches as a fresh OpenClaw turn: a new MessageSid so any
+    // session-level dedup on the original id can't suppress the re-run. A retry after a refused
+    // admission needs the same treatment, and for the same reason. The engine hands this id back
+    // as the reply target of the run's sends, so it is mapped to the owner's message.
+    const engineMessageId =
+      payload.redelivery || redispatchAttempt > 0
+        ? crypto.randomUUID()
+        : (payload.message_id ?? crypto.randomUUID());
+    rememberEngineMessageId(engineMessageId, questionId);
+    // Settled by the engine once a message it queued has run, been dropped or been cancelled.
+    let settleQueued: () => void = () => {};
+    const queuedSettled = new Promise<void>((resolve) => {
+      settleQueued = resolve;
+    });
+    const turnResult = await dispatchInboundDirectDmWithReasoning({
       cfg: api.config,
       runtime,
       channel: "sellerclaw-ui",
@@ -595,15 +711,7 @@ async function startInboundTurn(params: {
       recipientAddress: `sellerclaw-ui:direct:${payload.chat_id}`,
       conversationLabel: payload.chat_id,
       rawBody,
-      // A catch-up re-delivery dispatches as a fresh OpenClaw turn: a new MessageSid so
-      // any session-level dedup on the original id can't suppress the re-run. The cloud
-      // turn is paired to the still-PROCESSING user message by chat, not by this id, so
-      // the re-run correctly completes the stuck message. A retry after a refused admission
-      // needs the same treatment, and for the same reason.
-      messageId:
-        payload.redelivery || redispatchAttempt > 0
-          ? crypto.randomUUID()
-          : (payload.message_id ?? crypto.randomUUID()),
+      messageId: engineMessageId,
       timestamp: Date.now(),
       commandAuthorized: true,
       // Structured copy of the per-message effort level (also present as a
@@ -612,7 +720,21 @@ async function startInboundTurn(params: {
       // Reasoning stream → "Thinking…" panel. OpenClaw forwards these from ``replyOptions``
       // into the run (``onReasoningStream``/``onReasoningEnd``); without them the agent's
       // reasoning is produced but never reaches the chat.
-      replyOptions: { onReasoningStream, onReasoningEnd },
+      //
+      // The lifecycle is how the engine reports a message it could not add to the run already
+      // going and queued to run after it: settled once that is over. Without one the engine also
+      // detaches a queued message from the turn's abort signal, and a stop would not reach it.
+      replyOptions: {
+        onReasoningStream,
+        onReasoningEnd,
+        abortSignal: ownerTurn.abort.signal,
+        turnAdoptionLifecycle: {
+          admission: "cancel-only",
+          abortSignal: ownerTurn.abort.signal,
+          onAdopted: () => {},
+          onSettled: () => settleQueued(),
+        },
+      },
       deliver: async (
         replyPayload: unknown,
         dispatchInfo?: { kind?: string; assistantMessageIndex?: number },
@@ -771,6 +893,16 @@ async function startInboundTurn(params: {
         logError(api, `sellerclaw-ui: inbound ${info.kind} reply error: ${String(err)}`);
       },
     });
+    deferredTo = deferredToActiveRun(turnResult);
+    if (deferredTo === "followup") {
+      // Queued behind the run going in the session (a subagent report the message could not be
+      // added to): its run starts once that one ends, and answers through the outbound road with
+      // this message as its reply target. The owner's message stays pending until then — closed
+      // now, it would read as answered while the reply was still to come, with no sign of the
+      // agent at work and nothing for a stop to reach.
+      logDelivery(api, `inbound turn queued_behind_active_run session_key=${sessionKey}`);
+      await waitForQueuedRun(queuedSettled, ownerTurn.abort.signal);
+    }
   };
 
   // Started eagerly, exactly as before: the HTTP route has already answered 202 and the owner is
@@ -780,17 +912,31 @@ async function startInboundTurn(params: {
   /**
    * How this turn ends, once the dispatch has settled.
    *
-   * A dispatch that *threw* is a crash: ``failed``, exactly as before. Everything else hinges on
-   * whether the engine handed us a failure notice instead of an answer:
+   * A dispatch that *threw* is a crash: ``failed``, exactly as before. A turn the owner stopped
+   * closes quietly, whatever it left behind — a deliberate stop is neither an error nor a silence
+   * to fill. Everything else hinges on two questions: did anything reach the owner, and did the
+   * engine hand us a failure notice instead of an answer.
    *
-   *  - no notice → an ordinary turn;
-   *  - notice after the owner pressed stop → quiet close. A deliberate stop is not an error;
-   *  - notice from a run that aborted (no error family attached) → quiet close **and** resume,
-   *    while attempts remain. The owner keeps whatever was already streamed or sent through the
-   *    ``message`` tool, and the continuation delivers the finished work as its own reply;
-   *  - anything else — a failure family that needs a human (billing, auth, rate limit),
-   *    attempts spent, or no verdict recorded at all → ``failed``, so the owner is told rather
-   *    than left with silence.
+   *  - an answer reached them → an ordinary turn (a tool-failure warning riding beside it is
+   *    withheld);
+   *  - nothing reached them and the run ended on its own — the silent token, a yield, a failed
+   *    tool call with only the engine's warning to show for it → ask again, once, and let that
+   *    answer land in this turn's message (``heldOpenForReask``). The owner wrote to the agent;
+   *    a live turn has no ending where saying nothing is the
+   *    answer (a chat of theirs showed only error notes under "report the status of the task",
+   *    2026-09-21 — the agent had decided it "already sent the status");
+   *  - a run that aborted (no error family attached), or whose connection broke → quiet close
+   *    **and** resume, while attempts remain. The owner keeps whatever was already streamed or
+   *    sent through the ``message`` tool, and the continuation delivers the finished work;
+   *  - nothing reached them because the engine injected the message into a run already going
+   *    (``steer`` queue mode) → closed quietly: the answer comes through that run's own turn. A
+   *    message the engine queued behind that run instead is judged like any other, once its own
+   *    run is over (see ``waitForQueuedRun``);
+   *  - silent again after being asked → closed quietly: the agent chose it knowing nothing had
+   *    arrived, and an error note would report a failure that never happened;
+   *  - anything else — a failure family that needs a human (billing, auth, rate limit), attempts
+   *    spent, or an unrecognised failure after the owner already had something (or after the
+   *    re-ask) → ``failed``, so the owner is told rather than left with silence.
    *
    * A ``completed`` end with no parts is the cloud's "release the paired user message" marker
    * and leaves no bubble behind; ``failed`` keeps any partial text and attaches the retryable
@@ -800,25 +946,69 @@ async function startInboundTurn(params: {
     // Consumed unconditionally: a stop belongs to at most this turn. A run that raced the
     // abort to a normal finish must still clear the mark, or it would silence the next turn's
     // genuine failure.
-    const ownerStopped = consumeOwnerAbort(sessionKey);
-    if (!sawErrorFinal) {
-      resetContinuations(sessionKey);
-      return { status: "completed", branch: "normal" };
-    }
-    if (ownerStopped) {
+    const ownerStopMarked = consumeOwnerAbort(sessionKey);
+    if (ownerStopMarked || ownerTurn.abort.signal.aborted) {
       resetContinuations(sessionKey);
       return { status: "completed", branch: "owner_stop" };
+    }
+    // An answer sent with the ``message`` tool never passes through this dispatch, so what the
+    // turn delivered itself is only half the question. Counted for this owner message: the
+    // chat's other turns — and a subagent's report — send on the same road.
+    const ownerAnswered =
+      postedAnyContent ||
+      (questionId
+        ? replyDeliveredSince(questionId, turnStartedAt)
+        : outboundDeliveredSince(payload.chat_id, turnStartedAt));
+    /**
+     * Ask the agent again for the reply the owner did not get — once per owner message.
+     *
+     * What a second silence means depends on how the run ended. One that finished on its own,
+     * told outright that nothing reached the owner, chose silence again — the owner may well have
+     * asked for it ("don't reply to this") — and an error note would report a failure that never
+     * happened, so the turn closes quietly. One that cannot be vouched for (an unrecognised engine
+     * failure with no verdict) surfaces as ``failed``: that is the owner's only sign it broke.
+     */
+    const askAgain = (
+      branchWhenSpent: string,
+      silenceChosen: boolean,
+    ): { status: "completed" | "failed"; branch: string } => {
+      if (params.unansweredReasked) {
+        return silenceChosen
+          ? { status: "completed", branch: "silent_after_reask" }
+          : { status: "failed", branch: branchWhenSpent };
+      }
+      pendingUnansweredReask = true;
+      return { status: "completed", branch: "unanswered_asking_again" };
+    };
+    if (!sawErrorFinal) {
+      if (!ownerAnswered) {
+        // Added to the run already going: that run's turn delivers the answer.
+        if (deferredTo === "steer") {
+          return { status: "completed", branch: "deferred_to_active_run mode=steer" };
+        }
+        return askAgain("failed_unanswered", true);
+      }
+      resetContinuations(sessionKey);
+      return { status: "completed", branch: "normal" };
     }
     /**
      * Recover from a failure that is worth re-asking, while attempts remain.
      *
      * ``branchWhenRefused`` names why we did not recover, so the delivery timeline still says
-     * which rule fired.
+     * which rule fired. ``runEndedOnItsOwn`` marks the verdicts where the notice may be no more
+     * than a tool-failure warning beside a silent answer: that silence is asked again, like any
+     * other, unless the notice names a failure only a person can fix. ``silenceChosen`` says the
+     * run is known to have finished normally, so a repeat silence was the agent's choice.
      */
     const recoverIfTransport = (
       branchWhenRefused: string,
+      runEndedOnItsOwn: boolean,
+      silenceChosen = false,
     ): { status: "completed" | "failed"; branch: string } => {
       if (!isTransportTurnFailure(lastErrorFinalText)) {
+        if (runEndedOnItsOwn && !ownerAnswered && !isHumanNeededFailure(lastErrorFinalText)) {
+          return askAgain(branchWhenRefused, silenceChosen);
+        }
         return { status: "failed", branch: branchWhenRefused };
       }
       const attempt = claimContinuation(sessionKey);
@@ -836,24 +1026,25 @@ async function startInboundTurn(params: {
     // registered in the gateway process — is never called. Falling straight through to "failed"
     // is what left a dropped connection as a dead end in the chat, so the engine's failure text
     // decides instead.
-    if (!outcome) return recoverIfTransport("failed_no_outcome");
+    if (!outcome) return recoverIfTransport("failed_no_outcome", true);
     if (outcome.success) {
       // The run itself finished fine; the error payload was a tool-failure warning the engine
       // appends BESIDE a real answer (``run/payloads.ts`` pushes those with ``isError: true``
-      // too). With content delivered, the turn is a success — the suppressed warning costs the
-      // owner an engine-worded "⚠️ tool failed" line, which the agent's own text covers. With
-      // nothing delivered (e.g. a mid-turn rate limit ate the reply), the error text was the
-      // whole outcome, and pretending success would leave a silent blank — surface it.
-      if (postedAnyContent) {
+      // too). With an answer in front of the owner — streamed here, or sent with the ``message``
+      // tool — the turn is a success: the suppressed warning costs them an engine-worded
+      // "⚠️ tool failed" line, which the agent's own text covers. With nothing in front of them,
+      // the warning was all the run left: a silent answer is asked again, and a failure only a
+      // person can fix (a mid-turn rate limit that ate the reply) is surfaced.
+      if (ownerAnswered) {
         resetContinuations(sessionKey);
         return { status: "completed", branch: "completed_warning_suppressed" };
       }
-      return recoverIfTransport("failed_error_family");
+      return recoverIfTransport("failed_error_family", true, true);
     }
     // An error family the runtime did attribute. Most of these need a human (billing, auth,
     // quota), but a provider connection that died mid-answer lands here too and is worth one
     // more try.
-    if (outcome.hasError) return recoverIfTransport("failed_error_family");
+    if (outcome.hasError) return recoverIfTransport("failed_error_family", false);
     const attempt = claimContinuation(sessionKey);
     if (attempt === null) return { status: "failed", branch: "failed_recovery_exhausted" };
     pendingContinuationAttempt = attempt;
@@ -868,11 +1059,12 @@ async function startInboundTurn(params: {
     // abort paths reject rather than resolve, and a deliberate stop must not wear an error
     // note. Consuming the mark here also keeps it from leaking into the next turn.
     const { status, branch } = forced
-      ? consumeOwnerAbort(sessionKey)
+      ? consumeOwnerAbort(sessionKey) || ownerTurn.abort.signal.aborted
         ? { status: "completed" as const, branch: "owner_stop" }
         : { status: "failed" as const, branch: "dispatch_error" }
       : resolveTurnEnd();
-    await ensurePartsTurn();
+    heldOpenForReask = !forced && pendingUnansweredReask && !partsTurnStarted;
+    if (!heldOpenForReask) await ensurePartsTurn();
     // Closing line of the delivery timeline: how many pieces the turn produced, how it ended and
     // how long it ran. One delivery on a multi-minute turn means the owner watched an empty chat;
     // ``branch`` names which end-of-turn rule fired, and is the canary for engine drift — a
@@ -880,11 +1072,13 @@ async function startInboundTurn(params: {
     // arrives (see ``inbound-reply-with-reasoning.ts``).
     logDelivery(
       api,
-      `inbound turn ${status} branch=${branch} deliveries=${deliveryCount} ` +
-        `suppressed_chars=${suppressedErrorChars} ` +
+      `inbound turn ${heldOpenForReask ? "held_open" : status} branch=${branch} ` +
+        `deliveries=${deliveryCount} suppressed_chars=${suppressedErrorChars} ` +
         `${params.continuationAttempt ? `continuation=${params.continuationAttempt} ` : ""}` +
+        `${params.unansweredReasked ? "reasked=true " : ""}` +
         `duration=${Math.round((Date.now() - turnStartedAt) / 1000)}s session_key=${sessionKey}`,
     );
+    if (heldOpenForReask) return;
     try {
       await postTurnEnd(account, sessionKey, partsMessageId, payload.chat_id, status);
     } catch (err) {
@@ -893,17 +1087,28 @@ async function startInboundTurn(params: {
   };
 
   /**
-   * Resume a turn the run budget cut short, by re-entering this same path with a continuation
-   * prompt. Ordered strictly after ``turn/end`` and after the in-flight slot is freed, or the
-   * cloud would drop it as a duplicate delivery.
+   * Follow the turn up the way ``finishTurn`` decided: resume a turn the run budget cut short, or
+   * ask again for the reply the owner never got. Both re-enter this same path with a prompt of
+   * ours, strictly after this turn is finalized.
    *
-   * A failure to even start the continuation is the one path that ends quiet with nobody coming
+   * A re-ask of a turn held open takes over what that turn still holds — its assistant message,
+   * its thought count, its in-flight slot — so the owner's message stays guarded and pending until
+   * the reply lands.
+   *
+   * A failure to even start the follow-up is the one path that ends quiet with nobody coming
    * back, so it is logged as an error rather than swallowed.
    */
   const startPendingContinuation = async (): Promise<void> => {
     const attempt = pendingContinuationAttempt;
-    if (attempt === null) return;
+    const reask = pendingUnansweredReask;
+    if (attempt === null && !reask) return;
     pendingContinuationAttempt = null;
+    pendingUnansweredReask = false;
+    if (ownerTurn.abort.signal.aborted) return;
+    const carryOn = reask && heldOpenForReask;
+    const label = reask
+      ? "unanswered re-ask"
+      : `continuation attempt=${attempt}/${MAX_CONTINUATIONS}`;
     try {
       await startInboundTurn({
         api,
@@ -913,25 +1118,25 @@ async function startInboundTurn(params: {
           chat_id: payload.chat_id,
           agent_id: payload.agent_id,
           user_id: payload.user_id,
-          text: CONTINUATION_PROMPT,
+          text: asLiveChatPrompt(reask ? UNANSWERED_PROMPT : CONTINUATION_PROMPT, payload.effort),
           // Attachments were materialized by the interrupted turn and are already in its
           // session; re-sending them would upload them a second time.
           effort: payload.effort,
         },
         sessionKey,
-        inboundMessageId: "",
-        continuationAttempt: attempt,
+        inboundMessageId: carryOn ? inboundMessageId : "",
+        continuationAttempt: attempt ?? undefined,
+        unansweredReasked: params.unansweredReasked || reask,
+        partsMessageId: carryOn ? partsMessageId : undefined,
+        thoughtSeqStart: carryOn ? thoughtSeq : undefined,
+        questionId,
       });
-      logDelivery(
-        api,
-        `inbound continuation started attempt=${attempt}/${MAX_CONTINUATIONS} ` +
-          `session_key=${sessionKey}`,
-      );
+      logDelivery(api, `inbound ${label} started session_key=${sessionKey}`);
     } catch (err) {
+      if (carryOn && inboundMessageId) inFlightInboundMessageIds.delete(inboundMessageId);
       logError(
         api,
-        `sellerclaw-ui: continuation dispatch failed attempt=${attempt} ` +
-          `session_key=${sessionKey}: ${String(err)}`,
+        `sellerclaw-ui: ${label} dispatch failed session_key=${sessionKey}: ${String(err)}`,
       );
     }
   };
@@ -990,8 +1195,37 @@ async function startInboundTurn(params: {
     // Free the in-flight slot only after the turn is finalized (turn/end posted or
     // failed). Until then a catch-up re-delivery of this same message is dropped; once
     // freed, a later re-delivery (e.g. the cloud was down when turn/end fired) re-runs.
-    if (inboundMessageId) inFlightInboundMessageIds.delete(inboundMessageId);
-    await startPendingContinuation();
+    // A turn held open for its re-ask hands the slot on instead: the message is still being
+    // answered.
+    if (inboundMessageId && !heldOpenForReask) inFlightInboundMessageIds.delete(inboundMessageId);
+    try {
+      await startPendingContinuation();
+    } finally {
+      // Only now: a stop that lands while the follow-up is being set up still finds this turn.
+      closeOwnerTurn(ownerTurn);
+    }
+  }
+}
+
+/** Until a queued message's run is over — or the owner stopped it, or the backstop ran out. */
+async function waitForQueuedRun(settled: Promise<void>, stop: AbortSignal): Promise<void> {
+  if (stop.aborted) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onStop: (() => void) | undefined;
+  try {
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => {
+        onStop = () => resolve();
+        stop.addEventListener("abort", onStop, { once: true });
+      }),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, QUEUED_TURN_MAX_WAIT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (onStop) stop.removeEventListener("abort", onStop);
   }
 }
 
@@ -1459,8 +1693,9 @@ interface AbortPayload {
 
 /**
  * Stop route: the cloud forwards a user "stop" here when it wants the in-flight
- * OpenClaw reply aborted. We resolve the active embedded run for the chat's session
- * key and abort it in-process. Idempotent — a no active run is a benign no-op.
+ * OpenClaw reply aborted. Every turn open in the chat is aborted — a message still waiting in the
+ * engine's queue or for its step in the running turn is dropped there — and then the active
+ * embedded run for the chat's session key. Idempotent — nothing in flight is a benign no-op.
  */
 export function registerAbortRoute(api: OpenClawPluginApi): void {
   api.registerHttpRoute({
@@ -1492,6 +1727,9 @@ export function registerAbortRoute(api: OpenClawPluginApi): void {
       }
 
       const sessionKey = `agent:${payload.agent_id}:sellerclaw-ui:direct:${payload.chat_id}`;
+      // The chat's open turns first: a message waiting in the engine's queue runs the moment the
+      // active run ends, so it has to be cancelled before that run is aborted.
+      const stoppedTurns = abortOwnerTurns(payload.chat_id);
       const sessionId = resolveActiveEmbeddedRunSessionId(sessionKey);
       if (sessionId) {
         // Record the stop before aborting: the run unwinds into the same terminal state as a
@@ -1501,13 +1739,20 @@ export function registerAbortRoute(api: OpenClawPluginApi): void {
         // so a no-op stop leaves nothing behind to silence a later, genuine failure.
         markOwnerAbort(sessionKey);
         abortAgentHarnessRun(sessionId);
-        logInfo(api, `sellerclaw-ui: abort run session_key=${sessionKey} session_id=${sessionId}`);
+        logInfo(
+          api,
+          `sellerclaw-ui: abort run session_key=${sessionKey} session_id=${sessionId} ` +
+            `turns=${stoppedTurns}`,
+        );
       } else {
-        logInfo(api, `sellerclaw-ui: abort no-op (no active run) session_key=${sessionKey}`);
+        logInfo(
+          api,
+          `sellerclaw-ui: abort (no active run) session_key=${sessionKey} turns=${stoppedTurns}`,
+        );
       }
 
       res.statusCode = 202;
-      res.end(JSON.stringify({ ok: true, aborted: Boolean(sessionId) }));
+      res.end(JSON.stringify({ ok: true, aborted: Boolean(sessionId) || stoppedTurns > 0 }));
       return true;
     },
   });

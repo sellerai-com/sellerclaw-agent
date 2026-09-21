@@ -73,6 +73,18 @@ function buildApi() {
 
 type HandlerFn = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 
+type DeliverArg = {
+  deliver: (payload: Record<string, unknown>, info?: Record<string, unknown>) => Promise<void>;
+};
+
+/**
+ * A dispatch that answers the owner, as a real run does. For tests about something else: a turn
+ * that answers nothing is asked again, and that second dispatch is not what they are checking.
+ */
+const answerOwner = async (arg: DeliverArg): Promise<void> => {
+  await arg.deliver({ text: "Done." }, { kind: "final" });
+};
+
 function getHandler(registerHttpRoute: ReturnType<typeof vi.fn>): HandlerFn {
   return registerHttpRoute.mock.calls[0]![0].handler as HandlerFn;
 }
@@ -448,7 +460,7 @@ describe("registerInboundRoute", () => {
       });
       dispatchMock
         .mockRejectedValueOnce(new Error("restart recovery claim changed before agent adoption"))
-        .mockResolvedValueOnce(undefined);
+        .mockImplementationOnce(answerOwner);
 
       const { api, registerHttpRoute } = buildApi();
       registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
@@ -563,7 +575,7 @@ describe("registerInboundRoute", () => {
     }
   });
 
-  it("ends an empty but successful dispatch as completed (benign NO_REPLY stays silent)", async () => {
+  it("asks the agent again when a dispatch answered nothing, in the same message", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -572,8 +584,9 @@ describe("registerInboundRoute", () => {
         ok: true,
         value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "hi" },
       });
-      // Dispatch resolves without ever invoking ``deliver`` — no parts streamed.
-      dispatchMock.mockResolvedValueOnce(undefined);
+      // The run ends on the silent token: ``deliver`` is never invoked, no parts streamed. The
+      // re-ask that follows is answered.
+      dispatchMock.mockResolvedValueOnce(undefined).mockImplementationOnce(answerOwner);
 
       const { api, registerHttpRoute } = buildApi();
       registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
@@ -583,21 +596,26 @@ describe("registerInboundRoute", () => {
       const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
       await handler(req, res);
 
-      await vi.waitFor(() => {
-        const endCall = fetchMock.mock.calls.find((c) =>
-          /\/internal\/openclaw\/turn\/[0-9a-f-]+\/end$/.test(String(c[0])),
-        );
-        expect(endCall).toBeDefined();
-        const body = JSON.parse(
-          String((endCall![1] as RequestInit).body),
-        ) as Record<string, string>;
-        expect(body.status).toBe("completed");
-      });
-      // No part was streamed: only turn-start and turn-end fetches, no /part.
-      const partCalls = fetchMock.mock.calls.filter((c) =>
-        /\/internal\/openclaw\/turn\/[0-9a-f-]+\/part$/.test(String(c[0])),
+      const endStatuses = () =>
+        fetchMock.mock.calls
+          .filter((c) => /\/internal\/openclaw\/turn\/[0-9a-f-]+\/end$/.test(String(c[0])))
+          .map((c) => (JSON.parse(String((c[1] as RequestInit).body)) as { status: string }).status);
+      const startUrls = () =>
+        fetchMock.mock.calls
+          .map((c) => String(c[0]))
+          .filter((u) => u.endsWith("/internal/openclaw/turn"));
+      // The silent turn is neither closed nor marked failed: the owner's message stays pending
+      // and the re-asked reply lands as its one answer.
+      await vi.waitFor(() => expect(endStatuses()).toEqual(["completed"]));
+      expect(startUrls()).toHaveLength(1);
+      expect(dispatchMock).toHaveBeenCalledTimes(2);
+      expect((dispatchMock.mock.calls[1]![0] as { rawBody: string }).rawBody).toContain(
+        "without a reply reaching the owner",
       );
-      expect(partCalls).toHaveLength(0);
+      const partTexts = fetchMock.mock.calls
+        .filter((c) => /\/internal\/openclaw\/turn\/[0-9a-f-]+\/part$/.test(String(c[0])))
+        .map((c) => (JSON.parse(String((c[1] as RequestInit).body)) as { text: string }).text);
+      expect(partTexts).toEqual(["Done."]);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -1118,6 +1136,7 @@ describe("registerInboundRoute", () => {
       { ok: true, body: new ArrayBuffer(8), contentType: "image/jpeg" },
     ]);
 
+    dispatchMock.mockImplementationOnce(answerOwner);
     const { api, registerHttpRoute } = buildApi();
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
@@ -1180,6 +1199,7 @@ describe("registerInboundRoute", () => {
     });
     setFetchResponses([{ ok: false, status: 404 }]);
 
+    dispatchMock.mockImplementationOnce(answerOwner);
     const { api, registerHttpRoute } = buildApi();
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
@@ -1228,6 +1248,7 @@ describe("registerInboundRoute", () => {
       { ok: true, body: new ArrayBuffer(8), contentType: "text/csv" },
     ]);
 
+    dispatchMock.mockImplementationOnce(answerOwner);
     const { api, registerHttpRoute } = buildApi();
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
@@ -1293,6 +1314,7 @@ describe("registerInboundRoute", () => {
     });
     setFetchResponses([{ ok: true, body: new ArrayBuffer(16), contentType: "application/pdf" }]);
 
+    dispatchMock.mockImplementationOnce(answerOwner);
     const { api, registerHttpRoute } = buildApi();
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
@@ -1339,6 +1361,7 @@ describe("registerInboundRoute", () => {
     });
     setFetchResponses([{ ok: false, status: 404 }]);
 
+    dispatchMock.mockImplementationOnce(answerOwner);
     const { api, registerHttpRoute } = buildApi();
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
@@ -1402,6 +1425,7 @@ describe("registerInboundRoute", () => {
       { ok: true, body: new ArrayBuffer(4), contentType: "application/json" },
     ]);
 
+    dispatchMock.mockImplementationOnce(answerOwner);
     const { api, registerHttpRoute } = buildApi();
     registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
     const handler = getHandler(registerHttpRoute);
@@ -1432,7 +1456,7 @@ describe("registerInboundRoute", () => {
 describe("registerInboundRoute catch-up re-delivery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    dispatchMock.mockResolvedValue(undefined);
+    dispatchMock.mockImplementation(answerOwner);
     // finishTurn finalizes the turn via send.ts → global fetch (turn/start + turn/end).
     globalThis.fetch = vi
       .fn()
@@ -1481,6 +1505,34 @@ describe("registerInboundRoute catch-up re-delivery", () => {
     release();
     await firstTurn;
     expect(globalThis.fetch as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+  });
+
+  it("keeps dropping a re-delivery while the unanswered message is being asked again", async () => {
+    // The first run answers nothing; the re-ask is still running when the cloud re-sends the
+    // message, which is still pending on its side — a second dispatch would answer it twice.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    dispatchMock.mockResolvedValueOnce(undefined).mockImplementationOnce(async (arg: DeliverArg) => {
+      await gate;
+      await answerOwner(arg);
+    });
+    readBodyMock.mockResolvedValueOnce(body({ message_id: "m4" }));
+    readBodyMock.mockResolvedValueOnce(body({ message_id: "m4", redelivery: true }));
+
+    const { api, registerHttpRoute } = buildApi();
+    registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+    const handler = getHandler(registerHttpRoute);
+
+    const firstTurn = handler(makeReq(), { statusCode: 0, end: vi.fn() } as unknown as ServerResponse);
+    await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(2));
+
+    const end2 = vi.fn();
+    await handler(makeReq(), { statusCode: 0, end: end2 } as unknown as ServerResponse);
+    expect(JSON.parse(end2.mock.calls[0]![0] as string)).toEqual({ ok: true, deduped: true });
+    expect(dispatchMock).toHaveBeenCalledTimes(2);
+
+    release();
+    await firstTurn;
   });
 
   it("dispatches a re-delivery with a FRESH MessageSid (defeats session-level dedup)", async () => {

@@ -249,6 +249,15 @@ const HUMAN_NEEDED_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * Whether a failure would come back the same on any retry, because something outside the run has
+ * to change first — credits, a key, a quota, the model config.
+ */
+export function isHumanNeededFailure(errorText: string): boolean {
+  const text = (errorText ?? "").trim();
+  return text.length > 0 && HUMAN_NEEDED_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
  * Whether a failed turn may retry itself.
  *
  * Reads the engine's failure text because that is what this turn actually has: see
@@ -258,7 +267,7 @@ const HUMAN_NEEDED_PATTERNS: readonly RegExp[] = [
 export function isTransportTurnFailure(errorText: string): boolean {
   const text = (errorText ?? "").trim();
   if (!text) return false;
-  if (HUMAN_NEEDED_PATTERNS.some((pattern) => pattern.test(text))) return false;
+  if (isHumanNeededFailure(text)) return false;
   return TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 

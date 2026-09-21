@@ -7,6 +7,7 @@ import { getSharedState } from "./shared-state.js";
 import { registerRunOutcomeTracker } from "./run-outcome.js";
 import { registerSessionEnv } from "./session-env.js";
 import { registerLiveThinkingStream } from "./thinking-stream.js";
+import { registerYieldGuard } from "./yield-guard.js";
 
 /**
  * Registers the plugin's lifecycle hooks on EVERY plugin-registry pass, not just the "full" one.
@@ -58,6 +59,7 @@ export function registerLifecycleHooks(api: OpenClawPluginApi): void {
   registerReasoningRelay(api);
   registerLiveThinkingStream(api);
   registerSessionEnv(api);
+  registerYieldGuard(api);
 }
 
 type RegistrableEntry = { register: (api: OpenClawPluginApi) => void };

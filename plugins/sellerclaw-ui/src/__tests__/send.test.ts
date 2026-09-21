@@ -3,10 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deliverTextToChat,
   extractChatIdFromAddress,
+  matchesCurrentChat,
   sellerclawUiChannelPlugin,
   setPluginConfig,
 } from "../channel.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import {
+  __resetOwnerTurns,
+  rememberEngineMessageId,
+  replyDeliveredSince,
+} from "../owner-turns.js";
 import {
   CHAT_ARCHIVED_ERROR_CODE,
   isTransientWebhookStatus,
@@ -516,6 +522,89 @@ describe("sendText resolves account from stored plugin config", () => {
         text: "fail",
       }),
     ).rejects.toThrow("sellerclaw-ui: missing account/config in outbound params");
+  });
+});
+
+describe("outbound sends say which owner message they answer", () => {
+  const originalFetch = globalThis.fetch;
+  const CHAT = "550e8400-e29b-41d4-a716-446655440000";
+  const QUESTION = "8eb4daa8-b309-4c30-bae2-dbeb983c73f3";
+  const ENGINE_ID = "3f0c5a8e-1d2b-4c3d-9e8f-0a1b2c3d4e5f";
+
+  beforeEach(() => {
+    __resetOwnerTurns();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const turnStartBody = (fetchMock: ReturnType<typeof vi.fn>): Record<string, unknown> => {
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/internal/openclaw/turn"));
+    return JSON.parse(String((call![1] as RequestInit).body)) as Record<string, unknown>;
+  };
+
+  it.each([
+    // The ``message`` tool inside the owner's turn: the engine puts that message on the send.
+    { name: "a reply to the owner's message", replyToId: QUESTION, answers: QUESTION },
+    // A re-delivered message dispatches under a fresh id; the engine hands that one back.
+    { name: "a reply to a re-dispatched message", replyToId: ENGINE_ID, answers: QUESTION },
+    // A subagent report, a cron delivery: no current message behind the run.
+    { name: "a background run's report", replyToId: undefined, answers: null },
+    { name: "a reply target that is no message id", replyToId: "msg-7", answers: null },
+  ])("pairs $name", async ({ replyToId, answers }) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock;
+    rememberEngineMessageId(ENGINE_ID, QUESTION);
+    const sentAt = Date.now();
+
+    const plugin = sellerclawUiChannelPlugin as PluginOutbound;
+    await plugin.outbound.attachedResults.sendText({
+      account,
+      sessionKey: `sellerclaw-ui:direct:${CHAT}`,
+      text: "Working on it.",
+      replyToId,
+    });
+
+    const body = turnStartBody(fetchMock);
+    if (answers) {
+      expect(body.reply_to_message_id).toBe(answers);
+      expect(body.unprompted).toBeUndefined();
+    } else {
+      expect(body.reply_to_message_id).toBeUndefined();
+      expect(body.unprompted).toBe(true);
+    }
+    // Only a reply counts as the owner's message having been answered.
+    expect(replyDeliveredSince(QUESTION, sentAt)).toBe(answers === QUESTION);
+  });
+
+  it("delivers a rescued completion answer as unprompted", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock;
+
+    await deliverTextToChat(account, `agent:supervisor:sellerclaw-ui:direct:${CHAT}`, "Done.");
+
+    expect(turnStartBody(fetchMock).unprompted).toBe(true);
+  });
+});
+
+describe("matchesCurrentChat", () => {
+  const CHAT = "99a5104a-45d1-4972-a708-5b0373b07f30";
+  const toolContext = { currentChannelId: `sellerclaw-ui:direct:${CHAT}` };
+
+  it.each([
+    { name: "the bare chat id", target: CHAT, expected: true },
+    { name: "the address", target: `sellerclaw-ui:direct:${CHAT}`, expected: true },
+    { name: "the session key", target: `agent:supervisor:sellerclaw-ui:direct:${CHAT}`, expected: true },
+    { name: "the id in upper case", target: CHAT.toUpperCase(), expected: true },
+    { name: "another chat", target: "550e8400-e29b-41d4-a716-446655440000", expected: false },
+    { name: "something that names no chat", target: "owner", expected: false },
+  ])("reads $name as the current chat: $expected", ({ target, expected }) => {
+    expect(matchesCurrentChat({ target, toolContext })).toBe(expected);
+  });
+
+  it("knows no current chat without a tool context address", () => {
+    expect(matchesCurrentChat({ target: CHAT, toolContext: {} })).toBe(false);
   });
 });
 

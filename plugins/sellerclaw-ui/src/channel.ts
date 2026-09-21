@@ -5,6 +5,7 @@ import {
 } from "openclaw/plugin-sdk/core";
 import type { ChannelOutboundSessionRoute, OpenClawConfig } from "openclaw/plugin-sdk/core";
 
+import { questionForReplyTarget, recordReplyDelivered } from "./owner-turns.js";
 import {
   enqueueSend,
   postTurnEnd,
@@ -13,6 +14,7 @@ import {
   resolveMediaKind,
   resolveOutboundMediaUrl,
   type ScwUiAccount,
+  type TurnPairing,
 } from "./send.js";
 import { getSharedState } from "./shared-state.js";
 
@@ -197,6 +199,42 @@ function resolveOutboundDestination(
   return { address, chatId: extractChatIdFromAddress(address) };
 }
 
+/**
+ * When each chat last received a message on the outbound road, by chat id.
+ *
+ * A live chat turn that answers through the ``message`` tool delivers nothing through its own
+ * dispatch, so the turn cannot tell that answer from silence by what it delivered itself. This is
+ * how it tells: a send into its chat after it started means the owner has something to read (see
+ * ``resolveTurnEnd`` in ``inbound.ts``). Process-wide, because the outbound adapter and the inbound
+ * route need not come from the same evaluation of this module.
+ */
+const lastOutboundDeliveryAt = getSharedState(
+  "channel:last-outbound-delivery",
+  () => new Map<string, number>(),
+);
+
+/** How long an entry is kept; a live turn only ever asks about the minutes it has been running. */
+const OUTBOUND_DELIVERY_MEMORY_MS = 60 * 60_000;
+
+function recordOutboundDelivery(chatId: string | null): void {
+  if (!chatId) return;
+  const now = Date.now();
+  for (const [key, at] of lastOutboundDeliveryAt) {
+    if (now - at > OUTBOUND_DELIVERY_MEMORY_MS) lastOutboundDeliveryAt.delete(key);
+  }
+  lastOutboundDeliveryAt.set(chatId, now);
+}
+
+/** Whether a message reached this chat on the outbound road at or after ``since`` (epoch ms). */
+export function outboundDeliveredSince(chatId: string, since: number): boolean {
+  return (lastOutboundDeliveryAt.get(chatId) ?? 0) >= since;
+}
+
+/** Test-only: forget every recorded outbound delivery. */
+export function __resetOutboundDeliveries(): void {
+  lastOutboundDeliveryAt.clear();
+}
+
 /** One outbound part with the ``part_id`` filled in by {@link deliverOutboundAsParts}. */
 type OutboundPartInput =
   | { kind: "text"; text: string }
@@ -273,9 +311,10 @@ async function deliverOutboundAsParts(
   sessionKey: string,
   chatId: string | null,
   parts: OutboundPartInput[],
+  pairing: TurnPairing,
 ): Promise<{ messageId: string }> {
   const messageId = crypto.randomUUID();
-  await postTurnStart(account, sessionKey, messageId, chatId);
+  await postTurnStart(account, sessionKey, messageId, chatId, pairing);
   for (const part of parts) {
     await postTurnPart(
       account,
@@ -286,7 +325,42 @@ async function deliverOutboundAsParts(
     );
   }
   await postTurnEnd(account, sessionKey, messageId, chatId);
+  recordOutboundDelivery(chatId);
+  if ("replyTo" in pairing) recordReplyDelivered(pairing.replyTo);
   return { messageId };
+}
+
+/**
+ * What an outbound send answers, from the reply target the engine put on it.
+ *
+ * The channel runs in reply mode ``all`` (``threading`` below), so every send a run makes while
+ * answering an owner message carries that message's id — the ``message`` tool's, and a queued
+ * run's answer routed back to its chat. A send without one comes from a run that answers nobody:
+ * a subagent report, a cron delivery, the restart notice. Said outright, so the cloud does not
+ * pin it to whichever of the owner's messages happens to be waiting.
+ */
+/**
+ * Whether a ``message`` send the agent addressed explicitly goes to the chat it is answering in.
+ *
+ * The engine puts the owner's message on a send only when the send stays in the current
+ * conversation, and an explicit target has to be recognised as that conversation by the channel.
+ * The agent names its own chat in every spelling ``chatIdFromOutboundTarget`` accepts — the bare
+ * id most of all — so without this its interim notes ("On it…") went out as unprompted updates.
+ */
+export function matchesCurrentChat(params: {
+  target: string;
+  toolContext: { currentMessagingTarget?: string; currentChannelId?: string };
+}): boolean {
+  const current =
+    chatIdFromOutboundTarget(params.toolContext.currentMessagingTarget ?? "") ??
+    chatIdFromOutboundTarget(params.toolContext.currentChannelId ?? "");
+  const aimed = chatIdFromOutboundTarget(params.target);
+  return Boolean(current && aimed && current.toLowerCase() === aimed.toLowerCase());
+}
+
+function pairingForOutbound(p: OutboundParams): TurnPairing {
+  const questionId = questionForReplyTarget(p.replyToId);
+  return questionId ? { replyTo: questionId } : { unprompted: true };
 }
 
 /**
@@ -307,8 +381,11 @@ export async function deliverTextToChat(
   // and could interleave with the very stream it is meant to follow.
   const address = normalizeSellerclawUiTarget(sessionKey) ?? sessionKey;
   const chatId = extractChatIdFromAddress(address);
+  // A completion run's answer: it answers no owner message of its own.
   return enqueueSend(address, () =>
-    deliverOutboundAsParts(account, address, chatId, [{ kind: "text", text }]),
+    deliverOutboundAsParts(account, address, chatId, [{ kind: "text", text }], {
+      unprompted: true,
+    }),
   );
 }
 
@@ -323,8 +400,9 @@ async function outboundSendText(params: unknown): Promise<{ messageId: string }>
   if (!text.trim()) {
     return { messageId: "empty" };
   }
+  const pairing = pairingForOutbound(p);
   return enqueueSend(address, () =>
-    deliverOutboundAsParts(account, address, chatId, [{ kind: "text", text }]),
+    deliverOutboundAsParts(account, address, chatId, [{ kind: "text", text }], pairing),
   );
 }
 
@@ -366,7 +444,10 @@ async function outboundSendImage(params: unknown): Promise<{ messageId: string }
     url: imageUrl,
     ...(contentType ? { content_type: contentType } : {}),
   });
-  return enqueueSend(address, () => deliverOutboundAsParts(account, address, chatId, parts));
+  const pairing = pairingForOutbound(p);
+  return enqueueSend(address, () =>
+    deliverOutboundAsParts(account, address, chatId, parts, pairing),
+  );
 }
 
 /**
@@ -407,7 +488,10 @@ async function outboundSendMedia(params: unknown): Promise<{ messageId: string }
     url,
     ...(contentType ? { content_type: contentType } : {}),
   });
-  return enqueueSend(address, () => deliverOutboundAsParts(account, address, chatId, parts));
+  const pairing = pairingForOutbound(p);
+  return enqueueSend(address, () =>
+    deliverOutboundAsParts(account, address, chatId, parts, pairing),
+  );
 }
 
 const sellerclawUiChatPlugin = createChatChannelPlugin<ScwUiAccount>({
@@ -446,7 +530,18 @@ const sellerclawUiChatPlugin = createChatChannelPlugin<ScwUiAccount>({
       defaultPolicy: "open",
     },
   },
-  threading: { topLevelReplyToMode: "reply" },
+  // Every send a run makes carries the owner message it answers (``pairingForOutbound``). Reply
+  // mode ``all`` puts it on the ``message`` tool's sends; ``resolveReplyTransport`` on a queued
+  // run's answer, which the engine routes back to the chat with that message as its current one.
+  // (The ``topLevelReplyToMode`` shorthand this replaced names a *channel* whose config holds the
+  // mode — ``"reply"`` pointed at no channel, which silently meant ``off``.)
+  threading: {
+    resolveReplyToMode: () => "all",
+    resolveReplyTransport: (params: { replyToId?: string | null; currentMessageId?: string }) => ({
+      replyToId: params.replyToId ?? params.currentMessageId ?? null,
+    }),
+    matchesToolContextTarget: matchesCurrentChat,
+  },
   outbound: {
     sendText: outboundSendText,
     sendImage: outboundSendImage,
@@ -488,6 +583,15 @@ export const sellerclawUiChannelPlugin = {
   messaging: {
     inferTargetChatType: ({ to }: { to: string }): "direct" | undefined =>
       looksLikeSellerclawUiTarget(to) ? "direct" : undefined,
+    /**
+     * The canonical address for whatever spelling of a chat the agent used. The engine compares a
+     * ``message`` send's target with the chat a subagent's report is owed to through this, and a
+     * bare chat id is not equal to the address: the report counted as never delivered, and the
+     * engine re-ran the report run up to twice more — extra model calls, and a second copy of the
+     * report whenever a re-run wrote one.
+     */
+    normalizeTarget: (raw: string): string | undefined =>
+      normalizeSellerclawUiTarget(raw) ?? undefined,
     targetResolver: {
       hint: "Expected sellerclaw-ui:direct:<chat_id-uuid>, or the bare chat id.",
       looksLikeId: (raw: string) => looksLikeSellerclawUiTarget(raw),

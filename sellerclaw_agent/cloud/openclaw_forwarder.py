@@ -34,6 +34,24 @@ def openclaw_gateway_base_url() -> str:
     return f"http://127.0.0.1:{port}"
 
 
+def _gateway_headers(token: str) -> dict[str, str]:
+    """Headers for one request to the gateway, on a connection of its own.
+
+    The gateway admits requests arriving on one connection strictly one after another: the next is
+    not routed until the previous handler has *returned* (OpenClaw ``runHttpConnectionRequest``),
+    and the chat handler returns only when its whole turn is over. On a kept-alive connection every
+    message, stop and hook sent while a turn runs therefore waits for that turn — a minute or more
+    — even though each is answered ``202`` the moment its own handler starts; past the read timeout
+    the message is logged lost. ``Connection: close`` gives every request its own connection, so
+    none queues behind another's turn. It is a loopback hop, so the handshake costs nothing.
+    """
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Connection": "close",
+    }
+
+
 class LocalOpenClawForwarder:
     """Forward ``user_message`` SSE payloads to ``/api/channels/sellerclaw-ui/inbound``."""
 
@@ -66,10 +84,7 @@ class LocalOpenClawForwarder:
             httpx.HTTPStatusError: gateway responded with a non-2xx status.
         """
         url = f"{self._base}/api/channels/sellerclaw-ui/inbound"
-        headers = {
-            "Authorization": f"Bearer {self._gateway_token}",
-            "Content-Type": "application/json",
-        }
+        headers = _gateway_headers(self._gateway_token)
         if self._http is not None:
             response = await self._http.post(url, headers=headers, json=body)
         else:
@@ -99,10 +114,7 @@ class LocalOpenClawForwarder:
             httpx.HTTPStatusError: gateway responded with a non-2xx status.
         """
         url = f"{self._base}/api/channels/sellerclaw-ui/abort"
-        headers = {
-            "Authorization": f"Bearer {self._gateway_token}",
-            "Content-Type": "application/json",
-        }
+        headers = _gateway_headers(self._gateway_token)
         if self._http is not None:
             response = await self._http.post(url, headers=headers, json=body)
         else:
@@ -134,10 +146,7 @@ class LocalOpenClawForwarder:
             httpx.HTTPStatusError: gateway responded with a non-2xx status.
         """
         url = f"{self._base}/api/channels/sellerclaw-ui/scheduled-run"
-        headers = {
-            "Authorization": f"Bearer {self._gateway_token}",
-            "Content-Type": "application/json",
-        }
+        headers = _gateway_headers(self._gateway_token)
         if self._http is not None:
             response = await self._http.post(url, headers=headers, json=body)
         else:
@@ -169,10 +178,7 @@ class LocalOpenClawForwarder:
             httpx.HTTPStatusError: gateway responded with a non-2xx status.
         """
         url = f"{self._base}/api/channels/sellerclaw-ui/feasibility-check"
-        headers = {
-            "Authorization": f"Bearer {self._gateway_token}",
-            "Content-Type": "application/json",
-        }
+        headers = _gateway_headers(self._gateway_token)
         if self._http is not None:
             response = await self._http.post(url, headers=headers, json=body)
         else:
@@ -194,10 +200,7 @@ class LocalOpenClawForwarder:
     async def post_hooks_agent_json(self, body: dict[str, Any]) -> None:
         """POST ``body`` to OpenClaw ``/hooks/agent`` (cloud-originated hook delivery)."""
         url = f"{self._base}/hooks/agent"
-        headers = {
-            "Authorization": f"Bearer {self._hooks_token}",
-            "Content-Type": "application/json",
-        }
+        headers = _gateway_headers(self._hooks_token)
         if self._http is not None:
             response = await self._http.post(url, headers=headers, json=body)
         else:

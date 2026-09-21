@@ -355,16 +355,30 @@ async function postTurnRequest(
   });
 }
 
+/**
+ * What a turn answers, as the cloud pairs it with the owner's messages.
+ *
+ * ``replyTo`` names the owner message (its cloud id); ``unprompted`` says the turn answers none —
+ * a background run's report, a placeholder that only carries reasoning. Left out, the cloud pairs
+ * the turn with the newest message still waiting, which is right only while one is: a reply that
+ * opens after the owner wrote again was pinned to the newer question, and the older one stayed
+ * pending for good.
+ */
+export type TurnPairing = { replyTo: string } | { unprompted: true };
+
 export async function postTurnStart(
   account: ScwUiAccount,
   sessionKey: string,
   messageId: string,
   chatId: string | null,
+  pairing?: TurnPairing,
 ): Promise<void> {
   await postTurnRequest(account, TURN_PATH, {
     session_key: sessionKey,
     message_id: messageId,
     ...(chatId ? { chat_id: chatId } : {}),
+    ...(pairing && "replyTo" in pairing ? { reply_to_message_id: pairing.replyTo } : {}),
+    ...(pairing && "unprompted" in pairing ? { unprompted: true } : {}),
   });
 }
 

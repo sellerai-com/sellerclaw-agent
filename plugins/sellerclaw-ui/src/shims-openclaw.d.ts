@@ -38,10 +38,13 @@ declare module "openclaw/plugin-sdk/channel-inbound" {
   ): Promise<void>;
   // Inner step of the direct-DM dispatch (session recording + runDispatch); used by our local
   // re-implementation that forwards reasoning-stream callbacks. See inbound-reply-with-reasoning.ts.
+  // Resolves to the engine's ``ChannelTurnResult``: ``{ dispatched: true, dispatchResult }`` when
+  // the turn was dispatched, where ``dispatchResult.deferredToActiveRun`` names a message handed
+  // to a run already going in the session.
   export function runPreparedInboundReply(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     params: Record<string, any>,
-  ): Promise<void>;
+  ): Promise<unknown>;
 }
 
 declare module "openclaw/plugin-sdk/inbound-envelope" {
