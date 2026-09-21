@@ -19,6 +19,11 @@ services:
         # Null value = forward env var only if set; otherwise Dockerfile ARG default applies.
         OPENCLAW_REPO: "${OPENCLAW_REPO:-ghcr.io/openclaw/openclaw}"
         OPENCLAW_TAG:
+    # Stable hostname: the gateway owner lease in the persisted state dir records the
+    # owner's host, and OpenClaw reclaims a dead owner's lease only on the same host.
+    # With the default (container id) every recreate looks like a foreign host, so after
+    # an unclean stop the gateway fails to start until the lease expires (~5 min).
+    hostname: sellerclaw-agent
     ports:
       - "127.0.0.1:8001:8001"
       - "${OPENCLAW_PORT_GATEWAY:-7788}:7788"
