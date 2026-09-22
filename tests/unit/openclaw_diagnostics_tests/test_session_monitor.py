@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from types import TracebackType
 from typing import Any, Self
@@ -61,10 +62,13 @@ class _FakeGateway:
         frames: list[dict[str, Any]],
         *,
         connect_error: str | None = None,
+        hang_after: bool = False,
     ) -> None:
         self._frames = frames
         self._connect_error = connect_error
+        self._hang_after = hang_after
         self.subscribed = False
+        self.drained = asyncio.Event()
 
     async def __aenter__(self) -> Self:
         if self._connect_error:
@@ -87,6 +91,9 @@ class _FakeGateway:
     async def events(self) -> AsyncIterator[dict[str, Any]]:
         for frame in self._frames:
             yield frame
+        self.drained.set()
+        if self._hang_after:
+            await asyncio.Event().wait()  # an open socket with nothing arriving
         raise GatewayError("connection lost")
 
 
@@ -337,6 +344,25 @@ async def test_monitor_prints_a_held_block_when_the_connection_drops(
     lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith(TAG)]
     assert lines[0].endswith("summary=Half a thought")
     assert _fields(lines[-1])["type"] == "session.message"
+
+
+async def test_monitor_prints_a_held_block_when_it_is_stopped(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A container stop lands mid-block as often as not; the block being streamed is the last
+    thing the log should say, not the first thing it loses."""
+    gateway = _FakeGateway([_chunk("s1", "Half"), _chunk("s1", "Half a thought")], hang_after=True)
+    monitor = asyncio.create_task(
+        monitor_session_logs(connection_factory=lambda: gateway, reconnect_delay_seconds=0)
+    )
+    await gateway.drained.wait()
+
+    monitor.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await monitor
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith(TAG)]
+    assert [line.rsplit("summary=", 1)[1] for line in lines] == ["Half a thought"]
 
 
 async def test_monitor_subscribes_then_mirrors_events(capsys: pytest.CaptureFixture[str]) -> None:

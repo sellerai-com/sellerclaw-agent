@@ -84,6 +84,12 @@ async def monitor_session_logs(
             if not reported_outage:
                 print(f"{TAG} agent=- session=- type=monitor.disconnected reason={exc}", flush=True)
                 reported_outage = True
+        except asyncio.CancelledError:
+            # The container is stopping mid-block. What the agent was doing at that moment is the
+            # part of the log that matters most, so it goes out before the mirror does.
+            for line in mirror.flush():
+                print(line, flush=True)
+            raise
         await asyncio.sleep(reconnect_delay_seconds)
 
 
