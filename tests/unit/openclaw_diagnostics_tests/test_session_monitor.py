@@ -8,6 +8,7 @@ import pytest
 from openclaw_diagnostics.gateway import GatewayError
 from openclaw_diagnostics.session_monitor import (
     TAG,
+    SessionLogMirror,
     format_session_log_line,
     monitor_session_logs,
     session_log_lines,
@@ -18,6 +19,28 @@ pytestmark = pytest.mark.unit
 
 def _event(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {"type": "event", "event": name, "payload": payload}
+
+
+def _chunk(
+    session: str,
+    text: str | None,
+    *,
+    delta: str | None = None,
+    run: str = "run-1",
+    stream: str = "thinking",
+) -> dict[str, Any]:
+    """One streamed-text frame as the gateway sends it: the whole text so far plus the new piece."""
+    data: dict[str, Any] = {"delta": delta if delta is not None else (text or "")[-3:]}
+    if text is not None:
+        data["text"] = text
+    return _event(
+        "agent",
+        {"sessionKey": session, "agentId": "supervisor", "runId": run, "stream": stream, "data": data},
+    )
+
+
+def _feed_all(mirror: SessionLogMirror, frames: list[dict[str, Any]]) -> list[str]:
+    return [line for frame in frames for line in mirror.feed(frame)]
 
 
 def _fields(line: str) -> dict[str, str]:
@@ -201,6 +224,119 @@ def test_non_event_frames_are_ignored() -> None:
 
 def test_malformed_payload_still_produces_a_line() -> None:
     assert session_log_lines({"type": "event", "event": "agent", "payload": "not-a-dict"})
+
+
+@pytest.mark.parametrize("stream", [pytest.param("thinking", id="reasoning"), pytest.param("assistant", id="reply")])
+def test_a_streamed_block_is_one_line_with_its_full_text(stream: str) -> None:
+    """Every chunk frame carries the text so far; one line per chunk printed the same prefix
+    hundreds of times per block. The block now lands once, before the event that follows it."""
+    mirror = SessionLogMirror()
+
+    lines = _feed_all(
+        mirror,
+        [
+            _chunk("s1", "I'm", stream=stream),
+            _chunk("s1", "I'm on a", stream=stream),
+            _chunk("s1", "I'm on a background run", stream=stream),
+            _event("session.tool", {"sessionKey": "s1", "agentId": "supervisor", "data": {"toolName": "exec"}}),
+        ],
+    )
+
+    assert [_fields(line)["type"] for line in lines] == ["agent", "session.tool"]
+    assert _fields(lines[0])["stream"] == stream
+    assert lines[0].endswith("summary=I'm on a background run")
+
+
+def test_a_new_block_releases_the_previous_one() -> None:
+    mirror = SessionLogMirror()
+
+    lines = _feed_all(
+        mirror,
+        [
+            _chunk("s1", "First thought"),
+            _chunk("s1", "Second"),  # does not continue the first text: a new block
+            _chunk("s1", "Second thought"),
+            _chunk("s1", "Reply", run="run-1", stream="assistant"),
+        ],
+    )
+
+    assert [line.rsplit("summary=", 1)[1] for line in lines] == ["First thought", "Second thought"]
+
+
+def test_blocks_of_different_sessions_do_not_release_each_other() -> None:
+    mirror = SessionLogMirror()
+
+    interleaved = _feed_all(
+        mirror,
+        [
+            _chunk("sup", "Checking"),
+            _chunk("sub", "Searching"),
+            _chunk("sup", "Checking the task"),
+            _chunk("sub", "Searching CJ"),
+            _event("session.message", {"sessionKey": "sub", "message": {"role": "assistant", "text": "Done"}}),
+        ],
+    )
+
+    assert [(_fields(line)["session"], _fields(line)["type"]) for line in interleaved] == [
+        ("sub", "agent"),
+        ("sub", "session.message"),
+    ]
+    assert interleaved[0].endswith("summary=Searching CJ")
+    assert [line.rsplit("summary=", 1)[1] for line in mirror.flush()] == ["Checking the task"]
+    assert mirror.flush() == []
+
+
+@pytest.mark.parametrize(
+    ("frames", "expected"),
+    [
+        pytest.param(
+            [_chunk("s1", None, delta="Look"), _chunk("s1", None, delta="ing up")],
+            ["Looking up"],
+            id="delta-only chunks are joined",
+        ),
+        pytest.param(
+            [_event("agent", {"sessionKey": "s1", "runId": "r", "stream": "thinking", "data": {"progressTokens": 40}})],
+            [],
+            id="bare progress counter is dropped",
+        ),
+    ],
+)
+def test_chunks_without_a_running_text(frames: list[dict[str, Any]], expected: list[str]) -> None:
+    mirror = SessionLogMirror()
+
+    assert _feed_all(mirror, frames) == []
+    assert [line.rsplit("summary=", 1)[1] for line in mirror.flush()] == expected
+
+
+def test_non_chunk_agent_frames_are_printed_at_once() -> None:
+    """Lifecycle, item and tool frames of the same run are not held — only streamed text is."""
+    mirror = SessionLogMirror()
+
+    lines = mirror.feed(
+        _event("agent", {"sessionKey": "s1", "runId": "r", "stream": "lifecycle", "data": {"phase": "end"}})
+    )
+
+    assert len(lines) == 1
+    assert _fields(lines[0])["phase"] == "end"
+
+
+async def test_monitor_prints_a_held_block_when_the_connection_drops(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gateways = [
+        _FakeGateway([_chunk("s1", "Half"), _chunk("s1", "Half a thought")]),
+        _FakeGateway([_event("session.message", {"sessionKey": "s1"})]),
+    ]
+
+    await monitor_session_logs(
+        connection_factory=lambda: gateways.pop(0),
+        reconnect_delay_seconds=0,
+        max_events=1,
+    )
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith(TAG)]
+    assert lines[0].endswith("summary=Half a thought")
+    assert _fields(lines[-1])["type"] == "session.message"
 
 
 async def test_monitor_subscribes_then_mirrors_events(capsys: pytest.CaptureFixture[str]) -> None:

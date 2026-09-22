@@ -4,7 +4,8 @@ Chats, tool calls and run lifecycle all reach the gateway as events; ``sessions.
 asks for them across every session on one connection, which is what makes this a mirror of
 the whole agent rather than of whichever sessions happened to exist at startup.
 
-Each event becomes one ``[openclaw_session] …`` line. That prefix and the ``session=`` /
+Each event becomes one ``[openclaw_session] …`` line, except streamed reasoning and reply text,
+which is logged once per block (see :class:`SessionLogMirror`). That prefix and the ``session=`` /
 ``type=`` keys are what the chat-analysis commands grep for, so they are part of the
 contract with those tools, not incidental formatting.
 """
@@ -41,6 +42,11 @@ _MIRRORED_EVENTS: Final[frozenset[str]] = frozenset(
 
 _RECONNECT_DELAY_S: Final[float] = 2.0
 
+#: ``agent`` streams that arrive one frame per generated chunk, each carrying the whole text so far
+#: (``data.text``) next to the new piece (``data.delta``). Printed per frame they repeat the same
+#: truncated line hundreds of times per block, so the mirror logs each block once instead.
+_CHUNKED_STREAMS: Final[frozenset[str]] = frozenset({"thinking", "assistant"})
+
 
 async def monitor_session_logs(
     *,
@@ -58,17 +64,21 @@ async def monitor_session_logs(
     emitted = 0
     reported_outage = False
     while True:
+        mirror = SessionLogMirror()
         try:
             async with connection_factory() as conn:
                 await conn.call("sessions.subscribe", {})
                 reported_outage = False
                 async for frame in conn.events():
-                    for line in session_log_lines(frame):
+                    for line in mirror.feed(frame):
                         print(line, flush=True)
                         emitted += 1
                         if max_events is not None and emitted >= max_events:
                             return
         except GatewayError as exc:
+            # A block still held when the socket drops would otherwise never be printed.
+            for line in mirror.flush():
+                print(line, flush=True)
             # One line per outage, not per retry: this loop runs alongside a booting gateway
             # and would otherwise fill the container log with the same line every few seconds.
             if not reported_outage:
@@ -79,29 +89,126 @@ async def monitor_session_logs(
 
 def session_log_lines(frame: dict[str, Any]) -> list[str]:
     """Render one gateway frame as stdout lines (empty when it is not a mirrored event)."""
-    if frame.get("type") != "event":
+    mirrored = _mirrored_event(frame)
+    if mirrored is None:
         return []
-    event = frame.get("event")
-    if not isinstance(event, str) or event not in _MIRRORED_EVENTS:
-        return []
-    payload = frame.get("payload")
-    if not isinstance(payload, dict):
-        payload = {}
+    event, payload = mirrored
     return [format_session_log_line(event=event, payload=payload)]
 
 
-def format_session_log_line(*, event: str, payload: dict[str, Any]) -> str:
-    """Format one gateway session event into a concise single-line stdout record."""
+class _HeldBlock:
+    """The latest snapshot of one streamed text block, waiting for the block to end."""
+
+    def __init__(self, *, run_id: str, stream: str, text: str, payload: dict[str, Any]) -> None:
+        self.run_id = run_id
+        self.stream = stream
+        self.text = text
+        self.payload = payload
+
+    def continues_with(self, *, run_id: str, stream: str, text: str) -> bool:
+        return run_id == self.run_id and stream == self.stream and text.startswith(self.text)
+
+    def line(self) -> str:
+        data = self.payload.get("data")
+        data = {**data, "text": self.text} if isinstance(data, dict) else {"text": self.text}
+        return format_session_log_line(event="agent", payload={**self.payload, "data": data})
+
+
+class SessionLogMirror:
+    """Gateway frames to stdout lines, with each streamed text block logged once.
+
+    A chunk frame of a ``_CHUNKED_STREAMS`` stream is held as the latest snapshot of its block,
+    one block per session. The held line is printed once the block is over — before the next frame
+    of the same session, when a new block starts, or on :meth:`flush` — so it carries the block's
+    leading text in full and keeps its place in the session's order. Every other frame is printed
+    as it arrives.
+    """
+
+    def __init__(self) -> None:
+        self._held: dict[str, _HeldBlock] = {}
+
+    def feed(self, frame: dict[str, Any]) -> list[str]:
+        mirrored = _mirrored_event(frame)
+        if mirrored is None:
+            return []
+        event, payload = mirrored
+        session_key = _session_key(payload)
+        chunk = _chunk(event, payload)
+        if chunk is None:
+            return [*self._release(session_key), format_session_log_line(event=event, payload=payload)]
+
+        run_id, stream, text, delta = chunk
+        held = self._held.get(session_key)
+        if text is None:
+            # Some runtimes send the new piece alone; rebuild the running text from it.
+            if not delta:
+                return []  # a bare progress counter: nothing to show
+            same_block = held is not None and held.run_id == run_id and held.stream == stream
+            text = f"{held.text}{delta}" if held is not None and same_block else delta
+        if held is not None and held.continues_with(run_id=run_id, stream=stream, text=text):
+            held.text = text
+            return []
+        released = self._release(session_key)
+        self._held[session_key] = _HeldBlock(run_id=run_id, stream=stream, text=text, payload=payload)
+        return released
+
+    def flush(self) -> list[str]:
+        """Print every held block — for the end of the connection."""
+        lines = [held.line() for held in self._held.values()]
+        self._held.clear()
+        return lines
+
+    def _release(self, session_key: str) -> list[str]:
+        held = self._held.pop(session_key, None)
+        return [held.line()] if held is not None else []
+
+
+def _mirrored_event(frame: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    if frame.get("type") != "event":
+        return None
+    event = frame.get("event")
+    if not isinstance(event, str) or event not in _MIRRORED_EVENTS:
+        return None
+    payload = frame.get("payload")
+    return event, payload if isinstance(payload, dict) else {}
+
+
+def _chunk(event: str, payload: dict[str, Any]) -> tuple[str, str, str | None, str | None] | None:
+    """``(run_id, stream, text, delta)`` for a streamed-text chunk frame, else ``None``."""
+    stream = payload.get("stream")
+    data = payload.get("data")
+    if event != "agent" or stream not in _CHUNKED_STREAMS or not isinstance(data, dict):
+        return None
+    if "delta" not in data and "progressTokens" not in data:
+        return None
+    text = data.get("text")
+    delta = data.get("delta")
+    return (
+        str(payload.get("runId") or ""),
+        str(stream),
+        text if isinstance(text, str) else None,
+        delta if isinstance(delta, str) else None,
+    )
+
+
+def _session_key(payload: dict[str, Any]) -> str:
     raw_session = payload.get("session")
     session: dict[str, Any] = raw_session if isinstance(raw_session, dict) else {}
     # Top-level payloads say `sessionKey`; the embedded session-row snapshot says `key`.
-    session_key = (
+    return (
         _first_str(payload, "sessionKey")
         or _first_str(session, "sessionKey", "key")
         or _first_str(payload, "sessionId")
         or _first_str(session, "sessionId")
         or "unknown"
     )
+
+
+def format_session_log_line(*, event: str, payload: dict[str, Any]) -> str:
+    """Format one gateway session event into a concise single-line stdout record."""
+    raw_session = payload.get("session")
+    session: dict[str, Any] = raw_session if isinstance(raw_session, dict) else {}
+    session_key = _session_key(payload)
     agent_id = _first_str(payload, "agentId") or _first_str(session, "agentId")
     if not agent_id:
         # Not every frame names the agent, but agent-scoped keys encode it.
