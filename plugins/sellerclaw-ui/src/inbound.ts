@@ -2,7 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { dispatchInboundDirectDmWithReasoning } from "./inbound-reply-with-reasoning.js";
 import { isReasoningReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { readJsonWebhookBodyOrReject } from "openclaw/plugin-sdk/webhook-ingress";
-import { ensureRouteScopeGatewayResolver } from "./gateway-scope.js";
+import { ensureRouteScopeGatewayResolver, SUPERVISOR_TURN_SCOPE_SURFACE } from "./gateway-scope.js";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import {
   abortAgentHarnessRun,
@@ -1232,11 +1232,13 @@ async function waitForQueuedRun(settled: Promise<void>, stop: AbortSignal): Prom
 export function registerInboundRoute(api: OpenClawPluginApi): void {
   api.registerHttpRoute({
     // `/api/channels` prefix + `auth: "gateway"`: OpenClaw authenticates the request
-    // against the gateway token BEFORE the handler and grants the agent run
-    // `operator.write` (write-default surface) — required for `sessions_spawn`.
+    // against the gateway token BEFORE the handler and grants the agent run its operator
+    // scopes — `operator.write` is required for `sessions_spawn`, `operator.read` for reading
+    // other sessions (see SUPERVISOR_TURN_SCOPE_SURFACE for why the default surface is not enough).
     // A plugin-authed route would run the whole turn with an empty operator scope.
     path: "/api/channels/sellerclaw-ui/inbound",
     auth: "gateway",
+    gatewayRuntimeScopeSurface: SUPERVISOR_TURN_SCOPE_SURFACE,
     handler: async (req, res) => {
       // Must run before the turn is dispatched: OpenClaw's route scope has no gateway resolver,
       // and without it a turn that spawns 2+ subagents can never wake this chat again.
@@ -1338,14 +1340,15 @@ interface ScheduledRunPayload {
  * It runs the instruction in an isolated per-run session, accumulates the agent's final reply as a
  * summary, and — deterministically when the run finishes (success OR failure) — POSTs the structured
  * outcome to the cloud's ``/agent/scheduled-tasks/run`` webhook, echoing ``run_id`` so the cloud
- * folds it into the run journal idempotently. Gateway-authenticated like the inbound route so the
- * run is granted ``operator.write`` (tools) rather than an empty operator scope.
+ * folds it into the run journal idempotently. Gateway-authenticated with the same scope surface as
+ * the inbound route, so the run's tools get operator scopes rather than an empty set.
  */
 export function registerScheduledRunRoute(api: OpenClawPluginApi): void {
   const SUMMARY_MAX = 60_000;
   api.registerHttpRoute({
     path: "/api/channels/sellerclaw-ui/scheduled-run",
     auth: "gateway",
+    gatewayRuntimeScopeSurface: SUPERVISOR_TURN_SCOPE_SURFACE,
     handler: async (req, res) => {
       // Must run before the turn is dispatched: OpenClaw's route scope has no gateway resolver,
       // and without it a turn that spawns 2+ subagents can never wake this chat again.

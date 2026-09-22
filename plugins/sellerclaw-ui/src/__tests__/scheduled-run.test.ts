@@ -79,9 +79,14 @@ describe("registerScheduledRunRoute", () => {
 
   it("registers a gateway-authed /scheduled-run route", () => {
     const { registerHttpRoute } = buildHandler();
-    const opts = registerHttpRoute.mock.calls[0]![0] as { path: string; auth: string };
+    const opts = registerHttpRoute.mock.calls[0]![0] as {
+      path: string;
+      auth: string;
+      gatewayRuntimeScopeSurface?: string;
+    };
     expect(opts.path).toBe("/api/channels/sellerclaw-ui/scheduled-run");
     expect(opts.auth).toBe("gateway");
+    expect(opts.gatewayRuntimeScopeSurface).toBe("trusted-operator");
   });
 
   it("returns 400 when run_id or instruction is missing", async () => {

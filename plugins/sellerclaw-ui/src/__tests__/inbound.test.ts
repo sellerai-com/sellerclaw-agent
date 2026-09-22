@@ -129,8 +129,8 @@ describe("registerInboundRoute", () => {
 
   it("registers HTTP route /api/channels/sellerclaw-ui/inbound with gateway auth", () => {
     // The /api/channels prefix + auth:"gateway" make OpenClaw authenticate the
-    // request with the gateway token and grant operator.write to the agent run
-    // (required for sessions_spawn); the handler itself does no auth.
+    // request with the gateway token and grant operator scopes to the agent run
+    // (write for sessions_spawn, read for session reads); the handler itself does no auth.
     const registerHttpRoute = vi.fn();
     const api = {
       config: {
@@ -158,7 +158,7 @@ describe("registerInboundRoute", () => {
     };
     expect(opts.path).toBe("/api/channels/sellerclaw-ui/inbound");
     expect(opts.auth).toBe("gateway");
-    expect(opts.gatewayRuntimeScopeSurface).toBeUndefined();
+    expect(opts.gatewayRuntimeScopeSurface).toBe("trusted-operator");
     expect(typeof opts.handler).toBe("function");
   });
 

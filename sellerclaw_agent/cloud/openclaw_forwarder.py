@@ -67,7 +67,8 @@ class LocalOpenClawForwarder:
         self._base = base_url.rstrip("/")
         # Inbound/abort go through OpenClaw's gateway-authenticated plugin routes
         # (``/api/channels/...`` + gateway token): gateway auth is what grants the
-        # agent run ``operator.write`` so ``sessions_spawn`` works. ``/hooks/agent``
+        # agent run its operator scopes (``sessions_spawn`` needs write, session reads
+        # need read — the scope surface is set on the plugin's routes). ``/hooks/agent``
         # keeps its own hooks-token auth.
         self._gateway_token = gateway_token
         self._hooks_token = hooks_token
@@ -138,7 +139,7 @@ class LocalOpenClawForwarder:
 
         Hands one recurring-task occurrence to the plugin, which runs it in an isolated session
         and reports the outcome straight to the cloud (not a chat). Gateway-authenticated like the
-        inbound route so the run gets ``operator.write``.
+        inbound route so the run gets the same operator scopes.
 
         Raises:
             httpx.ConnectError: the local gateway is not listening.

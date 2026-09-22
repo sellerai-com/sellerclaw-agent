@@ -113,6 +113,7 @@ declare module "openclaw/plugin-sdk/core" {
     registerHttpRoute: (opts: {
       path: string;
       auth: string;
+      gatewayRuntimeScopeSurface?: "write-default" | "trusted-operator";
       handler: (
         req: IncomingMessage,
         res: ServerResponse,
