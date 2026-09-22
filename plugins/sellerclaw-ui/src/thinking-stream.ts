@@ -294,7 +294,9 @@ export function finishStreamedRun(api: OpenClawPluginApi, runId: string): void {
   if (!run.posted) return;
   void run.chain
     .then(async () => {
-      await postTurnStart(run.account, run.sessionKey, run.messageId, run.chatId);
+      await postTurnStart(run.account, run.sessionKey, run.messageId, run.chatId, {
+        unprompted: true,
+      });
       await postTurnEnd(run.account, run.sessionKey, run.messageId, run.chatId);
     })
     .catch((err: unknown) => {

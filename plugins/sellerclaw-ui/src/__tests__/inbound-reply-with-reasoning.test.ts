@@ -42,11 +42,13 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
     });
 
     const dispatchReplyMock = vi.fn().mockResolvedValue(undefined);
+    const channelDispatch = vi.fn();
     const runtime = {
       channel: {
         reply: {
           finalizeInboundContext: vi.fn((c: unknown) => ({ ctx: c })),
           dispatchReplyWithBufferedBlockDispatcher: dispatchReplyMock,
+          dispatchReplyFromConfig: channelDispatch,
         },
         session: { recordInboundSession: vi.fn() },
       },
@@ -54,6 +56,8 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
 
     const onReasoningStream = vi.fn();
     const onReasoningEnd = vi.fn();
+    const abortSignal = new AbortController().signal;
+    const turnAdoptionLifecycle = { onAdopted: vi.fn(), onSettled: vi.fn() };
 
     await dispatchInboundDirectDmWithReasoning({
       cfg: { session: { store: "store" } },
@@ -70,19 +74,27 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
       messageId: "m1",
       timestamp: 123,
       commandAuthorized: true,
-      replyOptions: { onReasoningStream, onReasoningEnd },
+      replyOptions: { onReasoningStream, onReasoningEnd, abortSignal, turnAdoptionLifecycle },
       deliver: vi.fn().mockResolvedValue(undefined),
     });
 
     expect(dispatchReplyMock).toHaveBeenCalledTimes(1);
     const callArg = dispatchReplyMock.mock.calls[0]![0] as {
-      replyOptions: { onModelSelected: unknown; onReasoningStream: unknown; onReasoningEnd: unknown };
+      replyOptions: Record<string, unknown>;
+      dispatchReplyFromConfig: unknown;
     };
     // The whole point of the local re-implementation: reasoning callbacks survive into replyOptions
     // (upstream dropped them, passing only onModelSelected).
-    expect(callArg.replyOptions.onReasoningStream).toBe(onReasoningStream);
-    expect(callArg.replyOptions.onReasoningEnd).toBe(onReasoningEnd);
-    expect(callArg.replyOptions.onModelSelected).toBe(onModelSelected);
+    expect(callArg.replyOptions).toEqual({
+      onModelSelected,
+      onReasoningStream,
+      onReasoningEnd,
+      abortSignal,
+      turnAdoptionLifecycle,
+    });
+    // The channel runtime's dispatch, which lets a mid-run message reach the ``steer`` queue mode
+    // instead of waiting for the run to end.
+    expect(callArg.dispatchReplyFromConfig).toBe(channelDispatch);
   });
 
   it("forwards the dispatcher's per-delivery info (kind/index) as the second deliver arg", async () => {

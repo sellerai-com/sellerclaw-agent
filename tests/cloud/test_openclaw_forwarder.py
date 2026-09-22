@@ -178,3 +178,42 @@ def test_openclaw_gateway_base_url_never_falls_back_to_the_nginx_port(
     monkeypatch.delenv("OPENCLAW_PORT_GATEWAY_LOCAL", raising=False)
     monkeypatch.setenv("OPENCLAW_PORT_GATEWAY", "7788")
     assert openclaw_gateway_base_url() == "http://127.0.0.1:7789"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        pytest.param("post_inbound_json", "/api/channels/sellerclaw-ui/inbound", id="inbound"),
+        pytest.param("post_abort_json", "/api/channels/sellerclaw-ui/abort", id="abort"),
+        pytest.param(
+            "post_scheduled_run_json", "/api/channels/sellerclaw-ui/scheduled-run", id="scheduled-run"
+        ),
+        pytest.param(
+            "post_feasibility_check_json",
+            "/api/channels/sellerclaw-ui/feasibility-check",
+            id="feasibility-check",
+        ),
+        pytest.param("post_hooks_agent_json", "/hooks/agent", id="hooks"),
+    ],
+)
+async def test_local_forwarder_never_reuses_a_gateway_connection(method: str, path: str) -> None:
+    """The gateway admits one request per connection at a time and holds a chat handler for its
+    whole turn, so a message reusing that connection would wait for the turn to end. Every
+    request asks for a connection of its own."""
+    captured: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append((request.url.path, request.headers.get("connection", "")))
+        return httpx.Response(202)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as shared:
+        fwd = LocalOpenClawForwarder(
+            base_url="http://gw.test",
+            hooks_token="hooks-secret",
+            gateway_token="gw-secret",
+            http_client=shared,
+        )
+        await getattr(fwd, method)({"chat_id": "c1", "agent_id": "supervisor"})
+
+    assert captured == [(path, "close")]

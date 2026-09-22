@@ -30,7 +30,12 @@ import { normalizeOutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DispatchParams = Record<string, any>;
 
-export async function dispatchInboundDirectDmWithReasoning(params: DispatchParams): Promise<void> {
+/**
+ * Returns the engine's turn result. The caller reads one field of it — whether the message was
+ * handed to a run already going in the session (``dispatchResult.deferredToActiveRun``), in which
+ * case its answer is delivered by that run's turn, not by this dispatch.
+ */
+export async function dispatchInboundDirectDmWithReasoning(params: DispatchParams): Promise<unknown> {
   const { route, buildEnvelope } = resolveInboundRouteEnvelopeBuilderWithRuntime({
     cfg: params.cfg,
     channel: params.channel,
@@ -73,7 +78,7 @@ export async function dispatchInboundDirectDmWithReasoning(params: DispatchParam
     channel: params.channel,
     accountId: route.accountId ?? params.accountId,
   });
-  await runPreparedInboundReply({
+  return await runPreparedInboundReply({
     channel: params.channel,
     accountId: route.accountId ?? params.accountId,
     routeSessionKey: route.sessionKey,
@@ -118,11 +123,24 @@ export async function dispatchInboundDirectDmWithReasoning(params: DispatchParam
         },
         // THE ONLY DIVERGENCE from upstream: upstream passes `replyOptions: { onModelSelected }`
         // and drops reasoning callbacks. We forward them so streamed reasoning reaches the channel.
+        // Also forwarded: the turn's abort signal and its queue lifecycle (``inbound.ts``), with
+        // which a message waiting in the engine's queue stays the owner's pending question and a
+        // stop reaches it there.
         replyOptions: {
           onModelSelected,
           onReasoningStream: params.replyOptions?.onReasoningStream,
           onReasoningEnd: params.replyOptions?.onReasoningEnd,
+          ...(params.replyOptions?.abortSignal
+            ? { abortSignal: params.replyOptions.abortSignal }
+            : {}),
+          ...(params.replyOptions?.turnAdoptionLifecycle
+            ? { turnAdoptionLifecycle: params.replyOptions.turnAdoptionLifecycle }
+            : {}),
         },
+        // The channel runtime's own dispatch, as upstream's plan-based path uses. The buffered
+        // helper's default is the plain one, which holds a message that arrives mid-run until the
+        // run ends — so the session's ``steer`` queue mode never got to see it.
+        dispatchReplyFromConfig: params.runtime.channel.reply.dispatchReplyFromConfig,
       }),
   });
 }

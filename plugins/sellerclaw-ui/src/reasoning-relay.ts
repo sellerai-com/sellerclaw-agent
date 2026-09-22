@@ -210,7 +210,8 @@ async function relayRunThinking(params: {
   }
   if (seq === 0) return;
   // An empty turn: the cloud drops the message and hands the reasoning to this exchange's answer.
-  await postTurnStart(account, sessionKey, messageId, chatId);
+  // Unprompted, so it cannot close an owner message still waiting as if it had been answered.
+  await postTurnStart(account, sessionKey, messageId, chatId, { unprompted: true });
   await postTurnEnd(account, sessionKey, messageId, chatId);
 }
 

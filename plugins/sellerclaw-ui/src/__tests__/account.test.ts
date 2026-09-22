@@ -214,6 +214,7 @@ describe("messaging.targetResolver", () => {
    */
   type PluginWithMessaging = {
     messaging: {
+      normalizeTarget: (raw: string) => string | undefined;
       inferTargetChatType: (params: { to: string }) => string | undefined;
       targetResolver: {
         hint: string;
@@ -277,6 +278,24 @@ describe("messaging.targetResolver", () => {
   ])("accepts %s as a target", (_label, raw) => {
     expect(messaging.targetResolver.looksLikeId(raw)).toBe(true);
     expect(messaging.inferTargetChatType({ to: raw })).toBe("direct");
+  });
+
+  /**
+   * The engine judges whether a subagent's report reached the chat by comparing the ``message``
+   * send's target with the chat's address, both through this normalizer.
+   */
+  it.each([
+    ["the address", "sellerclaw-ui:direct:9ced2cbb-33a8-4284-b021-4eb77e2b6d81"],
+    ["a bare chat id", "9ced2cbb-33a8-4284-b021-4eb77e2b6d81"],
+    ["the session key", "agent:supervisor:sellerclaw-ui:direct:9ced2cbb-33a8-4284-b021-4eb77e2b6d81"],
+  ])("normalizes %s to the chat's address", (_label, raw) => {
+    expect(messaging.normalizeTarget(raw)).toBe(
+      "sellerclaw-ui:direct:9ced2cbb-33a8-4284-b021-4eb77e2b6d81",
+    );
+  });
+
+  it("leaves a target that names no chat to the engine", () => {
+    expect(messaging.normalizeTarget("primenest-wix")).toBeUndefined();
   });
 
   it("still rejects a bare id that is not a UUID", () => {
