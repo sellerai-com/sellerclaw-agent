@@ -114,21 +114,32 @@ RUN mkdir -p /opt/config-bundle /opt/openclaw-config /opt/openclaw-workspaces /o
 # Long-term memory: the official mem0 OpenClaw plugin, used in PLATFORM mode pointed at the cloud's
 # Mem0-compatible adapter (config_generator enables it only when the manifest's memory block is on).
 # Vendor the package AT the plugin load path (its openclaw.plugin.json must sit at the dir root, like
-# our own plugins copied below) and install deps in-image so the transitive native better-sqlite3 binding matches
-# TARGETARCH — even though platform mode never touches the local SQLite store. Must stay root-owned
+# our own plugins copied below) and install its deps in-image, offline at boot. Must stay root-owned
 # (OpenClaw rejects config-origin plugins with non-root ownership).
 # NOTE: the load path is what makes plugins.slots.memory resolve — dropping it hard-fails config
 # validation ("plugin not found: openclaw-mem0") and the gateway won't boot. It does NOT register
 # the plugin in OpenClaw's plugin registry, which is a separate concern the startup doctor checks —
 # see the registry pre-build step further down.
 # Pin exact version so image rebuilds are reproducible (check: npm view @mem0/openclaw-mem0 version).
+#
+# `--legacy-peer-deps` keeps the install to what platform mode loads. The plugin's only runtime
+# dependency, `mem0ai`, declares every backend SDK it can drive as a peer dependency (Azure,
+# Cloudflare, Google, LangChain, Mistral, Qdrant, pg, redis, natural, better-sqlite3, …), and npm 7+
+# installs peers by default: 409 MB / 35k files. Only the OSS (self-hosted) mode imports any of them
+# (`mem0ai/oss` and `better-sqlite3` behind dynamic imports); platform mode needs `mem0ai` itself,
+# which pulls axios/openai/zod as ordinary dependencies. Skipping the peers leaves 33 MB / 3.8k files.
+# That size is on the boot path: since OpenClaw 2026.9.5 every plugin load captures the plugin
+# directory INCLUDING node_modules (copy + hash, for hot reload/rollback) and the gateway loads
+# this plugin three times per start — with the full tree that was ~50 s of blocked event loop
+# before the gateway could take a message, and the reload on an effort change hit the same wall.
 ARG MEM0_OPENCLAW_PLUGIN_VERSION=1.0.13
 RUN mkdir -p /opt/openclaw-plugins/openclaw-mem0 \
     && cd /opt/openclaw-plugins/openclaw-mem0 \
     && npm pack "@mem0/openclaw-mem0@${MEM0_OPENCLAW_PLUGIN_VERSION}" \
     && tar --strip-components=1 -xzf mem0-openclaw-mem0-*.tgz \
     && rm -f mem0-openclaw-mem0-*.tgz \
-    && npm install --omit=dev --no-audit --no-fund \
+    && npm install --omit=dev --legacy-peer-deps --no-audit --no-fund \
+    && node --input-type=module -e "await import('mem0ai')" \
     && chown -R root:root /opt/openclaw-plugins/openclaw-mem0
 
 
