@@ -95,6 +95,14 @@ monitor_session_logs() {
         --reconnect-delay "${reconnect_delay}"
 }
 
+drop_log_noise() {
+    # OpenClaw's scheduler logs every job run at debug, and the gateway's event-loop sampler
+    # is a job that runs every 20 ms — ~50 identical lines a second at OPENCLAW_LOG_LEVEL=debug
+    # (the local default). They bury `docker logs` and push real errors out of the tail the
+    # activity probe reads, so exactly that line is dropped; every other line passes through.
+    grep --line-buffered -v -x -E '[0-9:]+ \[scheduler\] running event-loop-health'
+}
+
 rotate_log_if_oversize() {
     # copytruncate-style rotation: `tee -a` holds an O_APPEND fd, so truncating the
     # file in place is safe (its next write lands at the new EOF, no corruption).
@@ -220,13 +228,13 @@ start_gateway() {
         local log_dir="${OPENCLAW_LOG_DIR:-${STATE_DIR}/logs}"
         local log_file="${log_dir}/openclaw.log"
         mkdir -p "${log_dir}"
-        node openclaw.mjs gateway --bind loopback --port 7789 > >(tee -a "${log_file}") 2>&1 &
+        node openclaw.mjs gateway --bind loopback --port 7789 > >(drop_log_noise | tee -a "${log_file}") 2>&1 &
         openclaw_pid=$!
         log "OpenClaw stdout mirrored to ${log_file} (rotate at ${OPENCLAW_LOG_MAX_BYTES:-26214400} bytes)"
         monitor_log_rotation "${log_file}" &
         bg_pids+=("$!")
     else
-        node openclaw.mjs gateway --bind loopback --port 7789 &
+        node openclaw.mjs gateway --bind loopback --port 7789 > >(drop_log_noise) &
         openclaw_pid=$!
     fi
     monitor_gateway_readiness "${openclaw_pid}" &
