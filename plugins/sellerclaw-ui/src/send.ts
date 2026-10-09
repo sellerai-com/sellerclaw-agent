@@ -223,6 +223,33 @@ export async function postScheduledTaskFeasibility(
   })
 }
 
+/**
+ * Tell the cloud that a specialist spawned from a background supervisor run has ended.
+ *
+ * Posted to the AGENT-authenticated webhook ``/agent/goals/subagent-runs/ended``; the cloud finds
+ * the task that run handed in and wakes the supervisor about it at once. A report it cannot place
+ * is a 204 no-op there, so a duplicate is harmless. Field names are camelCase to match the cloud
+ * webhook schema.
+ */
+export async function postSubagentRunEnded(
+  account: ScwUiAccount,
+  run: { childSessionKey: string; requesterSessionKey: string; runId?: string },
+): Promise<void> {
+  const url = `${account.apiBaseUrl.replace(/\/$/, "")}/agent/goals/subagent-runs/ended`;
+  await postOpenclawWebhook(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${account.agentApiKey}`,
+    },
+    body: JSON.stringify({
+      childSessionKey: run.childSessionKey,
+      requesterSessionKey: run.requesterSessionKey,
+      ...(run.runId ? { runId: run.runId } : {}),
+    }),
+  });
+}
+
 export async function postWebhookMessage(
   account: ScwUiAccount,
   sessionKey: string,
