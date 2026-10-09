@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
+import { registerBackgroundHandinRelay } from "./background-handin.js";
 import { registerCompletionDeliveryGuard } from "./completion-delivery.js";
 import { logWarn } from "./log.js";
 import { registerReasoningRelay } from "./reasoning-relay.js";
@@ -60,6 +61,7 @@ export function registerLifecycleHooks(api: OpenClawPluginApi): void {
   registerLiveThinkingStream(api);
   registerSessionEnv(api);
   registerYieldGuard(api);
+  registerBackgroundHandinRelay(api);
 }
 
 type RegistrableEntry = { register: (api: OpenClawPluginApi) => void };
