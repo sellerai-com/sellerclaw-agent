@@ -127,6 +127,8 @@ describe("registerScheduledRunRoute", () => {
     // Isolated per-run session — not a chat.
     const params = dispatchMock.mock.calls[0]![0] as { peer: { id: string } };
     expect(params.peer.id).toBe("scheduled-task:run-abc");
+    // A system turn, not the owner speaking: the engine's human-only paths stay off.
+    expect("inboundAccessAuthorized" in params).toBe(false);
 
     await vi.waitFor(() => expect(reportMock).toHaveBeenCalledTimes(1));
     expect(reportMock.mock.calls[0]![1]).toMatchObject({

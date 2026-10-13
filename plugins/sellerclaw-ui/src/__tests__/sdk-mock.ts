@@ -94,8 +94,8 @@ vi.mock("openclaw/plugin-sdk/inbound-envelope", () => ({
   })),
 }));
 
-vi.mock("openclaw/plugin-sdk/channel-reply-pipeline", () => ({
-  createChannelReplyPipeline: vi.fn(() => ({ onModelSelected: vi.fn() })),
+vi.mock("openclaw/plugin-sdk/channel-outbound", () => ({
+  createChannelMessageReplyPipeline: vi.fn(() => ({ onModelSelected: vi.fn() })),
 }));
 
 // The engine's silent-reply contract (``src/auto-reply/tokens.ts``), reproduced closely enough for

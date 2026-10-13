@@ -714,6 +714,9 @@ async function startInboundTurn(params: {
       messageId: engineMessageId,
       timestamp: Date.now(),
       commandAuthorized: true,
+      // The owner's own message, already authenticated by the cloud. The scheduled run and the
+      // feasibility check below are system turns and leave it unset.
+      inboundAccessAuthorized: true,
       // Structured copy of the per-message effort level (also present as a
       // `[request-effort: …]` line inside rawBody).
       extraContext: payload.effort ? { Effort: payload.effort } : undefined,
