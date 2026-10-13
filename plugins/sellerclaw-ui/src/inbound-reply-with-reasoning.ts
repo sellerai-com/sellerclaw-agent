@@ -1,5 +1,5 @@
 import { resolveInboundRouteEnvelopeBuilderWithRuntime } from "openclaw/plugin-sdk/inbound-envelope";
-import { createChannelReplyPipeline } from "openclaw/plugin-sdk/channel-reply-pipeline";
+import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
 import { runPreparedInboundReply } from "openclaw/plugin-sdk/channel-inbound";
 import { normalizeOutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 
@@ -24,8 +24,13 @@ import { normalizeOutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload
  * ``dispatchRoutedChannelTurn`` instead of calling ``runPreparedInboundReply`` itself, but the plan
  * it builds still hardcodes ``replyOptions: { onModelSelected }`` — so reasoning callbacks are still
  * dropped and this copy still earns its keep. Every SDK entry point below survived that reshuffle
- * with its shape intact. Note ``plugin-sdk/channel-reply-pipeline`` is now deprecated in favour of
- * ``plugin-sdk/channel-outbound``; migrate when the old subpath stops shipping.
+ * with its shape intact.
+ *
+ * Re-verified against 2026.10.2: the upstream wrapper is unchanged since 2026.9.1 and still drops
+ * the reasoning callbacks. The one break was the removed ``plugin-sdk/channel-reply-pipeline``
+ * subpath — the same function now ships from ``plugin-sdk/channel-outbound`` as
+ * ``createChannelMessageReplyPipeline`` (same params, still returns ``onModelSelected``). The
+ * inbound context fields upstream had gained since this copy was taken are mirrored too.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DispatchParams = Record<string, any>;
@@ -68,11 +73,21 @@ export async function dispatchInboundDirectDmWithReasoning(params: DispatchParam
     MessageSidFull: params.messageId,
     Timestamp: params.timestamp,
     CommandAuthorized: params.commandAuthorized,
+    // Opt-in, as upstream: only a caller that has checked the sender sets it. It unlocks the
+    // engine's human-only paths — restoring an archived session, the restart-recovery notice and
+    // reset, recording the sender on the user turn.
+    ...(params.inboundAccessAuthorized === true
+      ? { InboundAccessAuthorized: true, ConversationRouteContextObserved: true }
+      : {}),
+    ConversationRoutePeerId: params.peer.id,
     OriginatingChannel: params.originatingChannel ?? params.channel,
+    // FOURTH DIVERGENCE from upstream, kept on purpose: upstream (since 2026.9.1) falls back to
+    // the sender's address; ours stays on the chat's, where the owner reads the reply.
     OriginatingTo: params.originatingTo ?? params.recipientAddress,
+    NativeDirectUserId: params.peer.id,
     ...params.extraContext,
   });
-  const { onModelSelected, ...replyPipeline } = createChannelReplyPipeline({
+  const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
     cfg: params.cfg,
     agentId: route.agentId,
     channel: params.channel,

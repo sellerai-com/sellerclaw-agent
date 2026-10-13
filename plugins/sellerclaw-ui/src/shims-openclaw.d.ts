@@ -57,9 +57,9 @@ declare module "openclaw/plugin-sdk/inbound-envelope" {
   };
 }
 
-declare module "openclaw/plugin-sdk/channel-reply-pipeline" {
+declare module "openclaw/plugin-sdk/channel-outbound" {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  export function createChannelReplyPipeline(params: Record<string, any>): {
+  export function createChannelMessageReplyPipeline(params: Record<string, any>): {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     onModelSelected: any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

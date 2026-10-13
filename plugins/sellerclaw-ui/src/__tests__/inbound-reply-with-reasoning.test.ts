@@ -15,8 +15,8 @@ const { resolveRouteMock, createPipelineMock, runPreparedMock, normalizeMock } =
 vi.mock("openclaw/plugin-sdk/inbound-envelope", () => ({
   resolveInboundRouteEnvelopeBuilderWithRuntime: (...a: unknown[]) => resolveRouteMock(...a),
 }));
-vi.mock("openclaw/plugin-sdk/channel-reply-pipeline", () => ({
-  createChannelReplyPipeline: (...a: unknown[]) => createPipelineMock(...a),
+vi.mock("openclaw/plugin-sdk/channel-outbound", () => ({
+  createChannelMessageReplyPipeline: (...a: unknown[]) => createPipelineMock(...a),
 }));
 vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
   runPreparedInboundReply: (...a: unknown[]) => runPreparedMock(...a),
@@ -96,6 +96,80 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
     // instead of waiting for the run to end.
     expect(callArg.dispatchReplyFromConfig).toBe(channelDispatch);
   });
+
+  it.each([
+    {
+      name: "an authorized sender",
+      inboundAccessAuthorized: true,
+      access: { InboundAccessAuthorized: true, ConversationRouteContextObserved: true },
+    },
+    { name: "a system turn", inboundAccessAuthorized: undefined, access: {} },
+    { name: "a non-true flag", inboundAccessAuthorized: "true", access: {} },
+  ])(
+    "builds the inbound context upstream builds, for $name",
+    async ({ inboundAccessAuthorized, access }) => {
+      resolveRouteMock.mockReturnValue({
+        route: { sessionKey: "sk", agentId: "supervisor", accountId: "default" },
+        buildEnvelope: () => ({ storePath: "/store", body: "envelope-body" }),
+      });
+      createPipelineMock.mockReturnValue({ onModelSelected: vi.fn() });
+      runPreparedMock.mockResolvedValue(undefined);
+      const finalizeInboundContext = vi.fn((c: unknown) => c);
+      const runtime = {
+        channel: {
+          reply: { finalizeInboundContext, dispatchReplyWithBufferedBlockDispatcher: vi.fn() },
+          session: { recordInboundSession: vi.fn() },
+        },
+      };
+
+      await dispatchInboundDirectDmWithReasoning({
+        cfg: { session: { store: "store" } },
+        runtime,
+        channel: "sellerclaw-ui",
+        channelLabel: "SellerClaw UI",
+        accountId: "default",
+        peer: { kind: "direct", id: "c1" },
+        senderId: "u1",
+        senderAddress: "sellerclaw-ui:u1",
+        recipientAddress: "sellerclaw-ui:direct:c1",
+        conversationLabel: "c1",
+        rawBody: "hi",
+        messageId: "m1",
+        timestamp: 123,
+        commandAuthorized: true,
+        inboundAccessAuthorized,
+        extraContext: { Effort: "high" },
+        deliver: vi.fn(),
+      });
+
+      expect(finalizeInboundContext).toHaveBeenCalledWith({
+        Body: "envelope-body",
+        BodyForAgent: "hi",
+        RawBody: "hi",
+        CommandBody: "hi",
+        From: "sellerclaw-ui:u1",
+        To: "sellerclaw-ui:direct:c1",
+        SessionKey: "sk",
+        AccountId: "default",
+        ChatType: "direct",
+        ConversationLabel: "c1",
+        SenderId: "u1",
+        Provider: "sellerclaw-ui",
+        Surface: "sellerclaw-ui",
+        MessageSid: "m1",
+        MessageSidFull: "m1",
+        Timestamp: 123,
+        CommandAuthorized: true,
+        ...access,
+        ConversationRoutePeerId: "c1",
+        OriginatingChannel: "sellerclaw-ui",
+        // Ours, not upstream's: the reply's origin is the chat, not the sender.
+        OriginatingTo: "sellerclaw-ui:direct:c1",
+        NativeDirectUserId: "c1",
+        Effort: "high",
+      });
+    },
+  );
 
   it("forwards the dispatcher's per-delivery info (kind/index) as the second deliver arg", async () => {
     resolveRouteMock.mockReturnValue({

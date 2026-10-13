@@ -202,6 +202,38 @@ describe("registerInboundRoute", () => {
     expect(dispatchMock).not.toHaveBeenCalled();
   });
 
+  it("hands the owner's message to the engine as one from an authorized sender", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 })) as unknown as typeof fetch;
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "hi" },
+      });
+      dispatchMock.mockImplementation(answerOwner);
+
+      const { api, registerHttpRoute } = buildApi();
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const handler = getHandler(registerHttpRoute);
+      await handler(
+        { headers: {} } as IncomingMessage,
+        { statusCode: 0, end: vi.fn() } as unknown as ServerResponse,
+      );
+
+      expect(dispatchMock.mock.calls[0]![0]).toMatchObject({
+        peer: { kind: "direct", id: "c1" },
+        senderId: "u1",
+        recipientAddress: "sellerclaw-ui:direct:c1",
+        commandAuthorized: true,
+        inboundAccessAuthorized: true,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("funnels deliver text through the turn/part endpoints", async () => {
     // The turn helpers live inside send.ts and call the real postOpenclawWebhook →
     // global fetch (the partial send.js mock only patches inbound.ts's import), so we
