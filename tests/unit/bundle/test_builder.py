@@ -582,34 +582,19 @@ def test_derive_agent_tools(
     assert "video_generate" not in allow
 
 
-def test_derive_agent_tools_grants_whatsapp_login_to_entry_point_when_enabled() -> None:
-    """The entry point gets the in-chat ``whatsapp_login`` QR tool only when WhatsApp is on."""
+@pytest.mark.parametrize(
+    "is_entry_point",
+    [
+        pytest.param(True, id="entry-point"),
+        pytest.param(False, id="subagent"),
+    ],
+)
+def test_derive_agent_tools_never_grants_whatsapp_login(is_entry_point: bool) -> None:
+    """The WhatsApp link runs from the website; an in-chat login would cancel the one shown there."""
     allow, _ = derive_agent_tools(
-        is_entry_point=True,
-        browser_enabled=True,
-        cron_enabled=False,
-        whatsapp_enabled=True,
-    )
-    assert "whatsapp_login" in allow
-
-
-def test_derive_agent_tools_omits_whatsapp_login_when_disabled() -> None:
-    allow, _ = derive_agent_tools(
-        is_entry_point=True,
-        browser_enabled=True,
-        cron_enabled=False,
-        whatsapp_enabled=False,
-    )
-    assert "whatsapp_login" not in allow
-
-
-def test_derive_agent_tools_never_grants_whatsapp_login_to_subagent() -> None:
-    """Subagents never pair WhatsApp, even if the flag is set."""
-    allow, _ = derive_agent_tools(
-        is_entry_point=False,
+        is_entry_point=is_entry_point,
         browser_enabled=True,
         cron_enabled=True,
-        whatsapp_enabled=True,
     )
     assert "whatsapp_login" not in allow
 

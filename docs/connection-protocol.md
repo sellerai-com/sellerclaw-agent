@@ -63,7 +63,7 @@ Reconnecting after a restart is automatic: the server invalidates the previous s
 3. Probes the **edge browser** stack (KasmVNC supervisord program + Chrome DevTools `GET http://127.0.0.1:<debug-port>/json/list`) and attaches an optional `browser` object to each ping when `protocol_version >= 2`.
 4. Creates a session with `POST /connect` if `edge_session.json` is missing.
 5. Sends `POST /agent/connection/ping` with the current status, optional `browser`, and `command_result: null`.
-6. If the response contains `pending_command`, executes it (`start` / `stop` / `restart` / `disconnect` / `open_browser` / `close_browser`).
+6. If the response contains `pending_command`, executes it (see [Commands](#commands)).
 7. Sends a second ping with the `command_result` (and the latest `browser` probe) so the server can move the command to COMPLETED or FAILED.
 
 ```text
@@ -83,12 +83,26 @@ POST /agent/connection/ping
       { "url": "https://example.com/path", "title": "Tab title", "type": "page" }
     ]
   },
-  "command_result": null
+  "command_result": null,
+  "whatsapp": {
+    "linked": true,
+    "connected": true,
+    "self_e164": "+15550001111",
+    "logged_out": false,
+    "observed_at": "2026-10-14T09:00:00+00:00"
+  }
 }
 
 → 200 { "pending_command": { "command_id", "command_type", "issued_at" } }
    or  { "pending_command": null }
 ```
+
+`whatsapp` (protocol v5) is the WhatsApp channel as OpenClaw's `channels.status` last reported it. A
+background task reads it every 30 s (only while the channel is configured) so a busy gateway never
+delays the ping; the ping sends the last value with the time it was observed. It is **omitted**
+while the channel is not configured, OpenClaw is stopped, or nothing has been observed yet —
+servers must read a missing field as "not reported", never as "unlinked". `linked` is `null` while
+the plugin's auth files are being written; `logged_out` means WhatsApp revoked the linked device.
 
 `browser` is **omitted** by agents speaking `protocol_version` 1, or when the probe is skipped; servers must treat it as optional for backward compatibility. Page list is capped (≤20 URLs; URL length truncated server-side as applicable).
 
@@ -113,9 +127,26 @@ The server considers the agent **offline** when it has not pinged for longer tha
 | `disconnect` | `stop` + `POST /disconnect` + exits the ping loop. The local FastAPI server keeps running so the user can re-authenticate. |
 | `open_browser` | Starts KasmVNC + `gost` via supervisord, waits for the configured X11 socket, launches Chrome via `OPENCLAW_CHROME_LAUNCHER` (default `/usr/local/bin/openclaw_chrome`). **Rejected** while OpenClaw gateway is `running` (`openclaw_running_browser_command_rejected`). |
 | `close_browser` | Best-effort `pkill` of Chrome/Chromium, then `supervisorctl stop` for KasmVNC and `gost`. Also cancels a running browser-view tunnel. Idempotent. |
+| `update_manifest` | Pulls the current manifest, stores it, rebuilds the bundle and applies it in place (`openclaw_start apply-bundle`; OpenClaw hot-reloads). Skipped when the bundle on disk already matches. A proxy change is refused — it needs `restart`. |
+| `whatsapp_link` | (protocol v5) Fetches the open link attempt (`GET /agent/connection/whatsapp/link` → `{login_id, force}`; 404 → **rejected**), starts the link runner in the background and acks `completed` at once. The runner waits (up to 5 min) for the WhatsApp plugin to load, calls the gateway's `web.login.start` / `web.login.wait`, and reports every step to `POST /agent/connection/whatsapp/link/{login_id}` (`preparing` → `qr` with a PNG data URL, as often as WhatsApp rotates it → `connected` with `self_e164`, or `failed` with a `reason` / `expired`). A 404 from that endpoint stops it. |
+| `whatsapp_logout` | (protocol v5) Calls `channels.logout` while the plugin is loaded (stops the channel and deletes its credentials; WhatsApp itself is not told, so the phone lists the device under Linked devices until the owner removes it — without the keys it can no longer be used), deletes `~/.openclaw/credentials/whatsapp/`, and `DELETE /agent/connection/whatsapp/session`. Any gateway error other than "plugin not loaded" / "OpenClaw down" fails the command. Independently, the session backup loop deletes the local session once the applied manifest carries no WhatsApp numbers, so Disconnect holds even when this command was never delivered. |
 | `browser_stream` | (protocol v3) Fetches the active browser-view session (`GET /agent/browser-view/session`), ensures the KasmVNC stack is up (standalone `open_browser` path when OpenClaw is stopped; **rejected** when OpenClaw runs without an open browser), then keeps an outbound websocket tunnel dialed to `wss://…/agent/browser-view/tunnel?session_id=…`. After the cloud sends the text frame `attach`, the agent opens `ws://127.0.0.1:6080/websockify` (Basic auth `user`/`VNC_PASSWORD`, `Origin` header, `binary` subprotocol, client pings disabled) and pipes bytes both ways. Redials while the session exists; stops on close code `4001` or denial 401/404/410. |
 
-The deprecated `update_manifest` command is **not supported**. Servers should use `start` or `restart` instead; the agent replies `failed` if it ever sees one.
+### WhatsApp session copy
+
+The linked WhatsApp session lives in `~/.openclaw/credentials/whatsapp/`, which managed machines
+and one-command installs lose on every recreate. The agent keeps a copy in the cloud, separate from
+the browser sign-in backup so neither overwrites the other:
+
+- `POST /agent/connection/whatsapp/session` (gzip tar) — after the files have been quiet for 60 s,
+  at most every 5 min (15 min at the latest for a busy account), immediately-after-settling once a
+  link completes. Every `*.json` must parse, so a file caught mid-write is never uploaded.
+- `GET /agent/connection/whatsapp/session` — read by `restore_state` at boot when no local
+  `creds.json` exists, also on a clean start (`RESET_STATE=1`): the link is the assistant's identity,
+  not memory.
+- `DELETE /agent/connection/whatsapp/session` — on logout.
+
+These endpoints and the state backup refuse OAuth-connector and CLI tokens (403 `agent_runtime_only`).
 
 ### Command lifecycle (server view)
 
@@ -191,7 +222,14 @@ Any transport error (timeout, 5xx, DNS) is treated as transient: the agent logs 
 
 ## Protocol version
 
-Every ping carries `protocol_version`. The current agent version is **3** (understands the `browser_stream` command and the browser-view tunnel dial-back; the cloud gates the remote browser-view feature on `>= 3`). **2** (optional `browser` telemetry) and **1** remain valid: older agents simply never receive `browser_stream`. Servers may refuse clients whose version they no longer support; the agent in turn can gate behaviour on the server version exposed in future responses.
+Every ping carries `protocol_version` — the agent's own constant, not the value saved with the edge session at connect (a session saved by an older agent survives an upgrade on a persistent `/data`). The current agent version is **5**:
+
+- **5** — understands `whatsapp_link` / `whatsapp_logout` and sends `whatsapp` in the ping (the cloud gates WhatsApp linking on `>= 5`).
+- **4** — understands a hook envelope (forwards a named `/hooks/agent` hook and reports back on it).
+- **3** — understands `browser_stream` and the browser-view tunnel dial-back (the cloud gates the remote browser view on `>= 3`).
+- **2** — optional `browser` telemetry. **1** remains valid.
+
+Older agents simply never receive the newer commands. Servers may refuse clients whose version they no longer support; the agent in turn can gate behaviour on the server version exposed in future responses.
 
 ## Security notes
 

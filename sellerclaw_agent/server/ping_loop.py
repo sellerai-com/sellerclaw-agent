@@ -28,6 +28,7 @@ from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.state_backup import read_applied_config_version
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.settings import get_openclaw_version
+from sellerclaw_agent.cloud.whatsapp_channel import get_whatsapp_status_monitor
 from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
     CloudAuthError,
@@ -51,7 +52,13 @@ _log = structlog.get_logger(__name__)
 # v3: understands the browser_stream command and the browser-view tunnel dial-back.
 # v4: understands a hook envelope — a named ``/hooks/agent`` hook it forwards and then reports
 #     back on, so the cloud learns when the gateway refused a run it could not admit in time.
-AGENT_PROTOCOL_VERSION = 4
+# v5: understands the whatsapp_link / whatsapp_logout commands and reports the WhatsApp
+#     channel state in the ping.
+#
+# Every ping carries this constant, not the version saved with the edge session at connect:
+# with a persistent /data (self-hosted, local compose) a session saved by an older agent
+# survives the upgrade, and the cloud would keep gating new commands on the old number.
+AGENT_PROTOCOL_VERSION = 5
 
 # Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
 # build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the
@@ -186,7 +193,7 @@ async def run_edge_ping_loop(
             ping = await client.ping(
                 agent_instance_id=instance_id,
                 agent_version=__version__,
-                protocol_version=sess.protocol_version,
+                protocol_version=AGENT_PROTOCOL_VERSION,
                 openclaw_status=openclaw_status,
                 openclaw_error=openclaw_error,
                 command_result=None,
@@ -194,6 +201,7 @@ async def run_edge_ping_loop(
                 agent_activity=activity_payload,
                 config_version=read_applied_config_version(),
                 openclaw_version=OPENCLAW_VERSION,
+                whatsapp=get_whatsapp_status_monitor().latest_payload(),
             )
         except CloudAgentSuspendedError:
             _log.warning("edge_agent_suspended_waiting_resume")
@@ -318,7 +326,7 @@ async def _flush_command_ack(
         await client.ping(
             agent_instance_id=instance_id,
             agent_version=__version__,
-            protocol_version=pending_ack.work.protocol_version,
+            protocol_version=AGENT_PROTOCOL_VERSION,
             openclaw_status=openclaw_status,
             openclaw_error=openclaw_error,
             command_result=result_payload,
@@ -326,6 +334,7 @@ async def _flush_command_ack(
             agent_activity=activity_payload,
             config_version=read_applied_config_version(),
             openclaw_version=OPENCLAW_VERSION,
+            whatsapp=get_whatsapp_status_monitor().latest_payload(),
         )
     except CloudAgentSuspendedError:
         _log.warning("edge_ping_ack_suspended")

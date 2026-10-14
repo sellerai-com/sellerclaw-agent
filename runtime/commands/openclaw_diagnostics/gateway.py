@@ -226,8 +226,19 @@ class GatewayConnection:
         if not isinstance(payload, dict) or payload.get("type") != "hello-ok":
             raise GatewayError(f"unexpected connect response: {str(payload)[:200]}")
 
-    async def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
-        """Issue one RPC and return its payload, stashing any events that arrive first."""
+    async def call(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> Any:
+        """Issue one RPC and return its payload, stashing any events that arrive first.
+
+        ``timeout`` overrides the default bound for calls that legitimately block on the
+        gateway side — e.g. ``web.login.wait``, which long-polls until a QR is scanned.
+        """
+        limit = _CALL_TIMEOUT_S if timeout is None else timeout
         ws = self._ws
         if ws is None:
             raise GatewayError("gateway connection is closed")
@@ -240,7 +251,7 @@ class GatewayConnection:
         # Bound the whole exchange, not each frame: an event storm must not let a probe
         # wait on its answer indefinitely.
         try:
-            async with asyncio.timeout(_CALL_TIMEOUT_S):
+            async with asyncio.timeout(limit):
                 while True:
                     message = await self._recv()
                     if message.get("type") != "res" or message.get("id") != request_id:
@@ -253,7 +264,7 @@ class GatewayConnection:
                     detail = error.get("message") if isinstance(error, dict) else str(error)
                     raise GatewayError(f"{method} failed: {code or 'ERROR'}: {detail}")
         except TimeoutError as exc:
-            raise GatewayError(f"{method} timed out after {_CALL_TIMEOUT_S:g}s") from exc
+            raise GatewayError(f"{method} timed out after {limit:g}s") from exc
 
     async def events(self) -> AsyncIterator[dict[str, Any]]:
         """Yield event frames as they arrive, oldest stashed ones first."""

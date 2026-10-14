@@ -34,8 +34,8 @@
           },
           "primaryChannel": {
             "type": "string",
-            "enum": ["sellerclaw-ui", "telegram"],
-            "description": "Preferred channel for owner-facing notifications (matches SellerClaw agent config)."
+            "enum": ["sellerclaw-ui", "telegram", "whatsapp"],
+            "description": "Deprecated and no longer written: owner notifications are routed by the SellerClaw cloud. Kept optional so an older config still validates."
           },
           "localAgentBaseUrl": {
             "type": "string",
@@ -77,8 +77,8 @@
       },
       "primaryChannel": {
         "type": "string",
-        "enum": ["sellerclaw-ui", "telegram"],
-        "description": "Preferred channel for owner-facing notifications (matches SellerClaw agent config)."
+        "enum": ["sellerclaw-ui", "telegram", "whatsapp"],
+        "description": "Deprecated and no longer written: owner notifications are routed by the SellerClaw cloud. Kept optional so an older config still validates."
       }
     },
     "required": ["apiBaseUrl", "userId", "agentApiKey", "internalWebhookSecret"]

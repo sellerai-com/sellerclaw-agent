@@ -42,6 +42,14 @@ class PingResponse:
     pending_command: PendingCommandPayload | None
 
 
+@dataclass(frozen=True)
+class WhatsappLinkRequest:
+    """The cloud's open WhatsApp link attempt the ``whatsapp_link`` command refers to."""
+
+    login_id: UUID
+    force: bool
+
+
 class SellerClawConnectionClient:
     """HTTP client for ``/agent/connection/*`` (``sca_`` agent token only)."""
 
@@ -230,6 +238,80 @@ class SellerClawConnectionClient:
             raise CloudConnectionError(self._detail_message(payload))
         return response.content
 
+    def _raise_for_raw_error(self, response: httpx.Response) -> None:
+        """Map a non-2xx raw response to the client's exceptions (401 → auth, else connection)."""
+        try:
+            payload = response.json() if response.content else {}
+        except ValueError:
+            payload = {}
+        if response.status_code == 401:
+            raise CloudAuthError(self._detail_message(payload), status_code=401)
+        if response.status_code >= 500:
+            raise CloudConnectionError(f"SellerClaw server error: HTTP {response.status_code}")
+        raise CloudConnectionError(self._detail_message(payload))
+
+    async def fetch_whatsapp_link(self) -> WhatsappLinkRequest | None:
+        """The open WhatsApp link attempt, or None when the cloud has none (stop signal)."""
+        status, data = await self._request_json("GET", "/agent/connection/whatsapp/link")
+        if status == 404:
+            return None
+        if status >= 400:
+            raise CloudConnectionError(self._detail_message(data))
+        if not isinstance(data, dict) or not data.get("login_id"):
+            raise CloudConnectionError("Invalid WhatsApp link response")
+        return WhatsappLinkRequest(
+            login_id=UUID(str(data["login_id"])),
+            force=bool(data.get("force")),
+        )
+
+    async def post_whatsapp_link_state(self, *, login_id: UUID, state: dict[str, Any]) -> bool:
+        """Report one step of a link attempt; False once the cloud no longer knows ``login_id``.
+
+        A 404 means the owner closed or replaced the attempt — the runner stops on it.
+        """
+        response = await self._request_raw(
+            "POST",
+            f"/agent/connection/whatsapp/link/{login_id}",
+            body=json.dumps(state).encode("utf-8"),
+            content_type="application/json",
+        )
+        if response.status_code == 404:
+            return False
+        if response.status_code >= 300:
+            self._raise_for_raw_error(response)
+        return True
+
+    async def upload_whatsapp_session(self, archive: bytes) -> None:
+        """Store the WhatsApp session archive in the cloud (replaces the previous one)."""
+        response = await self._request_raw(
+            "POST",
+            "/agent/connection/whatsapp/session",
+            body=archive,
+            content_type="application/gzip",
+            timeout=_STATE_BACKUP_TIMEOUT,
+        )
+        if response.status_code >= 300:
+            self._raise_for_raw_error(response)
+
+    async def download_whatsapp_session(self) -> bytes | None:
+        """The stored WhatsApp session archive, or None when there is none."""
+        response = await self._request_raw(
+            "GET",
+            "/agent/connection/whatsapp/session",
+            timeout=_STATE_BACKUP_TIMEOUT,
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 300:
+            self._raise_for_raw_error(response)
+        return response.content
+
+    async def delete_whatsapp_session(self) -> None:
+        """Drop the stored WhatsApp session (the owner logged the assistant out)."""
+        response = await self._request_raw("DELETE", "/agent/connection/whatsapp/session")
+        if response.status_code >= 300 and response.status_code != 404:
+            self._raise_for_raw_error(response)
+
     async def connect(self, *, agent_version: str, protocol_version: int) -> ConnectResponse:
         status, data = await self._request_json(
             "POST",
@@ -291,6 +373,7 @@ class SellerClawConnectionClient:
         agent_activity: dict[str, Any] | None = None,
         config_version: int | None = None,
         openclaw_version: str | None = None,
+        whatsapp: dict[str, Any] | None = None,
     ) -> PingResponse:
         body: dict[str, Any] = {
             "agent_instance_id": str(agent_instance_id),
@@ -312,6 +395,10 @@ class SellerClawConnectionClient:
             # Manifest version the agent currently has applied (meta.configVersion of the
             # active openclaw.json). Lets the cloud detect and re-push undelivered changes.
             body["config_version"] = config_version
+        if whatsapp is not None:
+            # Last observed state of the WhatsApp channel (linked / connected / own number).
+            # Absent while the channel is not configured or nothing has been observed yet.
+            body["whatsapp"] = whatsapp
         status, data = await self._request_json("POST", "/agent/connection/ping", json_body=body)
         if status == 401:
             raise CloudAuthError(self._detail_message(data), status_code=401)

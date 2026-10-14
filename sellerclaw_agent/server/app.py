@@ -183,6 +183,48 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 registry=registry,
             ),
         )
+        from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
+        from sellerclaw_agent.cloud.state_backup import default_openclaw_state_dir
+        from sellerclaw_agent.cloud.whatsapp_channel import get_whatsapp_status_monitor
+        from sellerclaw_agent.cloud.whatsapp_session_backup import (
+            WhatsappSessionBackupLoop,
+            install_whatsapp_session_backup_loop,
+            whatsapp_disconnected_in,
+        )
+
+        # WhatsApp channel state for the ping, refreshed off the ping path (the gateway can stall).
+        whatsapp_monitor = get_whatsapp_status_monitor()
+        background_holders.append(
+            start_watched_background(
+                lambda: whatsapp_monitor.run(stop),
+                name="whatsapp_status",
+                stop=stop,
+                registry=registry,
+            ),
+        )
+        # Cloud copy of the linked WhatsApp session, so a recreated machine needs no new QR.
+        manifests = ManifestStorage(data_dir)
+
+        def _whatsapp_disconnected() -> bool:
+            try:
+                return whatsapp_disconnected_in(manifests.load())
+            except (OSError, ValueError):  # a manifest being rewritten: decide next tick
+                return False
+
+        whatsapp_session_backup = WhatsappSessionBackupLoop(
+            state_dir=default_openclaw_state_dir(),
+            cloud=SellerClawConnectionClient(credentials_storage=CredentialsStorage(data_dir)),
+            owner_disconnected=_whatsapp_disconnected,
+        )
+        install_whatsapp_session_backup_loop(whatsapp_session_backup)
+        background_holders.append(
+            start_watched_background(
+                lambda: whatsapp_session_backup.run(stop),
+                name="whatsapp_session_backup",
+                stop=stop,
+                registry=registry,
+            ),
+        )
     else:
         from sellerclaw_agent.server.runtime_registry import install_runtime_registry
 

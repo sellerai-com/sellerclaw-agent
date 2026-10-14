@@ -178,13 +178,8 @@ RUN node --input-type=module -e "await import('grammy')"
 # Our own two plugins (sellerclaw-ui, sellerclaw-web-search) are kept defensively only: they are
 # COPYed into this directory further down, i.e. AFTER this prune runs. The entries cost nothing
 # and stop a future reordering from silently deleting the product's own plugins.
-# NOT in the list: whatsapp. The personal-account WhatsApp channel (Baileys + QR pairing) is part
-# of OpenClaw's core bundle, not a bundled extension — no upstream image we have shipped (2026.8.1
-# through 2026.9.1) has an extensions/whatsapp dir, and its baileys dep lives in node_modules,
-# which this prune never touches. The channel activates purely from config
-# (channels.whatsapp.enabled in the generated openclaw.json); pairing writes the session to
-# OpenClaw's default whatsapp authDir, which must sit on a persistent volume so the link survives
-# container restarts. Listing it here kept nothing and only implied a dir that does not exist.
+# NOT here: WhatsApp. Since 2026.10 it is the external npm plugin @openclaw/whatsapp, installed into
+# the plugin registry further down (next to mem0), never into this bundled root.
 # Each provider/plugin extension registers itself at extension-load time; pruning it makes
 # OpenClaw fail to resolve that provider's API or plugin even though the config references
 # it — e.g. the google prune surfaced as `No video-generation provider registered for google`.
@@ -204,6 +199,7 @@ RUN cd /app/dist/extensions && \
     for name in $keep; do \
         [ -d "$name" ] || { echo "FATAL: bundled extension '$name' is not in the base image (renamed, moved into core, or dropped upstream) — update the keep list in runtime/Dockerfile" >&2; exit 1; }; \
     done
+
 
 # Pre-build OpenClaw's persisted plugin registry with the vendored mem0 plugin already installed.
 #
@@ -239,6 +235,30 @@ RUN cd /app/dist/extensions && \
 # refuses to install one without explicit consent — "requires capability consent … with
 # --accept-capabilities, then retry" — which in a non-interactive build is a hard failure.
 RUN runuser -u node -- env HOME=/home/node openclaw plugins install --force --accept-capabilities --link /opt/openclaw-plugins/openclaw-mem0 \
+    && rm -f /home/node/.openclaw/openclaw.json \
+    && rm -rf /home/node/.openclaw/logs
+
+# WhatsApp channel: the owner links the assistant's own WhatsApp number (QR shown on the SellerClaw
+# website) and chats with the supervisor there. Since 2026.10 the channel ships outside the core npm
+# package as the official plugin @openclaw/whatsapp; the upstream image includes it only when built
+# with OPENCLAW_EXTENSIONS=whatsapp, and ours never was — so `channels.whatsapp` was ignored ("no
+# channel plugin is installed or loadable").
+#
+# Installed the way OpenClaw installs it itself (`openclaw plugins install npm:…`), into the same
+# persisted registry as mem0 above, so a volumeless machine boots with it and the doctor never
+# fetches it at startup. Two shortcuts were tried on 2026.10.2 and fail at load time: copying the
+# npm tarball into the bundled root (/app/dist/extensions) — the bundled loader rejects the npm
+# build — and `--link` to a vendored directory — Node's require(esm) races while the gateway is
+# loading the plugin SDK. The npm tarball bundles its runtime deps, its baileys already carries
+# the audio-decode patch the base image applies to its own copy.
+#
+# The plugin pins `pluginApi`/`openclawVersion` to its host, so its version is the base image's
+# own, read from /app/package.json (OPENCLAW_TAG is `pinned-<sha>` for our from-source builds). A
+# host version with no matching plugin release fails the build here, not at runtime. The installer
+# also edits openclaw.json (allowlist/entry) — dropped like mem0's: config_generator allow-lists the
+# plugin exactly when the WhatsApp channel is rendered.
+RUN version="$(node -p 'require("/app/package.json").version')" \
+    && runuser -u node -- env HOME=/home/node openclaw plugins install "npm:@openclaw/whatsapp@${version}" --force --accept-capabilities \
     && rm -f /home/node/.openclaw/openclaw.json \
     && rm -rf /home/node/.openclaw/logs
 

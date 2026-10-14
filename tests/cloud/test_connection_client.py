@@ -677,3 +677,113 @@ async def test_ping_omits_agent_activity_when_not_provided(tmp_path: Path) -> No
         command_result=None,
     )
     assert out.pending_command is None
+
+
+def _client(tmp_path: Path, handler: object) -> SellerClawConnectionClient:
+    return SellerClawConnectionClient(
+        credentials_storage=_write_creds(tmp_path),
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+    )
+
+
+_WA_LOGIN_ID = "33333333-3333-4333-8333-333333333333"
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        pytest.param(
+            httpx.Response(200, json={"login_id": _WA_LOGIN_ID, "force": True}),
+            (UUID(_WA_LOGIN_ID), True),
+            id="open-attempt",
+        ),
+        pytest.param(httpx.Response(404, json={"detail": {"code": "whatsapp_link_not_found"}}), None, id="none"),
+    ],
+)
+async def test_fetch_whatsapp_link(tmp_path: Path, response: httpx.Response, expected: object) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/agent/connection/whatsapp/link"
+        assert request.headers.get("authorization") == "Bearer access-1"
+        return response
+
+    out = await _client(tmp_path, handler).fetch_whatsapp_link()
+    assert (None if out is None else (out.login_id, out.force)) == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "accepted"),
+    [
+        pytest.param(204, True, id="accepted"),
+        pytest.param(404, False, id="attempt-closed"),
+    ],
+)
+async def test_post_whatsapp_link_state(tmp_path: Path, status: int, accepted: bool) -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = _json_body(request)
+        return httpx.Response(status)
+
+    state = {"status": "qr", "qr_data_url": "data:image/png;base64,AAAA", "reason": None, "message": None, "self_e164": None}
+    out = await _client(tmp_path, handler).post_whatsapp_link_state(login_id=UUID(_WA_LOGIN_ID), state=state)
+    assert out is accepted
+    assert seen == {"path": f"/agent/connection/whatsapp/link/{_WA_LOGIN_ID}", "body": state}
+
+
+async def test_post_whatsapp_link_state_raises_on_server_error(tmp_path: Path) -> None:
+    from sellerclaw_agent.cloud.exceptions import CloudConnectionError
+
+    client = _client(tmp_path, lambda _request: httpx.Response(503))
+    with pytest.raises(CloudConnectionError, match="HTTP 503"):
+        await client.post_whatsapp_link_state(login_id=UUID(_WA_LOGIN_ID), state={"status": "qr"})
+
+
+async def test_whatsapp_session_round_trip(tmp_path: Path) -> None:
+    stored: dict[str, bytes] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/agent/connection/whatsapp/session"
+        if request.method == "POST":
+            assert request.headers.get("content-type") == "application/gzip"
+            stored["archive"] = request.content
+            return httpx.Response(204)
+        if request.method == "GET":
+            if "archive" not in stored:
+                return httpx.Response(404, json={"detail": {"code": "whatsapp_session_not_found"}})
+            return httpx.Response(200, content=stored["archive"])
+        assert request.method == "DELETE"
+        stored.pop("archive", None)
+        return httpx.Response(204)
+
+    client = _client(tmp_path, handler)
+    assert await client.download_whatsapp_session() is None
+    await client.upload_whatsapp_session(b"\x1f\x8bsession")
+    assert await client.download_whatsapp_session() == b"\x1f\x8bsession"
+    await client.delete_whatsapp_session()
+    assert await client.download_whatsapp_session() is None
+
+
+async def test_ping_sends_the_whatsapp_state_only_when_known(tmp_path: Path) -> None:
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(_json_body(request))
+        return httpx.Response(200, json={"pending_command": None})
+
+    client = _client(tmp_path, handler)
+    common = {
+        "agent_instance_id": UUID("22222222-2222-4222-8222-222222222222"),
+        "agent_version": "1.0.0",
+        "protocol_version": 5,
+        "openclaw_status": "running",
+        "openclaw_error": None,
+        "command_result": None,
+    }
+    whatsapp = {"linked": True, "connected": True, "self_e164": "+15550001111", "logged_out": False, "observed_at": "2026-10-14T12:00:00+00:00"}
+    await client.ping(**common)
+    await client.ping(**common, whatsapp=whatsapp)
+    assert "whatsapp" not in bodies[0]
+    assert bodies[1]["whatsapp"] == whatsapp

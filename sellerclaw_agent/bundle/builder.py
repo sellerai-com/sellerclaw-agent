@@ -71,7 +71,6 @@ def derive_agent_tools(
     is_entry_point: bool,
     browser_enabled: bool,
     cron_enabled: bool,
-    whatsapp_enabled: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Derive the OpenClaw ``tools.allow`` / ``tools.deny`` lists for one agent.
 
@@ -119,11 +118,10 @@ def derive_agent_tools(
         ]
         if cron_enabled:
             allow.append("cron")
-        # WhatsApp links a personal account by QR; the agent runs ``whatsapp_login`` in the
-        # chat to render the QR image for the seller to scan. Only granted when the channel
-        # is enabled so the tool surface stays minimal otherwise.
-        if whatsapp_enabled:
-            allow.append("whatsapp_login")
+        # No ``whatsapp_login``: the WhatsApp plugin offers it, but the owner links the
+        # assistant's number from the SellerClaw website (QR via the gateway's web.login RPC).
+        # The plugin keeps ONE login in flight per account, so an in-chat login would cancel the
+        # one the website is showing — and a QR relayed through chat often expires in transit.
         # ``process`` lets the agent background long-running commands (publish, export, bulk
         # jobs) instead of running them synchronously and blocking the whole turn until the exec
         # timeout — a blocking publish call was stalling mid-turn and timing out. Granted to the
@@ -414,7 +412,6 @@ class BundleBuilder:
             browser_enabled=manifest.agents.browser_enabled_default,
             web_search_enabled=web_search_enabled,
             web_search_auth_token=web_search_auth_token,
-            primary_channel=manifest.channels.primary,
             model_defaults=build_model_defaults(manifest),
             thinking_default=manifest.agents.thinking_default,
             reasoning_default=manifest.agents.reasoning_default,
@@ -459,7 +456,6 @@ class BundleBuilder:
             is_entry_point=agent.is_entry_point,
             browser_enabled=agent.browser_enabled,
             cron_enabled=manifest.cron_enabled,
-            whatsapp_enabled=manifest.channels.whatsapp.enabled,
         )
         content = agent.content
         # Heartbeat is honored only for the main (entry-point) agent, matching prior behavior.

@@ -92,14 +92,18 @@ OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID = "document-extract"
 # runtime/Dockerfile.
 OPENCLAW_WEB_READABILITY_PLUGIN_ID = "web-readability"
 
-# The bundled telegram/whatsapp channel plugins are deliberately NOT in ``plugins.allow``. Every
-# boot warns that a configured channel's plugin is "omitted from plugins.allow" and auto-enables it
-# for that run, which reads like an oversight — it is not. Allow-listing whatsapp promotes its
-# channel to one the gateway's readiness probe waits for, and an unpaired WhatsApp (no QR session
-# yet, which is the normal state until the owner scans one) then reports "stopped" forever: /ready
-# stayed 503 with failing=["whatsapp"], the health monitor restarted the channel in a loop, and the
-# cloud kept treating a perfectly healthy agent as still starting — chat included. The warning is
-# the cheaper of the two.
+# The bundled telegram channel plugin is deliberately NOT in ``plugins.allow``. Every boot warns
+# that a configured channel's plugin is "omitted from plugins.allow" and auto-enables it for that
+# run, which reads like an oversight — it is not: a bundled channel is enabled by its config alone.
+#
+# WhatsApp is different since OpenClaw 2026.10: it is the external npm plugin ``@openclaw/whatsapp``
+# (installed into the image's plugin registry, see runtime/Dockerfile), and an external plugin
+# missing from a non-empty allowlist stays off however its channel is configured ("installed but
+# omitted from plugins.allow"). So it is allow-listed and enabled exactly when the channel is
+# rendered. The old reason to keep it out — an unlinked bundled WhatsApp held /ready at 503 — no
+# longer holds: checked on 2026.10.2 with the channel configured and no account linked, /ready
+# answers 200 with nothing failing.
+OPENCLAW_WHATSAPP_PLUGIN_ID = "whatsapp"
 
 
 def _build_telegram_groups(*, group_ids: list[str]) -> dict[str, dict[str, bool]]:
@@ -164,7 +168,6 @@ def generate_openclaw_config(
     browser_enabled: bool = True,
     web_search_enabled: bool = False,
     web_search_auth_token: str = "",
-    primary_channel: str = "sellerclaw-ui",
     model_defaults: ModelDefaults,
     thinking_default: str = "adaptive",
     reasoning_default: str = "off",
@@ -220,19 +223,26 @@ def generate_openclaw_config(
             },
         ]
 
-    # WhatsApp (personal account, Baileys). DM-only: groupPolicy is hard-disabled, so the
-    # agent never reads or replies in WhatsApp groups. No credential is emitted — the session
-    # is paired (QR) and persisted in OpenClaw's default whatsapp authDir on the agent. Phone
-    # numbers are normalized to digits (OpenClaw matches allowFrom on digits-only E.164).
-    whatsapp_allow_from = [
-        digits for uid in whatsapp_allowed_numbers if (digits := re.sub(r"\D", "", str(uid)))
-    ]
+    # WhatsApp (the assistant's own number, linked as a WhatsApp Web device). DM-only:
+    # groupPolicy is hard-disabled, so the agent never reads or replies in WhatsApp groups.
+    # No credential is emitted — the session is linked by QR (shown on the SellerClaw website)
+    # and lives in the plugin's default authDir, ~/.openclaw/credentials/whatsapp/<account>.
+    # Senders are E.164 with the leading "+", the form the plugin normalizes allowFrom to.
+    # Without an allowed number the channel is not rendered at all: "open" would need a "*"
+    # entry to admit anyone, and an allowlist of nobody is a channel that can only be ignored.
+    whatsapp_allow_from = list(
+        dict.fromkeys(
+            f"+{digits}"
+            for uid in whatsapp_allowed_numbers
+            if (digits := re.sub(r"\D", "", str(uid)))
+        )
+    )
     whatsapp_channel: dict[str, object] | None = None
     whatsapp_bindings: list[dict[str, object]] = []
-    if whatsapp_enabled:
+    if whatsapp_enabled and whatsapp_allow_from:
         whatsapp_channel = {
             "enabled": True,
-            "dmPolicy": "allowlist" if whatsapp_allow_from else "open",
+            "dmPolicy": "allowlist",
             "allowFrom": whatsapp_allow_from,
             "groupPolicy": "disabled",
         }
@@ -379,7 +389,6 @@ def generate_openclaw_config(
         "userId": str(user_id),
         "agentApiKey": (agent_api_key or "").strip(),
         "internalWebhookSecret": hooks_token,
-        "primaryChannel": primary_channel,
         "localAgentBaseUrl": OPENCLAW_LOCAL_AGENT_BASE_URL,
     }
 
@@ -613,6 +622,7 @@ def generate_openclaw_config(
                     else []
                 ),
                 *([MEM0_PLUGIN_ID] if memory_enabled else []),
+                *([OPENCLAW_WHATSAPP_PLUGIN_ID] if whatsapp_channel is not None else []),
             ],
             "load": {"paths": plugin_load_paths},
             "entries": {
@@ -636,6 +646,7 @@ def generate_openclaw_config(
                     else {}
                 ),
                 **({MEM0_PLUGIN_ID: memory_plugin_entry} if memory_enabled and memory_plugin_entry is not None else {}),
+                **({OPENCLAW_WHATSAPP_PLUGIN_ID: {"enabled": True}} if whatsapp_channel is not None else {}),
             },
         },
         "browser": {
