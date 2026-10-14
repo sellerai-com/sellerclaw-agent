@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import contextlib
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -10,18 +11,34 @@ from pathlib import Path
 from uuid import UUID
 
 import structlog
+from openclaw_diagnostics.gateway import GatewayError, GatewayUnreachableError
 
 from sellerclaw_agent import __version__
 from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
 from sellerclaw_agent.cloud.browser_tunnel import get_browser_tunnel_manager
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.state_backup import default_openclaw_state_dir
 from sellerclaw_agent.cloud.supervisor_manager import SupervisorContainerManager, create_supervisor_manager
+from sellerclaw_agent.cloud.whatsapp_channel import (
+    WHATSAPP_CHANNEL,
+    GatewayFactory,
+    default_gateway_factory,
+    get_whatsapp_status_monitor,
+    is_unknown_channel_error,
+)
+from sellerclaw_agent.cloud.whatsapp_link import WhatsappLinkRunner, get_whatsapp_link_manager
+from sellerclaw_agent.cloud.whatsapp_session_backup import (
+    get_whatsapp_session_backup_loop,
+    remove_whatsapp_session,
+)
 from sellerclaw_agent.server.command_history import CommandHistoryStorage
 from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 from sellerclaw_agent.server.storage import ManifestStorage
 
 _log = structlog.get_logger(__name__)
+
+WHATSAPP_LOGOUT_TIMEOUT_S = 20.0
 
 
 @dataclass(frozen=True)
@@ -98,6 +115,14 @@ async def _execute_remote_command(
                     await client.upload_state_backup(archive)
             except Exception as exc:  # noqa: BLE001
                 _log.warning("edge_state_backup_after_stop_failed", error=str(exc)[:500])
+            # OpenClaw is down, so the WhatsApp session holds still: the one moment a copy can be
+            # taken without waiting for it to settle (a freshly linked account churns for minutes).
+            whatsapp_backup = get_whatsapp_session_backup_loop()
+            if whatsapp_backup is not None:
+                try:
+                    await whatsapp_backup.upload_now()
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("edge_whatsapp_backup_after_stop_failed", error=str(exc)[:500])
         return outcome, err
     if cmd in {"start", "restart"}:
         try:
@@ -148,7 +173,90 @@ async def _execute_remote_command(
             client=client,
             container_mgr=container_mgr,
         )
+    if cmd == "whatsapp_link":
+        return await _start_whatsapp_link(client=client)
+    if cmd == "whatsapp_logout":
+        return await _logout_whatsapp(client=client)
     return "failed", f"unknown command_type {cmd_type!r}"
+
+
+async def _start_whatsapp_link(*, client: SellerClawConnectionClient) -> tuple[str, str | None]:
+    """Start linking the assistant's WhatsApp in the background and ack at once.
+
+    The attempt itself (QR frames, the scan) takes minutes and reports to the cloud on its
+    own; an unacknowledged command would time out after one and block every later command.
+    """
+    try:
+        request = await client.fetch_whatsapp_link()
+    except Exception as exc:  # noqa: BLE001 - surface as command failure
+        return "failed", f"WhatsApp link fetch failed: {str(exc)[:300]}"
+    if request is None:
+        return "rejected", "No open WhatsApp link attempt on the cloud."
+
+    backup_loop = get_whatsapp_session_backup_loop()
+    monitor = get_whatsapp_status_monitor()
+
+    def _on_linked() -> None:
+        monitor.refresh_soon()
+        if backup_loop is not None:
+            backup_loop.request_upload_soon()
+
+    get_whatsapp_link_manager().start(
+        WhatsappLinkRunner(
+            login_id=request.login_id,
+            force=request.force,
+            cloud=client,
+            on_linked=_on_linked,
+        )
+    )
+    return "completed", None
+
+
+async def _logout_whatsapp(
+    *,
+    client: SellerClawConnectionClient,
+    gateway_factory: GatewayFactory = default_gateway_factory,
+    state_dir: Path | None = None,
+) -> tuple[str, str | None]:
+    """Log the assistant's WhatsApp out, drop the session here and its copy in the cloud.
+
+    ``channels.logout`` stops the channel and deletes its credentials; it does not tell WhatsApp,
+    so the phone keeps listing the device under Linked devices until the owner removes it there.
+    With the keys gone from here and from the cloud, that entry can no longer be used. When the
+    plugin is not loaded (the channel was switched off first) or OpenClaw is down, the files are
+    removed directly so a later re-enable cannot quietly bring the old link back. Any other gateway
+    error fails the command: deleting the files under a live socket would only see them rewritten.
+    """
+    get_whatsapp_link_manager().stop()
+    try:
+        async with gateway_factory() as conn:
+            await conn.call(
+                "channels.logout",
+                {"channel": WHATSAPP_CHANNEL},
+                timeout=WHATSAPP_LOGOUT_TIMEOUT_S,
+            )
+    except GatewayUnreachableError as exc:
+        _log.info("whatsapp_logout_rpc_skipped", error=str(exc)[:300])
+    except GatewayError as exc:
+        if not is_unknown_channel_error(exc):
+            return "failed", f"WhatsApp logout failed: {str(exc)[:300]}"
+        _log.info("whatsapp_logout_rpc_skipped", error=str(exc)[:300])
+    sd = state_dir or default_openclaw_state_dir()
+    backup_loop = get_whatsapp_session_backup_loop()
+    # No upload may land after the cloud copy is deleted below.
+    async with backup_loop.paused() if backup_loop is not None else contextlib.nullcontext():
+        try:
+            remove_whatsapp_session(sd)
+        except OSError as exc:
+            return "failed", f"could not remove the WhatsApp session: {str(exc)[:300]}"
+        if backup_loop is not None:
+            backup_loop.forget_uploaded()
+        try:
+            await client.delete_whatsapp_session()
+        except Exception as exc:  # noqa: BLE001 - the cloud deletes its copy on disconnect too
+            _log.warning("whatsapp_session_delete_failed", error=str(exc)[:300])
+    get_whatsapp_status_monitor().refresh_soon()
+    return "completed", None
 
 
 async def _start_browser_stream(

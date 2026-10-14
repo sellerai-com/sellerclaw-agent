@@ -85,8 +85,9 @@ The agent derives each agent's OpenClaw `tools.allow` / `tools.deny` from its fl
 
 ### Channels and toggles
 
-- `channels.primary` — `sellerclaw-ui` or `telegram`.
+- `channels.primary` — `sellerclaw-ui`, `telegram` or `whatsapp`: where the owner prefers to work. The cloud sends the assistant's own proactive turns there (it reaches out only in that channel); important notifications go to every connected messenger regardless. The agent validates it but writes nothing for it into OpenClaw's config.
 - `channels.telegram` — `{ enabled, bot_token, allowed_user_ids[], allowed_group_ids[] }`. Required and must be enabled when `primary` is `telegram`.
+- `channels.whatsapp` — `{ enabled, allowed_numbers[] }`: the numbers allowed to message the assistant (E.164). No credential travels here — the assistant's number is linked by QR (the `whatsapp_link` command) and its session stays on the agent, with a copy in the cloud. Rendered as OpenClaw `channels.whatsapp` (`dmPolicy: allowlist`, groups off) only when enabled with at least one number.
 
 Deployment-specific values are **not** part of the manifest:
 

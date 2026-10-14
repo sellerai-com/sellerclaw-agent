@@ -180,6 +180,10 @@ def test_generate_openclaw_config_has_gateway_and_models(
     assert (
         payload["plugins"]["entries"]["sellerclaw-ui"]["config"]["internalWebhookSecret"] == "h"
     )
+    # Owner notifications are routed by the cloud: nothing reads a primary channel here, and
+    # writing one made every switch of it reload the plugins.
+    assert "primaryChannel" not in payload["channels"]["sellerclaw-ui"]
+    assert "primaryChannel" not in payload["plugins"]["entries"]["sellerclaw-ui"]["config"]
     # Path-loaded plugin: conversation-access hooks must be opted into, otherwise the
     # completion-delivery guard's answer capture and the reasoning relay (both ``llm_output`` /
     # ``agent_end``) are silently dropped at plugin load.
@@ -399,33 +403,42 @@ def test_generate_openclaw_config_whatsapp_channel_and_bindings(
     raw = _generate(
         _supervisor_only(make_assembled_agent),
         whatsapp_enabled=True,
-        whatsapp_allowed_numbers=("+1 (415) 555-0123", "+14155550124"),
+        whatsapp_allowed_numbers=("+1 (415) 555-0123", "14155550124", "+14155550124"),
     )
     payload = json.loads(raw)
     whatsapp = payload["channels"]["whatsapp"]
-    assert whatsapp["enabled"] is True
-    assert whatsapp["dmPolicy"] == "allowlist"
-    # Numbers are normalized to digits-only (OpenClaw matches allowFrom on digits).
-    assert whatsapp["allowFrom"] == ["14155550123", "14155550124"]
-    # DM-only: groups are hard-disabled and no group fields are emitted.
-    assert whatsapp["groupPolicy"] == "disabled"
-    assert "groups" not in whatsapp
+    assert whatsapp == {
+        "enabled": True,
+        "dmPolicy": "allowlist",
+        # E.164 with "+", separators dropped, duplicates collapsed in order.
+        "allowFrom": ["+14155550123", "+14155550124"],
+        # DM-only: groups are hard-disabled and no group fields are emitted.
+        "groupPolicy": "disabled",
+    }
     bindings = payload["bindings"]
     assert any(b.get("match") == {"channel": "whatsapp"} for b in bindings)
 
 
-def test_generate_openclaw_config_whatsapp_open_policy_without_allowlist(
+@pytest.mark.parametrize(
+    "numbers",
+    [
+        pytest.param((), id="no-numbers"),
+        pytest.param((" ", "--"), id="blank-numbers"),
+    ],
+)
+def test_generate_openclaw_config_whatsapp_not_rendered_without_numbers(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
+    numbers: tuple[str, ...],
 ) -> None:
+    """An allowlist of nobody admits nobody — and "open" would need a "*" entry — so no channel."""
     raw = _generate(
         _supervisor_only(make_assembled_agent),
         whatsapp_enabled=True,
-        whatsapp_allowed_numbers=(),
+        whatsapp_allowed_numbers=numbers,
     )
     payload = json.loads(raw)
-    whatsapp = payload["channels"]["whatsapp"]
-    assert whatsapp["dmPolicy"] == "open"
-    assert whatsapp["allowFrom"] == []
+    assert "whatsapp" not in payload["channels"]
+    assert not any(b.get("match") == {"channel": "whatsapp"} for b in payload["bindings"])
 
 
 def test_generate_openclaw_config_whatsapp_absent_when_disabled(
@@ -437,26 +450,37 @@ def test_generate_openclaw_config_whatsapp_absent_when_disabled(
     assert not any(b.get("match") == {"channel": "whatsapp"} for b in payload["bindings"])
 
 
-def test_generate_openclaw_config_channel_plugins_stay_out_of_allow(
+@pytest.mark.parametrize(
+    ("whatsapp_numbers", "whatsapp_allowed"),
+    [
+        pytest.param(("+14155550123",), True, id="whatsapp-on"),
+        pytest.param((), False, id="whatsapp-without-numbers"),
+    ],
+)
+def test_generate_openclaw_config_channel_plugins_and_the_allowlist(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
+    whatsapp_numbers: tuple[str, ...],
+    whatsapp_allowed: bool,
 ) -> None:
-    """Allow-listing whatsapp makes an unpaired channel block gateway readiness: /ready answers
-    503 with failing=["whatsapp"] until someone scans a QR, and the cloud reads the agent as still
-    starting. The runtime auto-enables the plugin for the boot anyway, so the config leaves it out.
+    """Telegram is bundled and enabled by its channel config alone, so it stays out of the
+    allowlist. WhatsApp is an external npm plugin since 2026.10: left out, it stays off however its
+    channel is configured, so it is allow-listed and enabled exactly when its channel is rendered.
     """
     raw = _generate(
         _supervisor_only(make_assembled_agent),
         telegram_enabled=True,
         telegram_bot_token="bot-secret",
         whatsapp_enabled=True,
-        whatsapp_allowed_numbers=("+14155550123",),
+        whatsapp_allowed_numbers=whatsapp_numbers,
     )
     payload = json.loads(raw)
     allow = payload["plugins"]["allow"]
-    assert payload["channels"]["whatsapp"]["enabled"] is True
+    entries = payload["plugins"]["entries"]
     assert payload["channels"]["telegram"]["enabled"] is True
-    assert "whatsapp" not in allow
     assert "telegram" not in allow
+    assert ("whatsapp" in payload["channels"]) is whatsapp_allowed
+    assert ("whatsapp" in allow) is whatsapp_allowed
+    assert entries.get("whatsapp") == ({"enabled": True} if whatsapp_allowed else None)
 
 
 def test_generate_openclaw_config_web_search_enabled_wires_sellerclaw_plugin(
