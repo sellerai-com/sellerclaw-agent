@@ -12,6 +12,18 @@ async def sleep_until(stop: asyncio.Event, seconds: float) -> None:
         return
 
 
+def capped_exponential_backoff(base: float, failures: int, cap: float) -> float:
+    """``base * 2**(failures - 1)`` capped at ``cap``, for any number of failures.
+
+    The exponent is bounded before the power is taken: an unbounded ``2 ** n`` stops fitting
+    a float after ~1024 consecutive failures, and that OverflowError used to kill the ping loop
+    after a long cloud outage, leaving the agent disconnected for good.
+    """
+    if failures <= 0:
+        return base
+    return min(base * 2.0 ** min(failures - 1, 64), cap)
+
+
 def ping_interval_success() -> float:
     """Base ~10s heartbeat with jitter (reduces thundering herd)."""
     return 10.0 + random.uniform(-1.5, 1.5)
@@ -21,7 +33,7 @@ def ping_interval_after_error(consecutive_errors: int) -> float:
     """Exponential backoff capped at 30s + small jitter after failures."""
     if consecutive_errors <= 0:
         return ping_interval_success()
-    exp = min(10.0 * (2 ** (consecutive_errors - 1)), 30.0)
+    exp = capped_exponential_backoff(10.0, consecutive_errors, 30.0)
     return min(30.0, exp + random.uniform(0.0, 0.5))
 
 

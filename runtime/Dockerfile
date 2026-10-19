@@ -50,6 +50,9 @@ USER root
 
 # KasmVNC (combined X server + VNC + web client), browser, gost proxy,
 # nginx reverse proxy, supervisor process manager, fonts.
+# `file` is here for the agent: it checks what it just downloaded with `file shot.png` by habit, and
+# without the command every such check ended in exit 127 after a download that had worked — read
+# back as a failed download.
 # Architecture-aware: uses TARGETARCH (amd64 | arm64) provided by BuildKit.
 ARG TARGETARCH
 
@@ -58,6 +61,7 @@ RUN apt-get update \
         bash \
         ca-certificates \
         curl \
+        file \
         fonts-liberation \
         fonts-noto-color-emoji \
         gettext-base \
