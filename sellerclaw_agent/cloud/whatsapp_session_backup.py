@@ -38,7 +38,7 @@ from typing import Any, Final, Protocol
 
 import structlog
 
-from sellerclaw_agent.async_backoff import sleep_until
+from sellerclaw_agent.async_backoff import capped_exponential_backoff, sleep_until
 
 _log = structlog.get_logger(__name__)
 
@@ -309,8 +309,8 @@ class WhatsappSessionBackupLoop:
             await self.cloud.upload_whatsapp_session(archive)
         except Exception as exc:  # noqa: BLE001 - retried after a growing pause
             self._failures += 1
-            pause = min(
-                FAILURE_BACKOFF_SECONDS * 2 ** (self._failures - 1), MAX_FAILURE_BACKOFF_SECONDS
+            pause = capped_exponential_backoff(
+                FAILURE_BACKOFF_SECONDS, self._failures, MAX_FAILURE_BACKOFF_SECONDS
             )
             self._retry_at = now + pause
             _log.warning(
