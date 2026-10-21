@@ -10,6 +10,7 @@ import pytest
 from sellerclaw_agent.cloud import hooks_listener as hl
 from sellerclaw_agent.cloud.edge_sse_common import make_openclaw_gate
 from sellerclaw_agent.cloud.openclaw_forwarder import LocalOpenClawForwarder
+from openclaw_diagnostics.gateway import GatewayError, GatewayUnreachableError
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +51,34 @@ class _GatewayRecorder:
         return httpx.Response(self.status, text="admission timeout")
 
 
+class _SendGateway:
+    """The gateway's WebSocket RPC as the ``send`` envelope uses it: records calls, or refuses."""
+
+    def __init__(self, *, error: str | None = None, unreachable: bool = False) -> None:
+        self.error = error
+        self.unreachable = unreachable
+        self.calls: list[tuple[str, dict[str, Any], float | None]] = []
+
+    def __call__(self) -> _SendGateway:
+        return self
+
+    async def __aenter__(self) -> _SendGateway:
+        if self.unreachable:
+            raise GatewayUnreachableError("gateway unreachable at ws://127.0.0.1:7789")
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+    async def call(
+        self, method: str, params: dict[str, Any] | None = None, *, timeout: float | None = None
+    ) -> Any:
+        self.calls.append((method, params or {}, timeout))
+        if self.error is not None:
+            raise GatewayError(f"{method} failed: UNAVAILABLE: {self.error}")
+        return {"runId": (params or {}).get("idempotencyKey"), "messageId": "m1", "channel": "whatsapp"}
+
+
 async def _forward(
     payload: dict[str, Any],
     *,
@@ -58,6 +87,7 @@ async def _forward(
     supervisor: _FakeSupervisor | None = None,
     agent_token: str | None = "sca_access",
     gateway: _GatewayRecorder | None = None,
+    send_gateway: _SendGateway | None = None,
 ) -> list[dict[str, Any]]:
     monkeypatch.setenv("SELLERCLAW_API_URL", "http://cloud.test")
     cloud = _CloudRecorder()
@@ -81,6 +111,7 @@ async def _forward(
             forwarder=forwarder,
             openclaw_gate=make_openclaw_gate(supervisor or _FakeSupervisor()),  # type: ignore[arg-type]
             agent_token=agent_token,
+            send_gateway=send_gateway or _SendGateway(),
         )
     return cloud.reports
 
@@ -212,3 +243,104 @@ async def test_untracked_hooks_are_forwarded_without_a_report(
     """Most hooks carry no id — those behave exactly as they did before reporting existed."""
     _ = case
     assert await _forward(payload, monkeypatch=monkeypatch, agent_token=token) == []
+
+
+_SEND_BODY = {
+    "channel": "whatsapp",
+    "to": "+15550002222",
+    "message": "1 new order from Acme\n#1001 · 2 items",
+    "agentId": "supervisor",
+    "idempotencyKey": "msg-1",
+}
+
+
+async def test_a_send_goes_out_as_written_without_an_agent_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The text is the gateway's plain send — /hooks/agent would run a model on it instead."""
+    gateway = _GatewayRecorder()
+    send_gateway = _SendGateway()
+
+    reports = await _forward(
+        {"endpoint": "send", "hookId": "msg-1", "body": _SEND_BODY},
+        monkeypatch=monkeypatch,
+        gateway=gateway,
+        send_gateway=send_gateway,
+    )
+
+    assert gateway.paths == [], "no agent turn"
+    assert send_gateway.calls == [("send", _SEND_BODY, 30.0)]
+    assert reports == [{"hook_id": "msg-1", "delivered": True, "error": None}]
+
+
+async def test_a_send_passes_on_only_the_fields_the_cloud_may_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send_gateway = _SendGateway()
+
+    await _forward(
+        {
+            "endpoint": "send",
+            "hookId": "msg-2",
+            "body": {**_SEND_BODY, "mediaUrl": "https://evil.test/x.png", "sessionKey": "agent:other"},
+        },
+        monkeypatch=monkeypatch,
+        send_gateway=send_gateway,
+    )
+
+    assert [params for _, params, _ in send_gateway.calls] == [_SEND_BODY]
+
+
+@pytest.mark.parametrize(
+    ("send_gateway", "body", "expected_error"),
+    [
+        pytest.param(
+            _SendGateway(error="No active WhatsApp Web listener (account: default)."),
+            _SEND_BODY,
+            "No active WhatsApp Web listener",
+            id="whatsapp-not-linked",
+        ),
+        pytest.param(
+            _SendGateway(unreachable=True), _SEND_BODY, "gateway unreachable", id="gateway-down"
+        ),
+        pytest.param(
+            _SendGateway(),
+            {key: value for key, value in _SEND_BODY.items() if key != "to"},
+            "send body is missing to",
+            id="no-recipient",
+        ),
+    ],
+)
+async def test_a_send_that_does_not_go_out_is_reported_with_the_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    send_gateway: _SendGateway,
+    body: dict[str, Any],
+    expected_error: str,
+) -> None:
+    reports = await _forward(
+        {"endpoint": "send", "hookId": "msg-3", "body": body},
+        monkeypatch=monkeypatch,
+        send_gateway=send_gateway,
+    )
+
+    assert len(reports) == 1
+    assert reports[0]["hook_id"] == "msg-3"
+    assert reports[0]["delivered"] is False
+    assert expected_error in (reports[0]["error"] or "")
+
+
+async def test_a_send_while_openclaw_is_down_never_reaches_the_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send_gateway = _SendGateway()
+
+    reports = await _forward(
+        {"endpoint": "send", "hookId": "msg-4", "body": _SEND_BODY},
+        monkeypatch=monkeypatch,
+        supervisor=_FakeSupervisor(status="stopped", error="container exited"),
+        send_gateway=send_gateway,
+    )
+
+    assert send_gateway.calls == []
+    assert reports[0]["delivered"] is False
+    assert "openclaw_not_running" in (reports[0]["error"] or "")

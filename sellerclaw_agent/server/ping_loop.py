@@ -54,11 +54,13 @@ _log = structlog.get_logger(__name__)
 #     back on, so the cloud learns when the gateway refused a run it could not admit in time.
 # v5: understands the whatsapp_link / whatsapp_logout commands and reports the WhatsApp
 #     channel state in the ping.
+# v6: understands a ``send`` hook envelope — a ready text the gateway sends to a messenger as
+#     written (no agent turn), so the cloud's notifications can reach WhatsApp at all.
 #
 # Every ping carries this constant, not the version saved with the edge session at connect:
 # with a persistent /data (self-hosted, local compose) a session saved by an older agent
 # survives the upgrade, and the cloud would keep gating new commands on the old number.
-AGENT_PROTOCOL_VERSION = 5
+AGENT_PROTOCOL_VERSION = 6
 
 # Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
 # build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the

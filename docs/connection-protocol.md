@@ -222,8 +222,9 @@ Any transport error (timeout, 5xx, DNS) is treated as transient: the agent logs 
 
 ## Protocol version
 
-Every ping carries `protocol_version` — the agent's own constant, not the value saved with the edge session at connect (a session saved by an older agent survives an upgrade on a persistent `/data`). The current agent version is **5**:
+Every ping carries `protocol_version` — the agent's own constant, not the value saved with the edge session at connect (a session saved by an older agent survives an upgrade on a persistent `/data`). The current agent version is **6**:
 
+- **6** — understands a `send` hook envelope: `{"endpoint": "send", "hookId", "body": {channel, to, message, agentId?, idempotencyKey}}` goes to the gateway's `send` RPC — the text is delivered to the messenger as written, with no agent turn, and mirrored into the agent's conversation with that chat — and is reported back like any named hook. The cloud sends its notifications to WhatsApp only to agents at `>= 6` (an older agent would turn them into a model run that answers nothing).
 - **5** — understands `whatsapp_link` / `whatsapp_logout` and sends `whatsapp` in the ping (the cloud gates WhatsApp linking on `>= 5`).
 - **4** — understands a hook envelope (forwards a named `/hooks/agent` hook and reports back on it).
 - **3** — understands `browser_stream` and the browser-view tunnel dial-back (the cloud gates the remote browser view on `>= 3`).

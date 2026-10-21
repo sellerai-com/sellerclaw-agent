@@ -11,6 +11,7 @@ from uuid import UUID
 
 import httpx
 import structlog
+from openclaw_diagnostics.gateway import GatewayError
 
 from sellerclaw_agent.async_backoff import (
     is_overload_status,
@@ -31,6 +32,7 @@ from sellerclaw_agent.cloud.exceptions import (
     CloudConnectionInactiveError,
     CloudSessionInvalidatedError,
 )
+from sellerclaw_agent.cloud.messenger_send import default_send_gateway_factory, send_text
 from sellerclaw_agent.cloud.openclaw_forwarder import (
     INBOUND_FORWARD_TIMEOUT,
     LocalOpenClawForwarder,
@@ -38,6 +40,7 @@ from sellerclaw_agent.cloud.openclaw_forwarder import (
 )
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
 from sellerclaw_agent.cloud.sse_codec import iter_sse_events
+from sellerclaw_agent.cloud.whatsapp_channel import GatewayFactory
 from sellerclaw_agent.http_clients import async_client
 from sellerclaw_agent.server.secrets_store import get_secrets
 
@@ -52,11 +55,13 @@ _SSE_TIMEOUT = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=30.0)
 # cloud re-sends what it never hears about anyway.
 _DELIVERY_REPORT_TIMEOUT = httpx.Timeout(15.0)
 
-#: Gateway endpoints the cloud is allowed to address through a hook event. Only ``/hooks/agent``:
-#: the gateway's event queue (``/hooks/wake``) was tried for background nudges and dropped — a
-#: queued event runs only once the session goes idle, and it is accepted with a 200 either way,
-#: so a hook could sit unrun for minutes while the report below called it delivered.
-_HOOK_ENDPOINTS = frozenset({"agent"})
+#: What the cloud may address through a hook event: ``agent`` is ``/hooks/agent`` (an agent turn),
+#: ``send`` is the gateway's plain send RPC (a ready text to a messenger, no turn — see
+#: :mod:`sellerclaw_agent.cloud.messenger_send`). The gateway's event queue (``/hooks/wake``) was
+#: tried for background nudges and dropped — a queued event runs only once the session goes idle,
+#: and it is accepted with a 200 either way, so a hook could sit unrun for minutes while the report
+#: below called it delivered.
+_HOOK_ENDPOINTS = frozenset({"agent", "send"})
 
 
 async def report_hook_delivery(
@@ -92,6 +97,7 @@ async def forward_hook_event(
     forwarder: LocalOpenClawForwarder,
     openclaw_gate: OpenClawGate,
     agent_token: str | None = None,
+    send_gateway: GatewayFactory = default_send_gateway_factory,
 ) -> None:
     """Forward a ``hook_event`` to the local OpenClaw gateway (gated on readiness).
 
@@ -126,6 +132,19 @@ async def forward_hook_event(
             openclaw_error=oc_err,
         )
         await _report(False, f"openclaw_not_running status={oc_status} error={oc_err}")
+        return
+    if endpoint == "send":
+        try:
+            await send_text(body, gateway_factory=send_gateway)
+        except (GatewayError, ValueError) as exc:
+            _log.warning("messenger_send_failed", channel=body.get("channel"), error=str(exc)[:500])
+            await _report(False, str(exc)[:500])
+        except Exception as exc:  # noqa: BLE001 - the outcome is reported, then left in the log
+            _log.exception("messenger_send_crashed", channel=body.get("channel"))
+            await _report(False, str(exc)[:500])
+        else:
+            _log.info("messenger_send_ok", channel=body.get("channel"))
+            await _report(True, None)
         return
     try:
         await forwarder.post_hooks_agent_json(body)
