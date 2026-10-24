@@ -407,6 +407,53 @@ cleanup_stale_session_locks() {
     done < <(find "${agents_root}" -type f -name '*.lock' -path '*/sessions/*' -print0)
 }
 
+migrate_state_for_openclaw_version() {
+    # A new OpenClaw release can raise the schema of the per-agent session databases
+    # (agents/*/agent/openclaw-agent.sqlite) and then refuse the ones an older release wrote:
+    # 2026.9.5 wanted 21, 2026.9.8 24, 2026.10.7 25. The gateway exits 78 with "run openclaw
+    # doctor --fix to migrate session identities", supervisord respawns it forever and the agent
+    # never answers. Only installs that keep /home/node/.openclaw across image upgrades get
+    # there — local dev and self-hosted docker-compose (bind mount); managed machines boot from
+    # a clean disk, find no session databases and only record the version.
+    #
+    # So the first start of a new OpenClaw version over existing session databases runs the
+    # doctor's non-interactive migrations once (about 5 minutes for a dozen agents), then records
+    # the version. A failed or timed-out doctor records nothing: the gateway reports what is
+    # still wrong and the next start tries again. The doctor also edits openclaw.json — the
+    # rendered config is copied back, so the gateway runs on exactly what the cloud rendered.
+    local marker="${STATE_DIR}/sellerclaw-openclaw-version"
+    local current previous=""
+    current="$(node -p 'require("/app/package.json").version')"
+    if [ -f "${marker}" ]; then
+        previous="$(cat "${marker}")"
+    fi
+    if [ "${previous}" = "${current}" ]; then
+        return
+    fi
+    if ! compgen -G "${STATE_DIR}/agents/*/agent/openclaw-agent.sqlite" >/dev/null; then
+        printf '%s\n' "${current}" > "${marker}"
+        return
+    fi
+
+    local timeout_seconds="${OPENCLAW_UPGRADE_DOCTOR_TIMEOUT_SECONDS:-900}"
+    log "OpenClaw ${previous:-(not recorded)} -> ${current} over existing session databases: running openclaw doctor --fix (timeout ${timeout_seconds}s)"
+    # In the background so a stop that arrives meanwhile reaches the doctor too (timeout passes
+    # the signal on) instead of leaving it writing the databases under the next gateway.
+    timeout "${timeout_seconds}" node openclaw.mjs doctor --fix --non-interactive &
+    local doctor_pid=$!
+    trap "kill ${doctor_pid} 2>/dev/null || true; exit 143" INT TERM
+    local doctor_status=0
+    wait "${doctor_pid}" || doctor_status=$?
+    trap - INT TERM
+    if [ "${doctor_status}" -eq 0 ]; then
+        printf '%s\n' "${current}" > "${marker}"
+        log "openclaw doctor --fix finished; state recorded as OpenClaw ${current}"
+    else
+        log "WARNING: openclaw doctor --fix exited ${doctor_status}; the gateway may refuse the older session databases"
+    fi
+    copy_runtime_config
+}
+
 discover_agent_ids() {
     AGENT_IDS=()
     if [ ! -d "${TEMPLATES_ROOT}" ]; then
@@ -570,6 +617,7 @@ main() {
     case "${1:-gateway}" in
         gateway)
             cleanup_stale_session_locks
+            migrate_state_for_openclaw_version
             sync_all_workspaces
             start_gateway
             ;;
