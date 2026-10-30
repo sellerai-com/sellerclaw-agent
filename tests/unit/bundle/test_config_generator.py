@@ -309,6 +309,49 @@ def test_generate_openclaw_config_disables_skill_workshop_autonomy(
     assert payload["skills"]["workshop"] == {"autonomous": {"mode": "off"}}
 
 
+_OFF = {"enabled": False}
+
+
+@pytest.mark.parametrize(
+    ("memory_enabled", "whatsapp_numbers", "expected_entries"),
+    [
+        pytest.param(
+            True,
+            ("+14155550123",),
+            {"memory-dream": _OFF, "memory-triage": _OFF, "wacli": _OFF},
+            id="memory-and-whatsapp",
+        ),
+        pytest.param(
+            True, (), {"memory-dream": _OFF, "memory-triage": _OFF}, id="memory-only"
+        ),
+        pytest.param(False, ("+14155550123",), {"wacli": _OFF}, id="whatsapp-only"),
+        pytest.param(False, (), None, id="neither-plugin"),
+    ],
+)
+def test_generate_openclaw_config_switches_off_plugin_skills_the_runtime_cannot_run(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+    memory_enabled: bool,
+    whatsapp_numbers: tuple[str, ...],
+    expected_entries: dict[str, dict[str, bool]] | None,
+) -> None:
+    """mem0's triage/dream skills want its own API keys in the env and wacli wants a binary the
+    image lacks; `openclaw doctor` would switch them off in the config on every upgrade."""
+    payload = json.loads(
+        _generate(
+            _supervisor_only(make_assembled_agent),
+            sellerclaw_api_url="http://api/",
+            sellerclaw_agent_api_base_url="http://api/agent",
+            memory_enabled=memory_enabled,
+            whatsapp_enabled=bool(whatsapp_numbers),
+            whatsapp_allowed_numbers=whatsapp_numbers,
+        )
+    )
+    assert payload["skills"].get("entries") == expected_entries
+    # The bundled-skill gate and the workshop pin are not disturbed by the extra entries.
+    assert payload["skills"]["allowBundled"] == ["healthcheck"]
+    assert payload["skills"]["workshop"] == {"autonomous": {"mode": "off"}}
+
+
 def test_generate_openclaw_config_cron_failures_redirect_to_cloud_error_sink(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
@@ -412,8 +455,10 @@ def test_generate_openclaw_config_whatsapp_channel_and_bindings(
         "dmPolicy": "allowlist",
         # E.164 with "+", separators dropped, duplicates collapsed in order.
         "allowFrom": ["+14155550123", "+14155550124"],
-        # DM-only: groups are hard-disabled and no group fields are emitted.
+        # DM-only: groups are hard-disabled. The group allowlist only mirrors allowFrom so that
+        # `openclaw doctor` finds nothing to copy into it on an upgrade.
         "groupPolicy": "disabled",
+        "groupAllowFrom": ["+14155550123", "+14155550124"],
     }
     bindings = payload["bindings"]
     assert any(b.get("match") == {"channel": "whatsapp"} for b in bindings)

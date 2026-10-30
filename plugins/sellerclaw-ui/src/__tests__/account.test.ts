@@ -362,6 +362,20 @@ describe("resolveOutboundSessionRoute", () => {
   });
 });
 
+describe("dm security", () => {
+  const dm = (
+    sellerclawUiChannelPlugin as unknown as {
+      security: { dm: { resolvePolicy: () => string; resolveAllowFrom: () => string[] } };
+    }
+  ).security.dm;
+
+  it("declares the open policy together with the wildcard OpenClaw requires for it", () => {
+    // "open" without "*" is what `openclaw doctor` reports as an inconsistent DM config.
+    expect(dm.resolvePolicy()).toBe("open");
+    expect(dm.resolveAllowFrom()).toEqual(["*"]);
+  });
+});
+
 describe("status", () => {
   const status = (sellerclawUiChannelPlugin as PluginWithStatus).status;
 

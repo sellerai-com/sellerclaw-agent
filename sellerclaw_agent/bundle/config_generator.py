@@ -49,6 +49,16 @@ OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS = 50000
 # stock skills (meme-maker, taskflow, dev debuggers, etc.).
 OPENCLAW_BUNDLE_ALLOWED_SKILLS: tuple[str, ...] = ("healthcheck",)
 
+# Skills our plugins ship that this runtime can never run, switched off in ``skills.entries``.
+# OpenClaw already keeps them away from the model; ``openclaw doctor`` would switch them off on
+# every upgrade and announce it, so the config says it up front.
+# - mem0's triage/dream require MEM0_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY in the env (the
+#   plugin's own modes); ours runs in platform mode through the cloud with none of them. The plugin
+#   reads its triage prompt from its own SKILL.md, so this does not touch what it injects.
+# - the WhatsApp plugin's wacli drives the third-party ``wacli`` binary, not in the image.
+MEM0_UNUSABLE_SKILLS: tuple[str, ...] = ("memory-dream", "memory-triage")
+WHATSAPP_UNUSABLE_SKILLS: tuple[str, ...] = ("wacli",)
+
 # Local sellerclaw-agent HTTP port inside the runtime container; plugins call back to it
 # via loopback for media upload proxying. Kept as a module constant so bundle tests can
 # assert the emitted config.
@@ -245,6 +255,10 @@ def generate_openclaw_config(
             "dmPolicy": "allowlist",
             "allowFrom": whatsapp_allow_from,
             "groupPolicy": "disabled",
+            # Inert while groups are disabled. `openclaw doctor` copies allowFrom into an empty
+            # group allowlist (legacy fallback) on every upgrade and announces it as a config
+            # change, so the copy is written here up front.
+            "groupAllowFrom": whatsapp_allow_from,
         }
         whatsapp_bindings = [
             {
@@ -325,6 +339,14 @@ def generate_openclaw_config(
                 },
             },
         }
+
+    unusable_skills = [
+        *(MEM0_UNUSABLE_SKILLS if memory_enabled else ()),
+        *(WHATSAPP_UNUSABLE_SKILLS if whatsapp_channel is not None else ()),
+    ]
+    unusable_skill_entries: dict[str, dict[str, bool]] = {
+        name: {"enabled": False} for name in unusable_skills
+    }
 
     web_search_plugin_entry: dict[str, object] | None = None
     web_search_plugin_id: str | None = None
@@ -719,6 +741,7 @@ def generate_openclaw_config(
             # want unattended skill rewrites. Manual /learn and Workshop UI still
             # work. "propose" would still spawn background capture runs.
             "workshop": {"autonomous": {"mode": "off"}},
+            **({"entries": unusable_skill_entries} if unusable_skill_entries else {}),
         },
     }
     return json.dumps(config_payload, indent=2)

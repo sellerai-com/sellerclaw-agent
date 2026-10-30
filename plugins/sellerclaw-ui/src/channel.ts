@@ -526,7 +526,10 @@ const sellerclawUiChatPlugin = createChatChannelPlugin<ScwUiAccount>({
     dm: {
       channelKey: "sellerclaw-ui",
       resolvePolicy: () => "open",
-      resolveAllowFrom: () => [],
+      // OpenClaw reads "open" as "anyone" only with a "*" entry; without it `openclaw doctor`
+      // reports the DM config as inconsistent. Only the security audit and the allowlist views
+      // read this — inbound is admitted by gateway auth, not by sender.
+      resolveAllowFrom: () => ["*"],
       defaultPolicy: "open",
     },
   },
