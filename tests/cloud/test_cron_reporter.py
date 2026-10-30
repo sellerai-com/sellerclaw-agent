@@ -101,6 +101,28 @@ def test_read_cron_snapshot_every_non_cron_interval_uses_every_prefix(tmp_path: 
     assert read_cron_snapshot(state_dir)["jobs"][0]["schedule_expr"] == "every:90000"
 
 
+@pytest.mark.parametrize(
+    ("schedule", "expected"),
+    [
+        pytest.param(
+            {"kind": "at", "at": "2026-11-02T09:00:00+01:00"},
+            "at:2026-11-02T09:00:00+01:00",
+            id="one-shot-keeps-its-moment",
+        ),
+        pytest.param({"kind": "at", "at": "  "}, "", id="one-shot-without-a-moment"),
+        pytest.param({"kind": "on-exit"}, "", id="event-trigger-has-no-time"),
+    ],
+)
+def test_read_cron_snapshot_maps_one_shot_and_event_schedules(
+    tmp_path: Path, schedule: dict, expected: str
+) -> None:
+    """A one-shot job reaches the Scheduled tasks page with the moment it will run."""
+    state_dir = tmp_path / "oc"
+    _write_cron_files(state_dir, jobs=[{**_JOB, "schedule": schedule}])
+
+    assert read_cron_snapshot(state_dir)["jobs"][0]["schedule_expr"] == expected
+
+
 def test_read_cron_snapshot_missing_files_returns_empty(tmp_path: Path) -> None:
     snapshot = read_cron_snapshot(tmp_path / "does-not-exist")
     assert snapshot["jobs"] == []

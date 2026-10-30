@@ -51,10 +51,16 @@ def _positive_int_ms(value: Any) -> int | None:
 
 
 def _schedule_expr_from_openclaw(schedule: dict[str, Any]) -> str:
-    """Map an OpenClaw schedule block to a 5-field cron or ``every:<ms>`` for the UI."""
+    """Map an OpenClaw schedule block to a 5-field cron, ``every:<ms>`` or ``at:<ISO>`` for the UI.
+
+    ``at`` is a one-shot job: it runs once at that moment and then removes itself.
+    """
     kind = schedule.get("kind")
     if kind == "cron":
         return str(schedule.get("expr") or "")
+    if kind == "at":
+        at = str(schedule.get("at") or "").strip()
+        return f"at:{at}" if at else ""
     if kind != "every":
         return ""
 
