@@ -14,6 +14,10 @@ _log = logging.getLogger(__name__)
 
 INBOUND_FORWARD_TIMEOUT = httpx.Timeout(60.0, connect=2.0)
 
+#: The ``sellerclaw-ui`` plugin's cron routes (``plugins/sellerclaw-ui/src/cron-routes.ts``).
+CRON_COMMAND_PATH = "/api/channels/sellerclaw-ui/cron/command"
+CRON_STANDBY_PATH = "/api/channels/sellerclaw-ui/cron/standby"
+
 
 def openclaw_gateway_base_url() -> str:
     """Base URL every in-container caller must use to reach the OpenClaw gateway.
@@ -134,69 +138,59 @@ class LocalOpenClawForwarder:
             )
             raise
 
-    async def post_scheduled_run_json(self, body: dict[str, Any]) -> None:
-        """POST ``body`` to the OpenClaw sellerclaw-ui scheduled-run channel.
+    async def post_cron_command_json(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST one ``cron_command`` frame to the plugin's cron command route; return its outcome.
 
-        Hands one recurring-task occurrence to the plugin, which runs it in an isolated session
-        and reports the outcome straight to the cloud (not a chat). Gateway-authenticated like the
-        inbound route so the run gets the same operator scopes.
-
-        Raises:
-            httpx.ConnectError: the local gateway is not listening.
-            httpx.TimeoutException: connect/read timeout talking to the gateway.
-            httpx.HTTPStatusError: gateway responded with a non-2xx status.
-        """
-        url = f"{self._base}/api/channels/sellerclaw-ui/scheduled-run"
-        headers = _gateway_headers(self._gateway_token)
-        if self._http is not None:
-            response = await self._http.post(url, headers=headers, json=body)
-        else:
-            async with async_client(
-                timeout=INBOUND_FORWARD_TIMEOUT,
-                transport=self._transport,
-            ) as client:
-                response = await client.post(url, headers=headers, json=body)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            _log.warning(
-                "openclaw_scheduled_run_forward_failed status=%s body=%s",
-                exc.response.status_code,
-                (exc.response.text or "")[:500],
-            )
-            raise
-
-    async def post_feasibility_check_json(self, body: dict[str, Any]) -> None:
-        """POST ``body`` to the OpenClaw sellerclaw-ui feasibility-check channel.
-
-        Asks the plugin to assess whether the agent can fully do a task; it runs the assessment in
-        an isolated session and reports a structured verdict to the cloud. Gateway-authenticated
-        like the inbound route.
+        The plugin runs the command through the gateway's scheduler and answers 200 with
+        ``{ok, error, store_epoch, job, run_id}`` — a command that failed included.
 
         Raises:
             httpx.ConnectError: the local gateway is not listening.
             httpx.TimeoutException: connect/read timeout talking to the gateway.
-            httpx.HTTPStatusError: gateway responded with a non-2xx status.
+            httpx.HTTPStatusError: the route refused the frame (non-2xx).
+            ValueError: the route answered something that is not a JSON object.
         """
-        url = f"{self._base}/api/channels/sellerclaw-ui/feasibility-check"
-        headers = _gateway_headers(self._gateway_token)
-        if self._http is not None:
-            response = await self._http.post(url, headers=headers, json=body)
-        else:
-            async with async_client(
-                timeout=INBOUND_FORWARD_TIMEOUT,
-                transport=self._transport,
-            ) as client:
-                response = await client.post(url, headers=headers, json=body)
+        response = await self._post_gateway(CRON_COMMAND_PATH, body)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             _log.warning(
-                "openclaw_feasibility_check_forward_failed status=%s body=%s",
+                "openclaw_cron_command_forward_failed status=%s body=%s",
                 exc.response.status_code,
                 (exc.response.text or "")[:500],
             )
             raise
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("cron command route answered a non-object")
+        return payload
+
+    async def post_cron_standby_json(self, *, standby: bool) -> tuple[bool, dict[str, Any]]:
+        """Ask the plugin to enter (``True``) or leave (``False``) cron standby.
+
+        Returns ``(held, payload)``: ``held`` is True once the plugin confirms the state (200); a
+        503 means it could not yet (scheduler not ready, a job refused) and the caller retries.
+
+        Raises:
+            httpx.ConnectError / httpx.TimeoutException: the gateway is not reachable.
+        """
+        response = await self._post_gateway(CRON_STANDBY_PATH, {"standby": standby})
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        return response.status_code == 200, payload if isinstance(payload, dict) else {}
+
+    async def _post_gateway(self, path: str, body: dict[str, Any]) -> httpx.Response:
+        url = f"{self._base}{path}"
+        headers = _gateway_headers(self._gateway_token)
+        if self._http is not None:
+            return await self._http.post(url, headers=headers, json=body)
+        async with async_client(
+            timeout=INBOUND_FORWARD_TIMEOUT,
+            transport=self._transport,
+        ) as client:
+            return await client.post(url, headers=headers, json=body)
 
     async def post_hooks_agent_json(self, body: dict[str, Any]) -> None:
         """POST ``body`` to OpenClaw ``/hooks/agent`` (cloud-originated hook delivery)."""

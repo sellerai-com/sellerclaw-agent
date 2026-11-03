@@ -26,8 +26,8 @@
 import { getPluginRuntimeGatewayRequestScope } from "openclaw/plugin-sdk/plugin-runtime";
 
 /**
- * Runtime scope surface for the routes that dispatch a supervisor turn (chat inbound, scheduled
- * run), so the turn's session tools can read other sessions.
+ * Runtime scope surface for the routes that dispatch a supervisor turn (chat inbound), so the
+ * turn's session tools can read other sessions.
  *
  * The default `"write-default"` surface hands the turn a single `operator.write`. That is meant to
  * satisfy `operator.read` too, but in-process tool dispatch narrows each call's scopes with a literal

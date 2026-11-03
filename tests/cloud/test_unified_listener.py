@@ -51,12 +51,21 @@ class _GatewayRecorder:
         return httpx.Response(202)
 
 
+class _RecordingDispatcher:
+    def __init__(self) -> None:
+        self.frames: list[dict[str, Any]] = []
+
+    def submit(self, payload: dict[str, Any]) -> None:
+        self.frames.append(payload)
+
+
 async def _run_unified_consume(
     *,
     sse_body: bytes,
     supervisor: _FakeSupervisor,
     gateway: _GatewayRecorder,
     monkeypatch: pytest.MonkeyPatch,
+    cron_commands: _RecordingDispatcher | None = None,
 ) -> None:
     monkeypatch.setenv("SELLERCLAW_API_URL", "http://cloud.test")
 
@@ -83,7 +92,26 @@ async def _run_unified_consume(
             openclaw_gate=make_openclaw_gate(supervisor),  # type: ignore[arg-type]
             dedup=cl._MessageIdDedup(),
             stop=asyncio.Event(),
+            cron_commands=cron_commands,  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.asyncio
+async def test_unified_hands_cron_commands_to_the_dispatcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``cron_command`` is handed off to its own task; the gateway sees nothing inline."""
+    frame = {"request_id": "r1", "user_id": "u1", "action": "remove", "job_id": "j1", "job": None, "patch": None}
+    dispatcher = _RecordingDispatcher()
+    gateway = _GatewayRecorder()
+    await _run_unified_consume(
+        sse_body=_sse_bytes([("cron_command", frame), ("scheduled_run", {"run_id": "r", "instruction": "x"})]),
+        supervisor=_FakeSupervisor(status="running"),
+        gateway=gateway,
+        monkeypatch=monkeypatch,
+        cron_commands=dispatcher,
+    )
+    assert dispatcher.frames == [frame]
+    # The retired scheduled_run frame runs nothing.
+    assert gateway.calls == []
 
 
 @pytest.mark.asyncio

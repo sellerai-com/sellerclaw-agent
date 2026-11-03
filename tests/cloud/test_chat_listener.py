@@ -616,48 +616,68 @@ async def test_cancel_event_survives_gateway_unreachable(monkeypatch: pytest.Mon
     assert inbound.paths == ["/api/channels/sellerclaw-ui/abort"]
 
 
-@pytest.mark.asyncio
-async def test_scheduled_run_forwarded_to_scheduled_run_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A ``scheduled_run`` frame is handed to the plugin's scheduled-run route (not inbound/chat)."""
-    payload = {
-        "run_id": "run-abc",
-        "agent_id": "supervisor",
-        "user_id": "u1",
-        "instruction": "Summarize yesterday's orders and email me.",
-        "session_key": "agent:supervisor:sellerclaw-ui:scheduled-task:run-abc",
-    }
-    supervisor = _FakeSupervisor(status="running")
-    inbound = _InboundRecorder(behavior="ok")
-    await _run_consume(
-        sse_body=_sse_bytes([("scheduled_run", payload)]),
-        supervisor=supervisor,
-        inbound=inbound,
-        agent_instance_id=uuid4(),
-        monkeypatch=monkeypatch,
-    )
-    assert inbound.paths == ["/api/channels/sellerclaw-ui/scheduled-run"]
-    assert inbound.calls[0]["run_id"] == "run-abc"
-    assert inbound.calls[0]["instruction"].startswith("Summarize")
+class _RecordingDispatcher:
+    """Stands in for ``CronCommandDispatcher``: records what the stream handed it."""
+
+    def __init__(self) -> None:
+        self.frames: list[dict[str, Any]] = []
+
+    def submit(self, payload: dict[str, Any]) -> None:
+        self.frames.append(payload)
 
 
 @pytest.mark.asyncio
-async def test_scheduled_run_not_forwarded_when_openclaw_stopped(
+async def test_cron_command_goes_to_the_dispatcher_not_to_the_gateway(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stopped agent never runs a scheduled task — the frame is dropped, not queued."""
-    payload = {
-        "run_id": "run-x",
-        "agent_id": "supervisor",
+    """A ``cron_command`` frame is handed off (its own task), never forwarded inline to a route."""
+    frame = {
+        "request_id": "11111111-1111-4111-8111-111111111111",
         "user_id": "u1",
-        "instruction": "do it",
+        "action": "run",
+        "job_id": "job-1",
+        "job": None,
+        "patch": None,
     }
-    supervisor = _FakeSupervisor(status="stopped")
+    dispatcher = _RecordingDispatcher()
+    inbound = _InboundRecorder(behavior="ok")
+    monkeypatch.setenv("SELLERCLAW_API_URL", "http://cloud.test")
+    chat_transport = _chat_sse_transport(_sse_bytes([("cron_command", frame)]))
+    orig_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs.setdefault("transport", chat_transport)
+        return orig_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(cl.httpx, "AsyncClient", patched_async_client)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(inbound)) as inbound_http:
+        forwarder = LocalOpenClawForwarder(
+            base_url="http://gw.test", hooks_token="tok", gateway_token="gw-tok", http_client=inbound_http
+        )
+        await cl._consume_chat_sse(
+            agent_token="sca_access",
+            agent_instance_id=uuid4(),
+            forwarder=forwarder,
+            supervisor_mgr=_FakeSupervisor(status="running"),  # type: ignore[arg-type]
+            dedup=cl._MessageIdDedup(),
+            stop=asyncio.Event(),
+            cron_commands=dispatcher,  # type: ignore[arg-type]
+        )
+
+    assert dispatcher.frames == [frame]
+    assert inbound.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_name", ["scheduled_run", "feasibility_check"])
+async def test_retired_scheduled_task_frames_are_ignored(
+    monkeypatch: pytest.MonkeyPatch, event_name: str
+) -> None:
+    """The cloud's own scheduler is gone (protocol 7): its frames, if any arrive, run nothing."""
     inbound = _InboundRecorder(behavior="ok")
     await _run_consume(
-        sse_body=_sse_bytes([("scheduled_run", payload)]),
-        supervisor=supervisor,
+        sse_body=_sse_bytes([(event_name, {"run_id": "r", "task_id": "t", "user_id": "u1", "instruction": "x"})]),
+        supervisor=_FakeSupervisor(status="running"),
         inbound=inbound,
         agent_instance_id=uuid4(),
         monkeypatch=monkeypatch,

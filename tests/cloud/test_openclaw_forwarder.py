@@ -105,42 +105,78 @@ async def test_local_forwarder_posts_hooks_agent_with_hooks_token() -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_forwarder_posts_scheduled_run_with_gateway_token() -> None:
-    """A scheduled run goes through the gateway-authed plugin route like inbound."""
+async def test_local_forwarder_posts_cron_command_and_returns_the_outcome() -> None:
+    """A cron command goes through the gateway-authed plugin route and its JSON answer comes back."""
     captured: dict[str, str] = {}
+    outcome = {"ok": True, "error": None, "store_epoch": "e1", "job": {"id": "j1"}, "run_id": None}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
         captured["auth"] = request.headers.get("authorization", "")
         captured["body"] = request.content.decode("utf-8")
-        return httpx.Response(202)
+        return httpx.Response(200, json=outcome)
 
-    transport = httpx.MockTransport(handler)
     fwd = LocalOpenClawForwarder(
         base_url="http://gw.test",
         hooks_token="hooks-secret",
         gateway_token="gw-secret",
-        transport=transport,
+        transport=httpx.MockTransport(handler),
     )
-    await fwd.post_scheduled_run_json(
-        {"run_id": "run-1", "agent_id": "supervisor", "user_id": "u1", "instruction": "do it"},
-    )
-    assert captured["url"].endswith("/api/channels/sellerclaw-ui/scheduled-run")
+    frame = {"request_id": "r1", "action": "add", "job_id": None, "job": {"name": "x"}, "patch": None}
+    assert await fwd.post_cron_command_json(frame) == outcome
+    assert captured["url"] == "http://gw.test/api/channels/sellerclaw-ui/cron/command"
     assert captured["auth"] == "Bearer gw-secret"
-    assert json.loads(captured["body"])["run_id"] == "run-1"
+    assert json.loads(captured["body"]) == frame
 
 
 @pytest.mark.asyncio
-async def test_local_forwarder_scheduled_run_raises_on_non_2xx() -> None:
-    transport = httpx.MockTransport(lambda _request: httpx.Response(500))
+@pytest.mark.parametrize(
+    ("response", "error"),
+    [
+        pytest.param(httpx.Response(400, json={"error": "bad"}), httpx.HTTPStatusError, id="refused"),
+        pytest.param(httpx.Response(200, json=["not", "an", "object"]), ValueError, id="not-an-object"),
+    ],
+)
+async def test_local_forwarder_cron_command_raises_on_a_bad_answer(
+    response: httpx.Response, error: type[Exception]
+) -> None:
     fwd = LocalOpenClawForwarder(
         base_url="http://gw.test",
         hooks_token="hooks-secret",
         gateway_token="gw-secret",
-        transport=transport,
+        transport=httpx.MockTransport(lambda _request: response),
     )
-    with pytest.raises(httpx.HTTPStatusError):
-        await fwd.post_scheduled_run_json({"run_id": "run-1", "instruction": "x"})
+    with pytest.raises(error):
+        await fwd.post_cron_command_json({"request_id": "r1", "action": "run", "job_id": "j1"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        pytest.param(200, {"ok": True, "standby": True, "job_ids": ["a"]}, True, id="held"),
+        pytest.param(503, {"ok": False, "error": "scheduler not ready"}, False, id="not-yet"),
+        pytest.param(404, None, False, id="no-route"),
+    ],
+)
+async def test_local_forwarder_cron_standby(status: int, body: dict | None, expected: bool) -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(status, json=body) if body is not None else httpx.Response(status)
+
+    fwd = LocalOpenClawForwarder(
+        base_url="http://gw.test",
+        hooks_token="hooks-secret",
+        gateway_token="gw-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    held, payload = await fwd.post_cron_standby_json(standby=True)
+    assert held is expected
+    assert payload == (body or {})
+    assert seen == {"path": "/api/channels/sellerclaw-ui/cron/standby", "body": {"standby": True}}
 
 
 @pytest.mark.asyncio
@@ -186,14 +222,7 @@ def test_openclaw_gateway_base_url_never_falls_back_to_the_nginx_port(
     [
         pytest.param("post_inbound_json", "/api/channels/sellerclaw-ui/inbound", id="inbound"),
         pytest.param("post_abort_json", "/api/channels/sellerclaw-ui/abort", id="abort"),
-        pytest.param(
-            "post_scheduled_run_json", "/api/channels/sellerclaw-ui/scheduled-run", id="scheduled-run"
-        ),
-        pytest.param(
-            "post_feasibility_check_json",
-            "/api/channels/sellerclaw-ui/feasibility-check",
-            id="feasibility-check",
-        ),
+        pytest.param("post_cron_command_json", "/api/channels/sellerclaw-ui/cron/command", id="cron-command"),
         pytest.param("post_hooks_agent_json", "/hooks/agent", id="hooks"),
     ],
 )
@@ -205,7 +234,7 @@ async def test_local_forwarder_never_reuses_a_gateway_connection(method: str, pa
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append((request.url.path, request.headers.get("connection", "")))
-        return httpx.Response(202)
+        return httpx.Response(202, json={})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as shared:
         fwd = LocalOpenClawForwarder(

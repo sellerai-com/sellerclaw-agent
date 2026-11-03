@@ -383,9 +383,18 @@ def generate_openclaw_config(
                 # Deny OpenClaw builtin media tools: media generation goes through
                 # sellerclaw-cli (cloud media endpoints), because the builtin tools' async
                 # completion delivery is lost on the request-scoped sellerclaw-ui channel.
+                # ``tts`` too: voicing a text is the cloud's `media generate-speech`, in the
+                # owner's catalog voices and billed — the builtin would speak in a free voice
+                # nobody chose. (No allow list carries it today; this keeps it so.)
                 "deny": list(
                     dict.fromkeys(
-                        [*agent.tools_deny, "image_generate", "video_generate", "music_generate"]
+                        [
+                            *agent.tools_deny,
+                            "image_generate",
+                            "video_generate",
+                            "music_generate",
+                            "tts",
+                        ]
                     )
                 ),
             },
@@ -694,6 +703,11 @@ def generate_openclaw_config(
         },
         "cron": {
             "enabled": cron_enabled,
+            # A recurring job (``cron`` / ``every``) whose slot fell while the machine was off is
+            # skipped to its next occurrence instead of caught up at boot: a digest or a price
+            # check hours late is noise, and a backlog of them is a burst of model spend (owner's
+            # decision, 03.11.2026). One-shot (``at``) jobs still run after a restart either way.
+            "skipMissedJobs": True,
             # Redirect cron failure notifications to the cloud error sink instead of
             # announcing "Cron job … failed" as a chat message to the seller. The
             # runtime POSTs the failure payload to ``failureAlert.to`` with

@@ -1,8 +1,8 @@
 """Background task: single SellerClaw edge SSE → local OpenClaw (chat + hooks merged).
 
 Supersedes ``chat_listener`` + ``hooks_listener``: one ``/agent/stream`` connection carries
-both chat (``user_message``/``cancel``) and hooks (``hook_event``) events, halving the number
-of long-lived connections each agent holds to the cloud. Per-event handling is reused verbatim
+chat (``user_message``/``cancel``), hooks (``hook_event``) and cron (``cron_command``) events,
+halving the number of long-lived connections each agent holds to the cloud. Per-event handling is reused verbatim
 from the two listeners; this module only adds the merged consume + its reconnect loop.
 """
 
@@ -30,13 +30,14 @@ from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.cloud.chat_listener import (
     _MessageIdDedup,
+    dispatch_cron_command,
     forward_cancel,
-    forward_feasibility_check,
-    forward_scheduled_run,
     forward_user_message,
 )
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.cron_commands import CronCommandDispatcher
+from sellerclaw_agent.cloud.cron_standby import get_cron_standby
 from sellerclaw_agent.cloud.edge_sse_common import OpenClawGate, make_openclaw_gate, raise_for_edge_sse_status
 from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
@@ -104,8 +105,9 @@ async def _consume_unified_sse(
     openclaw_gate: OpenClawGate,
     dedup: _MessageIdDedup,
     stop: asyncio.Event,
+    cron_commands: CronCommandDispatcher | None = None,
 ) -> None:
-    """Drain the unified SSE stream, routing each frame to the chat or hooks handler by name."""
+    """Drain the unified SSE stream, routing each frame to the chat, hooks or cron handler by name."""
     base = get_sellerclaw_api_url().rstrip("/")
     url = f"{base}/agent/stream"
     params = {"agent_instance_id": str(agent_instance_id)}
@@ -132,14 +134,8 @@ async def _consume_unified_sse(
                     await forward_user_message(
                         payload, forwarder=forwarder, dedup=dedup, openclaw_gate=openclaw_gate
                     )
-                elif event_name == "scheduled_run":
-                    await forward_scheduled_run(
-                        payload, forwarder=forwarder, openclaw_gate=openclaw_gate
-                    )
-                elif event_name == "feasibility_check":
-                    await forward_feasibility_check(
-                        payload, forwarder=forwarder, openclaw_gate=openclaw_gate
-                    )
+                elif event_name == "cron_command":
+                    dispatch_cron_command(payload, cron_commands=cron_commands)
                 elif event_name == "cancel":
                     await forward_cancel(payload, forwarder=forwarder)
                 elif event_name == "hook_event":
@@ -163,6 +159,11 @@ async def run_edge_unified_sse_loop(
     supervisor_mgr = create_supervisor_manager()
     openclaw_gate = make_openclaw_gate(supervisor_mgr)
     dedup = _MessageIdDedup()
+    cron_commands = CronCommandDispatcher(
+        data_dir=data_dir,
+        standby=get_cron_standby(data_dir),
+        openclaw_gate=openclaw_gate,
+    )
     backoff = 2.0
 
     while not stop.is_set():
@@ -217,6 +218,7 @@ async def run_edge_unified_sse_loop(
                         openclaw_gate=openclaw_gate,
                         dedup=dedup,
                         stop=stop,
+                        cron_commands=cron_commands,
                     )
                 finally:
                     if registry is not None:

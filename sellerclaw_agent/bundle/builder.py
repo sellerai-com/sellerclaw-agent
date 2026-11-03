@@ -70,7 +70,6 @@ def derive_agent_tools(
     *,
     is_entry_point: bool,
     browser_enabled: bool,
-    cron_enabled: bool,
 ) -> tuple[list[str], list[str]]:
     """Derive the OpenClaw ``tools.allow`` / ``tools.deny`` lists for one agent.
 
@@ -80,7 +79,8 @@ def derive_agent_tools(
       ``process`` (background long-running commands instead of blocking the turn) and
       ``group:sessions`` + ``agents_list`` to inspect and drive its team — the last two
       unconditionally, even with an empty team (see the note at the grant site).
-      ``cron`` only here, and only when enabled.
+      No ``cron``: the native tool is owner-only (OpenClaw 2026.7.1+); jobs go through
+      ``openclaw cron …`` in ``exec``.
       ``whatsapp_login`` (in-chat QR pairing tool) only here, and only when WhatsApp is on.
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
     - Long-term memory tools (``_MEMORY_TOOLS``) are granted to every agent so the injected
@@ -116,8 +116,9 @@ def derive_agent_tools(
             "exec",
             "pdf",
         ]
-        if cron_enabled:
-            allow.append("cron")
+        # No ``cron``: the native tool is owner-only since OpenClaw 2026.7.1 and never offered to
+        # this agent, so listing it only sent the agent searching for a tool it cannot get. It
+        # manages jobs with ``openclaw cron …`` through ``exec`` (the scheduled_tasks skill).
         # No ``whatsapp_login``: the WhatsApp plugin offers it, but the owner links the
         # assistant's number from the SellerClaw website (QR via the gateway's web.login RPC).
         # The plugin keeps ONE login in flight per account, so an in-chat login would cancel the
@@ -455,7 +456,6 @@ class BundleBuilder:
         tools_allow, tools_deny = derive_agent_tools(
             is_entry_point=agent.is_entry_point,
             browser_enabled=agent.browser_enabled,
-            cron_enabled=manifest.cron_enabled,
         )
         content = agent.content
         # Heartbeat is honored only for the main (entry-point) agent, matching prior behavior.

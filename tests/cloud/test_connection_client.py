@@ -52,45 +52,121 @@ async def test_connect_success(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_report_cron_jobs_posts_snapshot_and_returns_true(tmp_path: Path) -> None:
-    seen: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/agent/cron/snapshot"
-        assert request.headers.get("authorization") == "Bearer access-1"
-        assert request.headers.get("content-type") == "application/json"
-        seen["body"] = _json_body(request)
-        return httpx.Response(204)
-
-    storage = _write_creds(tmp_path)
-    client = SellerClawConnectionClient(
-        credentials_storage=storage,
-        base_url="http://example",
-        transport=httpx.MockTransport(handler),
+async def test_connect_refused_by_another_active_session_raises_specific_error(tmp_path: Path) -> None:
+    """409 ``agent_connection_already_active`` is the replaced-instance signal, not a generic error."""
+    from sellerclaw_agent.cloud.exceptions import (
+        CloudConnectionAlreadyActiveError,
+        CloudConnectionError,
     )
-    snapshot = {
-        "captured_at": "2026-05-25T12:00:00+00:00",
-        "snapshot_hash": "abc",
-        "jobs": [{"openclaw_job_id": "job-1", "name": "Daily"}],
-    }
-    accepted = await client.report_cron_jobs(snapshot)
 
-    assert accepted is True
-    assert seen["body"] == snapshot
+    body = {
+        "detail": {
+            "code": "agent_connection_already_active",
+            "message": "Another edge agent session is already connected. Disconnect it first.",
+        }
+    }
+    client = SellerClawConnectionClient(
+        credentials_storage=_write_creds(tmp_path),
+        base_url="http://example",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(409, json=body)),
+    )
+    with pytest.raises(CloudConnectionAlreadyActiveError, match="Another edge agent session"):
+        await client.connect(agent_version="1", protocol_version=7)
+    # Still a CloudConnectionError, so every existing handler keeps catching it.
+    assert issubclass(CloudConnectionAlreadyActiveError, CloudConnectionError)
 
 
 @pytest.mark.asyncio
-async def test_report_cron_jobs_raises_on_server_error(tmp_path: Path) -> None:
+async def test_connect_other_409_stays_a_generic_connection_error(tmp_path: Path) -> None:
+    from sellerclaw_agent.cloud.exceptions import (
+        CloudConnectionAlreadyActiveError,
+        CloudConnectionError,
+    )
+
+    body = {"detail": {"code": "agent_command_conflict", "message": "busy"}}
+    client = SellerClawConnectionClient(
+        credentials_storage=_write_creds(tmp_path),
+        base_url="http://example",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(409, json=body)),
+    )
+    with pytest.raises(CloudConnectionError, match="busy") as excinfo:
+        await client.connect(agent_version="1", protocol_version=7)
+    assert not isinstance(excinfo.value, CloudConnectionAlreadyActiveError)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "kwargs", "path", "expected_body"),
+    [
+        pytest.param(
+            "post_cron_command_result",
+            {"request_id": "req-1", "result": {"ok": True, "error": None, "store_epoch": "e", "job": None, "run_id": None}},
+            "/agent/cron/commands/req-1",
+            {"ok": True, "error": None, "store_epoch": "e", "job": None, "run_id": None},
+            id="command-result",
+        ),
+        pytest.param(
+            "post_cron_runs",
+            {"runs": [{"jobId": "j1", "runAtMs": 5, "status": "ok"}]},
+            "/agent/cron/runs",
+            {"runs": [{"jobId": "j1", "runAtMs": 5, "status": "ok"}]},
+            id="runs",
+        ),
+    ],
+)
+async def test_cron_reports_post_json_with_agent_bearer(
+    tmp_path: Path, method: str, kwargs: dict, path: str, expected_body: dict
+) -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["auth"] = request.headers.get("authorization")
+        seen["body"] = _json_body(request)
+        return httpx.Response(204)
+
+    client = SellerClawConnectionClient(
+        credentials_storage=_write_creds(tmp_path),
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await getattr(client, method)(**kwargs) is True
+    assert seen == {"path": path, "auth": "Bearer access-1", "body": expected_body}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [404, 405, 501])
+async def test_cron_reports_to_an_older_cloud_are_dropped_not_failed(tmp_path: Path, status: int) -> None:
+    client = SellerClawConnectionClient(
+        credentials_storage=_write_creds(tmp_path),
+        base_url="http://example",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(status)),
+    )
+    assert await client.post_cron_runs([{"jobId": "j1", "runAtMs": 1, "status": "ok"}]) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body", "match"),
+    [
+        pytest.param(503, None, "HTTP 503", id="server-error"),
+        pytest.param(422, {"detail": "bad runs"}, "bad runs", id="validation"),
+    ],
+)
+async def test_cron_reports_raise_on_failures(
+    tmp_path: Path, status: int, body: dict | None, match: str
+) -> None:
     from sellerclaw_agent.cloud.exceptions import CloudConnectionError
 
-    storage = _write_creds(tmp_path)
     client = SellerClawConnectionClient(
-        credentials_storage=storage,
+        credentials_storage=_write_creds(tmp_path),
         base_url="http://example",
-        transport=httpx.MockTransport(lambda _r: httpx.Response(503)),
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(status, json=body) if body is not None else httpx.Response(status)
+        ),
     )
-    with pytest.raises(CloudConnectionError):
-        await client.report_cron_jobs({"captured_at": "x", "jobs": []})
+    with pytest.raises(CloudConnectionError, match=match):
+        await client.post_cron_runs([])
 
 
 @pytest.mark.asyncio

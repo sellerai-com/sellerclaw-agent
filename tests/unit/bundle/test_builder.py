@@ -523,28 +523,28 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
 
 
 @pytest.mark.parametrize(
-    ("is_entry_point", "browser", "cron", "expected_allow", "expected_deny"),
+    ("is_entry_point", "browser", "expected_allow", "expected_deny"),
     [
         pytest.param(
-            True, True, True,
-            [
-                "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
-                "message", "browser", "exec", "pdf", "cron", "process", *_MEMORY_TOOLS_EXPECTED,
-            ],
-            [],
-            id="entry-point",
-        ),
-        pytest.param(
-            True, True, False,
+            True, True,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
                 "message", "browser", "exec", "pdf", "process", *_MEMORY_TOOLS_EXPECTED,
             ],
             [],
-            id="entry-point-cron-disabled",
+            id="entry-point",
         ),
         pytest.param(
-            False, True, True,
+            True, False,
+            [
+                "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
+                "message", "exec", "pdf", "process", *_MEMORY_TOOLS_EXPECTED,
+            ],
+            [],
+            id="entry-point-browser-disabled",
+        ),
+        pytest.param(
+            False, True,
             [
                 "group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf",
                 *_MEMORY_TOOLS_EXPECTED,
@@ -553,7 +553,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             id="subagent-never-gets-cron",
         ),
         pytest.param(
-            False, False, True,
+            False, False,
             [
                 "group:fs", "exec", "process", "web_fetch", "web_search", "pdf",
                 *_MEMORY_TOOLS_EXPECTED,
@@ -566,20 +566,20 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
 def test_derive_agent_tools(
     is_entry_point: bool,
     browser: bool,
-    cron: bool,
     expected_allow: list[str],
     expected_deny: list[str],
 ) -> None:
     allow, deny = derive_agent_tools(
         is_entry_point=is_entry_point,
         browser_enabled=browser,
-        cron_enabled=cron,
     )
     assert allow == expected_allow
     assert deny == expected_deny
     # The builtin media tools are never granted (media goes through sellerclaw-cli).
     assert "image_generate" not in allow
     assert "video_generate" not in allow
+    # Nor the native cron tool: owner-only since OpenClaw 2026.7.1, the agent uses `openclaw cron`.
+    assert "cron" not in allow
 
 
 @pytest.mark.parametrize(
@@ -594,7 +594,6 @@ def test_derive_agent_tools_never_grants_whatsapp_login(is_entry_point: bool) ->
     allow, _ = derive_agent_tools(
         is_entry_point=is_entry_point,
         browser_enabled=True,
-        cron_enabled=True,
     )
     assert "whatsapp_login" not in allow
 
@@ -615,7 +614,6 @@ def test_derive_agent_tools_grants_memory_tools_to_every_agent(is_entry_point: b
     allow, deny = derive_agent_tools(
         is_entry_point=is_entry_point,
         browser_enabled=True,
-        cron_enabled=True,
     )
     for tool in ("memory_add", "memory_search", "memory_update", "memory_delete"):
         assert tool in allow
@@ -628,10 +626,10 @@ def _cfg_from_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     return json.loads(result.openclaw_config)
 
 
-def test_cron_enabled_from_manifest_and_supervisor_only_tool() -> None:
+def test_cron_enabled_from_manifest_and_never_a_granted_tool() -> None:
     cfg = _cfg_from_mapping(copy.deepcopy(load_manifest_v2_mapping()))  # default -> enabled
     assert cfg["cron"]["enabled"] is True
-    assert "cron" in _agent_payload(cfg, "supervisor")["tools"]["allow"]
+    assert "cron" not in _agent_payload(cfg, "supervisor")["tools"]["allow"]
     for sub in ("scout", "supplier", "marketing"):
         assert "cron" not in _agent_payload(cfg, sub)["tools"]["allow"]
         assert "cron" in _agent_payload(cfg, sub)["tools"]["deny"]

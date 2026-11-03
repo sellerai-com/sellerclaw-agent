@@ -25,6 +25,8 @@ from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.cron_commands import CronCommandDispatcher
+from sellerclaw_agent.cloud.cron_standby import get_cron_standby
 from sellerclaw_agent.cloud.edge_sse_common import OpenClawGate, make_openclaw_gate, raise_for_edge_sse_status
 from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
@@ -102,34 +104,6 @@ def _inbound_body_from_sse(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _scheduled_run_body_from_sse(payload: dict[str, Any]) -> dict[str, Any]:
-    """Strip server-only fields; keep the sellerclaw-ui scheduled-run contract."""
-    out: dict[str, Any] = {
-        "run_id": str(payload["run_id"]),
-        "agent_id": str(payload.get("agent_id") or "supervisor"),
-        "user_id": str(payload["user_id"]),
-        "instruction": str(payload["instruction"]),
-    }
-    session_key = payload.get("session_key")
-    if session_key is not None and str(session_key).strip():
-        out["session_key"] = str(session_key)
-    return out
-
-
-def _feasibility_body_from_sse(payload: dict[str, Any]) -> dict[str, Any]:
-    """Strip server-only fields; keep the sellerclaw-ui feasibility-check contract."""
-    out: dict[str, Any] = {
-        "task_id": str(payload["task_id"]),
-        "agent_id": str(payload.get("agent_id") or "supervisor"),
-        "user_id": str(payload["user_id"]),
-        "instruction": str(payload["instruction"]),
-    }
-    session_key = payload.get("session_key")
-    if session_key is not None and str(session_key).strip():
-        out["session_key"] = str(session_key)
-    return out
-
-
 async def forward_cancel(payload: dict[str, Any], *, forwarder: LocalOpenClawForwarder) -> None:
     """Forward a ``cancel`` event: abort the in-flight OpenClaw run for this chat (best-effort)."""
     cancel_chat_id = str(payload.get("chat_id") or "") or None
@@ -159,8 +133,8 @@ async def _wait_for_openclaw(openclaw_gate: OpenClawGate) -> tuple[bool, str, st
 
     Only user messages get this: they are the owner talking, and a dropped one is invisible to them
     — they see an agent that ignored what they asked for and answer it a second time. Everything
-    else on this stream (scheduled runs, hook events) is regenerated on its next tick and can be
-    dropped safely.
+    else on this stream (hook events) is regenerated on its next tick and can be dropped safely;
+    cron commands answer the cloud themselves when OpenClaw is down.
 
     Bounded on purpose. A restart takes a couple of minutes and blocking the SSE loop that long
     would stall every other event behind this one; what this covers is the short window where
@@ -240,77 +214,12 @@ async def forward_user_message(
         _log.exception("chat_forward_failed", message_id=mid or "?", chat_id=chat_id, user_id=user_id)
 
 
-async def forward_scheduled_run(
-    payload: dict[str, Any],
-    *,
-    forwarder: LocalOpenClawForwarder,
-    openclaw_gate: OpenClawGate,
-) -> None:
-    """Forward a ``scheduled_run`` event to the local OpenClaw scheduled-run channel (gated).
-
-    A scheduled run is not a chat: the plugin runs it in an isolated session and reports the outcome
-    straight back to the cloud. Dropped silently when OpenClaw is not running or the gateway is
-    unreachable — the cloud already recorded a DISPATCHED run, and a missed one is harmless (the next
-    scheduled slot runs normally once the agent is back).
-    """
-    run_id = str(payload.get("run_id") or "")
-    if not run_id or not str(payload.get("instruction") or "").strip():
-        _log.warning("scheduled_run_missing_fields", run_id=run_id or None)
+def dispatch_cron_command(payload: dict[str, Any], *, cron_commands: CronCommandDispatcher | None) -> None:
+    """Hand a ``cron_command`` frame to its own task: the stream never waits on the gateway."""
+    if cron_commands is None:
+        _log.warning("cron_command_dropped_no_dispatcher", request_id=payload.get("request_id"))
         return
-    running, oc_status, oc_err = await openclaw_gate()
-    if not running:
-        _log.info(
-            "scheduled_run_dropped",
-            reason="openclaw_not_running",
-            openclaw_status=oc_status,
-            openclaw_error=oc_err,
-            run_id=run_id,
-        )
-        return
-    try:
-        await forwarder.post_scheduled_run_json(_scheduled_run_body_from_sse(payload))
-    except httpx.ConnectError as exc:
-        _log.info("scheduled_run_dropped", reason="gateway_unreachable", run_id=run_id, error=str(exc))
-    except httpx.TimeoutException as exc:
-        _log.info("scheduled_run_dropped", reason="gateway_timeout", run_id=run_id, error=str(exc))
-    except Exception:
-        _log.exception("scheduled_run_forward_failed", run_id=run_id)
-
-
-async def forward_feasibility_check(
-    payload: dict[str, Any],
-    *,
-    forwarder: LocalOpenClawForwarder,
-    openclaw_gate: OpenClawGate,
-) -> None:
-    """Forward a ``feasibility_check`` event to the local OpenClaw feasibility-check channel (gated).
-
-    A one-shot assessment (not a chat): the plugin runs it in an isolated session and reports the
-    verdict back to the cloud. Dropped silently when OpenClaw is not running or the gateway is
-    unreachable — the task's static feasibility floor already stands.
-    """
-    task_id = str(payload.get("task_id") or "")
-    if not task_id or not str(payload.get("instruction") or "").strip():
-        _log.warning("feasibility_check_missing_fields", task_id=task_id or None)
-        return
-    running, oc_status, oc_err = await openclaw_gate()
-    if not running:
-        _log.info(
-            "feasibility_check_dropped",
-            reason="openclaw_not_running",
-            openclaw_status=oc_status,
-            openclaw_error=oc_err,
-            task_id=task_id,
-        )
-        return
-    try:
-        await forwarder.post_feasibility_check_json(_feasibility_body_from_sse(payload))
-    except httpx.ConnectError as exc:
-        _log.info("feasibility_check_dropped", reason="gateway_unreachable", task_id=task_id, error=str(exc))
-    except httpx.TimeoutException as exc:
-        _log.info("feasibility_check_dropped", reason="gateway_timeout", task_id=task_id, error=str(exc))
-    except Exception:
-        _log.exception("feasibility_check_forward_failed", task_id=task_id)
+    cron_commands.submit(payload)
 
 
 async def _consume_chat_sse(
@@ -321,6 +230,7 @@ async def _consume_chat_sse(
     supervisor_mgr: SupervisorContainerManager,
     dedup: _MessageIdDedup,
     stop: asyncio.Event,
+    cron_commands: CronCommandDispatcher | None = None,
 ) -> None:
     _openclaw_gate = make_openclaw_gate(supervisor_mgr)
 
@@ -354,15 +264,8 @@ async def _consume_chat_sse(
                         payload, forwarder=forwarder, dedup=dedup, openclaw_gate=_openclaw_gate
                     )
                     continue
-                if event_name == "scheduled_run":
-                    await forward_scheduled_run(
-                        payload, forwarder=forwarder, openclaw_gate=_openclaw_gate
-                    )
-                    continue
-                if event_name == "feasibility_check":
-                    await forward_feasibility_check(
-                        payload, forwarder=forwarder, openclaw_gate=_openclaw_gate
-                    )
+                if event_name == "cron_command":
+                    dispatch_cron_command(payload, cron_commands=cron_commands)
 
 
 async def run_edge_chat_sse_loop(
@@ -376,6 +279,11 @@ async def run_edge_chat_sse_loop(
     session_storage = EdgeSessionStorage(data_dir)
     supervisor_mgr = create_supervisor_manager()
     dedup = _MessageIdDedup()
+    cron_commands = CronCommandDispatcher(
+        data_dir=data_dir,
+        standby=get_cron_standby(data_dir),
+        openclaw_gate=make_openclaw_gate(supervisor_mgr),
+    )
     backoff = 2.0
 
     while not stop.is_set():
@@ -422,6 +330,7 @@ async def run_edge_chat_sse_loop(
                         supervisor_mgr=supervisor_mgr,
                         dedup=dedup,
                         stop=stop,
+                        cron_commands=cron_commands,
                     )
                 finally:
                     if registry is not None:

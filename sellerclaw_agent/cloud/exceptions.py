@@ -49,5 +49,14 @@ class CloudConnectionInactiveError(CloudConnectionError):
     """Server has no CONNECTED edge session for this user (ping loop will restore it)."""
 
 
+class CloudConnectionAlreadyActiveError(CloudConnectionError):
+    """``connect`` refused (409 ``agent_connection_already_active``): another instance holds the session.
+
+    The one signal that this agent was replaced (or is a second copy): the cloud only lets a new
+    session in once the previous one is gone or stale, so a refusal means somebody else is the
+    owner's agent right now. The cron sync goes on standby on it (see ``cron_standby``).
+    """
+
+
 class CloudDevicePollTerminalError(CloudConnectionError):
     """Device code was already redeemed or is no longer valid; not a transient server error."""

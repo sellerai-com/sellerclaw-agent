@@ -2,13 +2,10 @@ import { defineBundledChannelEntry } from "openclaw/plugin-sdk/channel-entry-con
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { setPluginConfig } from "./src/channel.js";
+import { registerCronCommandRoute, registerCronStandbyRoute } from "./src/cron-routes.js";
+import { registerCronSyncService } from "./src/cron-sync.js";
 import { withPerPassHooks } from "./src/hook-registration.js";
-import {
-  registerAbortRoute,
-  registerFeasibilityCheckRoute,
-  registerInboundRoute,
-  registerScheduledRunRoute,
-} from "./src/inbound.js";
+import { registerAbortRoute, registerInboundRoute } from "./src/inbound.js";
 
 /**
  * The bundled channel entry for SellerClaw UI.
@@ -26,8 +23,10 @@ import {
  * `runtime-store.ts`, which is what keeps a second evaluation from splitting our state in two.
  *
  * Lifecycle hooks (completion-delivery guard, run-outcome tracker, reasoning relay, live
- * thinking stream) are NOT registered in `registerFull`: it runs only in the "full" pass, and
- * OpenClaw replaces the hook registry on every re-activation — see `withPerPassHooks`.
+ * thinking stream, the cron projection) are NOT registered in `registerFull`: it runs only in the
+ * "full" pass, and OpenClaw replaces the hook registry on every re-activation — see
+ * `withPerPassHooks`. The cron-sync SERVICE is: services are started from the full registry, and
+ * its `ctx.getCron()` is the scheduler handle cron writes go through (see `cron-sync.ts`).
  */
 export default withPerPassHooks(
   defineBundledChannelEntry({
@@ -41,8 +40,9 @@ export default withPerPassHooks(
       setPluginConfig(api.config);
       registerInboundRoute(api);
       registerAbortRoute(api);
-      registerScheduledRunRoute(api);
-      registerFeasibilityCheckRoute(api);
+      registerCronCommandRoute(api);
+      registerCronStandbyRoute(api);
+      registerCronSyncService(api);
     },
   }),
 );

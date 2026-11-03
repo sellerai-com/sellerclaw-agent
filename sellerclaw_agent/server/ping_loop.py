@@ -25,6 +25,7 @@ from sellerclaw_agent.cloud.agent_activity import (
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
+from sellerclaw_agent.cloud.cron_standby import CronStandby, get_cron_standby
 from sellerclaw_agent.cloud.state_backup import read_applied_config_version
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.settings import get_openclaw_version
@@ -32,6 +33,7 @@ from sellerclaw_agent.cloud.whatsapp_channel import get_whatsapp_status_monitor
 from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
     CloudAuthError,
+    CloudConnectionAlreadyActiveError,
     CloudConnectionError,
     CloudSessionInvalidatedError,
 )
@@ -56,11 +58,15 @@ _log = structlog.get_logger(__name__)
 #     channel state in the ping.
 # v6: understands a ``send`` hook envelope — a ready text the gateway sends to a messenger as
 #     written (no agent turn), so the cloud's notifications can reach WhatsApp at all.
+# v7: OpenClaw's native cron is the only scheduler: the agent reports its cron store
+#     (``/agent/cron/state`` + ``/agent/cron/runs``), restores the jobs the cloud hands back, and
+#     executes ``cron_command`` frames. The ``scheduled_run`` / ``feasibility_check`` frames and
+#     the ``/agent/cron/snapshot`` report are gone.
 #
 # Every ping carries this constant, not the version saved with the edge session at connect:
 # with a persistent /data (self-hosted, local compose) a session saved by an older agent
 # survives the upgrade, and the cloud would keep gating new commands on the old number.
-AGENT_PROTOCOL_VERSION = 6
+AGENT_PROTOCOL_VERSION = 7
 
 # Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
 # build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the
@@ -82,6 +88,16 @@ def _browser_ping_payload(probe: BrowserStatusProbe) -> dict[str, object]:
 _PERIODIC_STATE_BACKUP_SECONDS = 4 * 3600
 
 
+async def _reconcile_cron_standby(standby: CronStandby, openclaw_status: str) -> None:
+    """Deliver the cron standby wish to the plugin; only a running OpenClaw can take it."""
+    if openclaw_status != "running":
+        return
+    try:
+        await standby.reconcile()
+    except Exception as exc:  # noqa: BLE001 - the ping loop must outlive any plugin trouble
+        _log.warning("cron_standby_reconcile_failed", error=str(exc)[:300])
+
+
 async def run_edge_ping_loop(
     stop: asyncio.Event,
     *,
@@ -89,9 +105,11 @@ async def run_edge_ping_loop(
     result_store: CommandResultStore,
     supervisor_executor: ThreadPoolExecutor,
     registry: EdgeRuntimeRegistry,
+    cron_standby: CronStandby | None = None,
 ) -> None:
     """Background task: maintain SellerClaw edge session; commands run in executor task."""
     data_dir = Path(os.environ.get("SELLERCLAW_DATA_DIR", "/data"))
+    standby = cron_standby or get_cron_standby(data_dir)
     creds_storage = CredentialsStorage(data_dir)
     session_storage = EdgeSessionStorage(data_dir)
     client = SellerClawConnectionClient(credentials_storage=creds_storage)
@@ -205,6 +223,16 @@ async def run_edge_ping_loop(
                 openclaw_version=OPENCLAW_VERSION,
                 whatsapp=get_whatsapp_status_monitor().latest_payload(),
             )
+        except CloudConnectionAlreadyActiveError as exc:
+            # Another instance holds the owner's session: this one was replaced (or is a second
+            # copy). Its cron jobs must stop before both machines run the same task.
+            _log.warning("edge_connect_refused_another_instance_active", error=str(exc))
+            standby.request_standby()
+            await _reconcile_cron_standby(standby, openclaw_status)
+            consecutive_errors += 1
+            registry.mark_ping_error(str(exc))
+            await sleep_until(stop, ping_interval_after_error(consecutive_errors))
+            continue
         except CloudAgentSuspendedError:
             _log.warning("edge_agent_suspended_waiting_resume")
             await sleep_until(stop, ping_interval_when_suspended())
@@ -246,6 +274,9 @@ async def run_edge_ping_loop(
 
         consecutive_errors = 0
         registry.mark_ping_success()
+        # A ping the cloud accepted means this instance holds the session: its cron jobs run.
+        standby.request_active()
+        await _reconcile_cron_standby(standby, openclaw_status)
 
         if time.monotonic() - last_backup_at >= _PERIODIC_STATE_BACKUP_SECONDS:
             state_dir = Path(os.environ.get("OPENCLAW_STATE_DIR", "/home/node/.openclaw"))

@@ -375,6 +375,14 @@ def test_generate_openclaw_config_cron_failures_redirect_to_cloud_error_sink(
     }
 
 
+def test_generate_openclaw_config_cron_skips_missed_recurring_slots(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """A slot missed while the machine was off is skipped, not caught up at boot."""
+    cron = json.loads(_generate(_supervisor_only(make_assembled_agent)))["cron"]
+    assert cron["skipMissedJobs"] is True
+
+
 def test_generate_openclaw_config_model_defaults_drive_and_omit_media(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
@@ -1019,12 +1027,13 @@ def test_generate_openclaw_config_omits_media_model_blocks_keeps_pdf(
 def test_generate_openclaw_config_denies_builtin_media_tools(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """Builtin image/video/music generate tools are denied (replaced by sellerclaw-cli media)."""
+    """Builtin image/video/music generate and speech tools are denied (replaced by sellerclaw-cli media)."""
     entries = json.loads(_generate(_supervisor_only(make_assembled_agent)))["agents"]["entries"]
     deny = entries["supervisor"]["tools"]["deny"]
     assert "image_generate" in deny
     assert "video_generate" in deny
     assert "music_generate" in deny
+    assert "tts" in deny
 
 
 def test_generate_openclaw_config_enables_document_extract_plugin_for_pdf_fallback(

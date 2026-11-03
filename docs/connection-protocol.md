@@ -13,12 +13,13 @@ This document describes the protocol from the **agent's perspective**: what it s
 
 ## Files on disk
 
-The agent stores two files in `SELLERCLAW_DATA_DIR` (default `/data`):
+The agent stores these files in `SELLERCLAW_DATA_DIR` (default `/data`):
 
 ```text
 SELLERCLAW_DATA_DIR/
 ├── agent_token.json    — long-lived agent token (`sca_…`) and user metadata
-└── edge_session.json   — agent_instance_id for the current session
+├── edge_session.json   — agent_instance_id for the current session
+└── cron_standby.json   — present only while another instance holds the session (cron standby)
 ```
 
 `agent_token.json` is written atomically (temp file + rename) and holds `agent_token`, `user_id`, `user_email`, `user_name`, and `connected_at`. There is **no** user JWT and **no** refresh token on the agent. `edge_session.json` is cleared whenever the server rejects the session (HTTP 401 `agent_session_invalidated`) so the next iteration reconnects from scratch.
@@ -148,6 +149,60 @@ the browser sign-in backup so neither overwrites the other:
 
 These endpoints and the state backup refuse OAuth-connector and CLI tokens (403 `agent_runtime_only`).
 
+### Recurring tasks: OpenClaw cron (protocol v7)
+
+OpenClaw's own cron scheduler is the only engine for recurring tasks. While the machine lives, its
+cron store (SQLite in `~/.openclaw/state/`) is the truth; the cloud keeps a durable copy for its UI,
+the run history, and to put the jobs back on a fresh machine (managed machines have no volume and
+lose the store on every recreate). The `sellerclaw-ui` plugin does the reporting from inside the
+gateway, following OpenClaw's "Safe external cron projection" pattern (`cron_reconciled` adopts
+the scheduler, `cron_changed` only asks one latest-state worker to re-read it).
+
+Only jobs the cloud mirrors leave the machine: no `declarationKey`, or one starting with
+`sellerclaw:job:`, and not a system `heartbeat` payload. Foreign namespaces (`heartbeat:*`,
+`memory-core:*`) are never reported or touched.
+
+Agent → cloud (agent token; an older cloud answering 404 / 405 / 501 is skipped quietly):
+
+- `POST /agent/cron/state` — the complete snapshot, after every reconciliation, every cron change
+  and every 30 minutes:
+  `{"store_epoch": str, "seq": int, "jobs": [<job as cron.list returns it>], "removed_job_ids": [str]}`.
+  `store_epoch` is a random id kept in `sellerclaw-cron-sync.json` next to the cron store, so it
+  is lost together with it; `seq` grows across restarts within an epoch (`max(last + 1, now_ms)`).
+  `removed_job_ids` are ids from `removed` events not yet carried by an accepted snapshot. The cloud
+  answers `{"accepted": bool, "restore": [<cron.add params>]}`; the plugin adds each restore item
+  through the scheduler, at least 2.1 s apart, and skips one-shot (`at`) jobs whose moment has
+  passed. `declarationKey` makes a repeated add harmless.
+- `POST /agent/cron/runs` — `{"runs": [<cron.runs entry>]}`: each `finished` event as it happens,
+  and after each reconciliation (or a run report given up on) the last 20 runs of every mirrored
+  job, read by the agent server over the gateway's `cron.runs` RPC. The cloud merges repeats on
+  `(jobId, runAtMs)`.
+- `POST /agent/cron/commands/{request_id}` — the outcome of one command (below):
+  `{"ok": bool, "error": str|null, "store_epoch": str|null, "job": <job>|null, "run_id": str|null}`.
+- `POST /agent/cron/snapshot` (the pre-v7 report) is no longer sent.
+
+Cloud → agent: the SSE frame `event: cron_command` on `/agent/stream` (or the legacy
+`/agent/chat/stream`), data
+`{"request_id", "user_id", "action": "add"|"update"|"remove"|"run", "job_id", "job", "patch"}`.
+The agent runs each frame as its own task (the stream never waits), one at a time, drops a
+repeated `request_id`, and executes it through the plugin: `add` → `cron.add(job)`, `update` →
+`cron.update(job_id, patch)`, `remove` → `cron.remove(job_id)` (an unknown id is a success), `run`
+→ a forced run (`enqueueRun(job_id, "force")`). `job` in the answer is the job as stored after
+`add` / `update`. The `scheduled_run` and `feasibility_check` frames of the retired cloud scheduler
+are ignored.
+
+**Replaced instance.** When `connect` is refused with 409 `agent_connection_already_active`,
+another instance holds the owner's session. The agent then goes on cron standby (persisted in
+`SELLERCLAW_DATA_DIR/cron_standby.json` and in the plugin's state file): the mirrored jobs are
+disabled, and nothing cron-related is posted any more — no snapshot, no runs, no command results,
+no restore — so two machines never run the same task and the replaced one never overwrites the real
+state. The next accepted ping lifts standby; the jobs standby disabled (and only those) are enabled
+again and reporting resumes. A merely invalidated session (`agent_session_invalidated`) that
+reconnects is not standby.
+
+The bundle sets `cron.skipMissedJobs: true`: a recurring slot missed while the machine was off is
+skipped, not caught up at boot.
+
 ### Command lifecycle (server view)
 
 ```text
@@ -222,8 +277,9 @@ Any transport error (timeout, 5xx, DNS) is treated as transient: the agent logs 
 
 ## Protocol version
 
-Every ping carries `protocol_version` — the agent's own constant, not the value saved with the edge session at connect (a session saved by an older agent survives an upgrade on a persistent `/data`). The current agent version is **6**:
+Every ping carries `protocol_version` — the agent's own constant, not the value saved with the edge session at connect (a session saved by an older agent survives an upgrade on a persistent `/data`). The current agent version is **7**:
 
+- **7** — OpenClaw's native cron is the only scheduler: the agent reports its cron store (`/agent/cron/state`, `/agent/cron/runs`), restores the jobs the cloud hands back, executes `cron_command` frames and answers them on `/agent/cron/commands/{request_id}`, and goes on cron standby when another instance holds the session (see [Recurring tasks](#recurring-tasks-openclaw-cron-protocol-v7)). It no longer understands `scheduled_run` / `feasibility_check` and no longer sends `/agent/cron/snapshot`. The cloud offers its scheduled-task actions only to agents at `>= 7`.
 - **6** — understands a `send` hook envelope: `{"endpoint": "send", "hookId", "body": {channel, to, message, agentId?, idempotencyKey}}` goes to the gateway's `send` RPC — the text is delivered to the messenger as written, with no agent turn, and mirrored into the agent's conversation with that chat — and is reported back like any named hook. The cloud sends its notifications to WhatsApp only to agents at `>= 6` (an older agent would turn them into a model run that answers nothing).
 - **5** — understands `whatsapp_link` / `whatsapp_logout` and sends `whatsapp` in the ping (the cloud gates WhatsApp linking on `>= 5`).
 - **4** — understands a hook envelope (forwards a named `/hooks/agent` hook and reports back on it).

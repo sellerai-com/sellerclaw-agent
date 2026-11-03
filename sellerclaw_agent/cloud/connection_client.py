@@ -13,6 +13,7 @@ from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.exceptions import (
     CloudAgentSuspendedError,
     CloudAuthError,
+    CloudConnectionAlreadyActiveError,
     CloudConnectionError,
     CloudSessionInvalidatedError,
     agent_api_error_code,
@@ -187,31 +188,37 @@ class SellerClawConnectionClient:
             raise CloudConnectionError(self._detail_message(payload))
         return False
 
-    async def report_cron_jobs(self, snapshot: dict[str, Any]) -> bool:
-        """POST the current OpenClaw cron-jobs snapshot; return True if accepted (204)."""
+    async def _post_cron_json(self, path: str, body: dict[str, Any]) -> bool:
+        """POST a cron report; True when accepted, False when this cloud has no such endpoint.
+
+        An older cloud (before agent protocol 7) answers 404 / 405 / 501: the caller drops the
+        report quietly instead of treating it as a failure.
+        """
         response = await self._request_raw(
             "POST",
-            "/agent/cron/snapshot",
-            body=json.dumps(snapshot).encode("utf-8"),
+            path,
+            body=json.dumps(body).encode("utf-8"),
             content_type="application/json",
         )
-        if response.status_code == 401:
-            try:
-                payload = response.json() if response.content else {}
-            except ValueError:
-                payload = {}
-            raise CloudAuthError(self._detail_message(payload), status_code=401)
+        if response.status_code in (404, 405, 501):
+            return False
         if response.status_code >= 500:
             raise CloudConnectionError(f"SellerClaw server error: HTTP {response.status_code}")
-        if response.status_code == 204:
-            return True
         if response.status_code >= 400:
             try:
                 payload = response.json()
             except ValueError:
                 payload = {}
             raise CloudConnectionError(self._detail_message(payload))
-        return False
+        return True
+
+    async def post_cron_command_result(self, *, request_id: str, result: dict[str, Any]) -> bool:
+        """Report the outcome of one ``cron_command`` (``POST /agent/cron/commands/{request_id}``)."""
+        return await self._post_cron_json(f"/agent/cron/commands/{request_id}", result)
+
+    async def post_cron_runs(self, runs: list[dict[str, Any]]) -> bool:
+        """Report finished cron runs (``POST /agent/cron/runs``); the cloud merges repeats."""
+        return await self._post_cron_json("/agent/cron/runs", {"runs": runs})
 
     async def download_state_backup(self) -> bytes | None:
         """Download latest backup or None if 404."""
@@ -320,6 +327,8 @@ class SellerClawConnectionClient:
         )
         if status == 401:
             raise CloudAuthError(self._detail_message(data), status_code=401)
+        if status >= 400 and agent_api_error_code(data) == "agent_connection_already_active":
+            raise CloudConnectionAlreadyActiveError(self._detail_message(data))
         if status >= 400:
             raise CloudConnectionError(self._detail_message(data))
         if not isinstance(data, dict):

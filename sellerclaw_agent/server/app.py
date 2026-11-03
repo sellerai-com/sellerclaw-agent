@@ -34,7 +34,7 @@ from sellerclaw_agent.cloud.supervisor_manager import (
 from sellerclaw_agent.server.command_history import CommandHistoryStorage
 from sellerclaw_agent.server.deps import require_local_api_key
 from sellerclaw_agent.server.local_api_key import get_local_api_key
-from sellerclaw_agent.server import media_upload
+from sellerclaw_agent.server import cron_routes, media_upload
 from sellerclaw_agent.server.secrets_store import get_secrets
 from sellerclaw_agent.server.schemas import (
     AuthStatusResponse,
@@ -102,7 +102,6 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     supervisor_executor: ThreadPoolExecutor | None = None
     if _edge_ping_enabled():
         from sellerclaw_agent.cloud.chat_listener import run_edge_chat_sse_loop
-        from sellerclaw_agent.cloud.cron_reporter import run_cron_reporter_loop
         from sellerclaw_agent.cloud.hooks_listener import run_edge_hooks_sse_loop
         from sellerclaw_agent.cloud.unified_listener import run_edge_unified_sse_loop
         from sellerclaw_agent.server.edge_commands import (
@@ -175,14 +174,6 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
                     registry=registry,
                 ),
             )
-        background_holders.append(
-            start_watched_background(
-                lambda: run_cron_reporter_loop(stop, registry=registry),
-                name="cron_reporter",
-                stop=stop,
-                registry=registry,
-            ),
-        )
         from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
         from sellerclaw_agent.cloud.state_backup import default_openclaw_state_dir
         from sellerclaw_agent.cloud.whatsapp_channel import get_whatsapp_status_monitor
@@ -610,3 +601,4 @@ def download_bundle_archive(
 
 app.include_router(control_plane)
 app.include_router(media_upload.router)
+app.include_router(cron_routes.router)
