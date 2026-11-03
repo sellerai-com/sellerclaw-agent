@@ -51,7 +51,9 @@ ALLOWED_PATH_PREFIXES: tuple[str, ...] = (
 # a format, the stale copy here dropped it — agent-generated videos never reached a chat because
 # of exactly that. So the proxy no longer decides what a file may be. It enforces only what the
 # cloud cannot see: which directories a file may be read from, and how big it may be.
-MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
+# Moves with the cloud's FILE_STORAGE_MAX_SIZE_BYTES (100 MiB since 03.11.2026: a minute of a
+# seller's phone video, for dubbing).
+MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024
 
 _UPLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
 
