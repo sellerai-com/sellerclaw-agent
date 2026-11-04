@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 from sellerclaw_agent.cloud.cron_standby import CronStandby
 from sellerclaw_agent.cloud.exceptions import (
+    CloudAuthError,
     CloudConnectionAlreadyActiveError,
     CloudSessionInvalidatedError,
 )
@@ -113,6 +114,26 @@ async def test_a_refused_connect_puts_cron_on_standby(monkeypatch: pytest.Monkey
     assert standby.is_standby() is True
     assert plugin.requested == [True]
     client.ping.assert_not_awaited()
+
+
+async def test_a_revoked_token_puts_cron_on_standby(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A machine replaced on a redeploy is refused its token, not told it was replaced."""
+    plugin = _FakeStandbyPlugin()
+    standby = CronStandby(tmp_path, plugin_factory=lambda: plugin)
+    client = MagicMock()
+    client.connect = AsyncMock(side_effect=CloudAuthError("Invalid agent token.", status_code=401))
+
+    await _run_loop(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        client=client,
+        session=None,
+        openclaw_status="running",
+        standby=standby,
+    )
+
+    assert standby.is_standby() is True
+    assert plugin.requested == [True]
 
 
 async def test_standby_waits_for_a_running_openclaw(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

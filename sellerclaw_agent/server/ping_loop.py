@@ -247,6 +247,10 @@ async def run_edge_ping_loop(
             if getattr(exc, "status_code", None) == 401:
                 session_storage.clear()
                 creds_storage.clear()
+                # A revoked token (this machine was replaced on a redeploy): its cron jobs stop
+                # here, before they run beside the new machine's until this one is destroyed.
+                standby.request_standby()
+                await _reconcile_cron_standby(standby, openclaw_status)
                 if resolve_agent_bearer_token(creds_storage) is not None:
                     # File cleared but AGENT_API_KEY env still resolves a token; we
                     # can't self-recover. Operator must rotate the env value.

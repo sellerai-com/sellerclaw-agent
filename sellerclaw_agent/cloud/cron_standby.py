@@ -7,12 +7,17 @@ the cloud restores the owner's jobs onto every fresh store. So the refused insta
 standby: the ``sellerclaw-ui`` plugin disables the jobs the cloud mirrors and stops posting
 anything cron-related (snapshot, runs, restore) — two instances with different store epochs
 posting in turn would make the cloud restore every job onto both and overwrite the real enabled
-state with the replaced one's. A successful ping means this instance holds the session again; the
-plugin then re-enables exactly the jobs standby disabled and resumes.
+state with the replaced one's. A revoked agent token (401) means the same: this machine will never
+act for the owner again.
 
-The wish is persisted (``cron_standby.json`` in the data dir) so a restarted agent server keeps
-it; the plugin persists its own side next to the cron store. ``reconcile`` delivers the wish
-whenever it is not known to have landed, at least once per agent-server process.
+A successful ping means this instance holds the session; "active" is said on every one of them.
+The plugin reports nothing until it hears it in its own process (a laptop waking up after another
+instance took over learns that only a ping later), and a restarted OpenClaw hears it again within
+a ping. Coming back from standby, the plugin drops the jobs it mirrors and the cloud hands back
+the owner's current set.
+
+The standby wish is persisted (``cron_standby.json`` in the data dir) so a restarted agent server
+keeps it; the plugin persists its own side next to the cron store.
 """
 
 from __future__ import annotations
@@ -89,9 +94,13 @@ class CronStandby:
         _log.warning("cron_standby_released")
 
     async def reconcile(self) -> bool:
-        """Bring the plugin to the desired state; True once it confirmed. Never raises."""
+        """Bring the plugin to the desired state; True once it confirmed. Never raises.
+
+        Standby is sent until the plugin confirmed it; "active" on every call — it is the plugin's
+        go-ahead to report, and an OpenClaw restarted meanwhile has forgotten it.
+        """
         desired = self.is_standby()
-        if self._acked == desired:
+        if desired and self._acked is True:
             return True
         try:
             plugin = self._plugin_factory()

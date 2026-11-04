@@ -73,8 +73,9 @@ export function registerCronCommandRoute(api: OpenClawPluginApi): void {
 }
 
 /**
- * `POST …/cron/standby` — body `{standby: boolean}`. 200 once the state holds (jobs disabled, or
- * re-enabled and reporting resumed), 503 while it does not yet — the agent server retries.
+ * `POST …/cron/standby` — body `{standby: boolean}`. 200 once the state holds (jobs disabled; or
+ * this instance confirmed active — after a standby its jobs dropped for the cloud to hand back),
+ * 503 while it does not yet — the agent server retries.
  */
 export function registerCronStandbyRoute(api: OpenClawPluginApi): void {
   api.registerHttpRoute({

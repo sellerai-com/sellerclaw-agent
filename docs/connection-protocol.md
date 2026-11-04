@@ -186,19 +186,29 @@ Cloud → agent: the SSE frame `event: cron_command` on `/agent/stream` (or the 
 `{"request_id", "user_id", "action": "add"|"update"|"remove"|"run", "job_id", "job", "patch"}`.
 The agent runs each frame as its own task (the stream never waits), one at a time, drops a
 repeated `request_id`, and executes it through the plugin: `add` → `cron.add(job)`, `update` →
-`cron.update(job_id, patch)`, `remove` → `cron.remove(job_id)` (an unknown id is a success), `run`
-→ a forced run (`enqueueRun(job_id, "force")`). `job` in the answer is the job as stored after
+`cron.update(job_id, patch)`, `remove` → `cron.remove(job_id)` (an unknown id is a success). `run`
+is a forced run over the gateway's own `cron.run` RPC (`mode: "force"`), sent by the agent server:
+a run started through the plugin service's scheduler handle dies at once in OpenClaw 2026.10.9.
+None of them touches a system job (`heartbeat:` / `memory-core:` keys). `job` in the answer is the job as stored after
 `add` / `update`. The `scheduled_run` and `feasibility_check` frames of the retired cloud scheduler
 are ignored.
 
 **Replaced instance.** When `connect` is refused with 409 `agent_connection_already_active`,
-another instance holds the owner's session. The agent then goes on cron standby (persisted in
+another instance holds the owner's session; a 401 on the agent token (a machine replaced on a
+redeploy) means the same. The agent then goes on cron standby (persisted in
 `SELLERCLAW_DATA_DIR/cron_standby.json` and in the plugin's state file): the mirrored jobs are
 disabled, and nothing cron-related is posted any more — no snapshot, no runs, no command results,
 no restore — so two machines never run the same task and the replaced one never overwrites the real
-state. The next accepted ping lifts standby; the jobs standby disabled (and only those) are enabled
-again and reporting resumes. A merely invalidated session (`agent_session_invalidated`) that
-reconnects is not standby.
+state. The next accepted ping lifts standby by starting over: the plugin drops every job it mirrors
+and takes a new store epoch, so the cloud hands back the owner's current set — tasks deleted or
+changed on the other instance meanwhile stay that way. A merely invalidated session
+(`agent_session_invalidated`) that reconnects is not standby.
+
+**Active confirmation.** The agent server confirms on every accepted ping that this instance holds
+the session (the plugin's standby route with `standby: false`). Until the plugin has heard it in its
+own process it posts nothing cron-related: an instance waking up after another one took over learns
+that only a ping later. Runs that finished meanwhile reach the cloud through the run backfill after
+the first snapshot.
 
 The bundle sets `cron.skipMissedJobs: true`: a recurring slot missed while the machine was off is
 skipped, not caught up at boot.

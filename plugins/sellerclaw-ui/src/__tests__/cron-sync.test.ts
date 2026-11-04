@@ -58,14 +58,24 @@ class FakeScheduler {
   adds: Array<{ input: Record<string, unknown>; at: number }> = [];
   updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
   removes: string[] = [];
-  runs: Array<{ id: string; mode: string }> = [];
-  runResult: unknown = { ok: true, enqueued: true, runId: "manual:j1:1" };
   failUpdateFor = new Set<string>();
+  failRemoveFor = new Set<string>();
+  /** Removed, then a side step fails — as OpenClaw's session cleanup does without operator.admin. */
+  removeThenFailFor = new Set<string>();
+  /** This one `list` call throws (1 = the first call after `resetListCalls`). */
+  failListOnCall: number | null = null;
+  private listCalls = 0;
 
   constructor(private readonly sqlitePath: string) {}
 
   async list(): Promise<unknown[]> {
+    this.listCalls += 1;
+    if (this.listCalls === this.failListOnCall) throw new Error("store swapped");
     return this.jobs;
+  }
+
+  resetListCalls(): void {
+    this.listCalls = 0;
   }
 
   async status(): Promise<unknown> {
@@ -89,16 +99,16 @@ class FakeScheduler {
   }
 
   async remove(id: string): Promise<unknown> {
+    if (this.failRemoveFor.has(id)) throw new Error("store busy");
     this.removes.push(id);
     const before = this.jobs.length;
     this.jobs = this.jobs.filter((j) => j.id !== id);
+    if (this.removeThenFailFor.has(id)) {
+      throw new Error(`Cron job ${id} was removed, but session cleanup failed: missing scope: operator.admin`);
+    }
     return { ok: true, removed: this.jobs.length !== before };
   }
 
-  async enqueueRun(id: string, mode: string): Promise<unknown> {
-    this.runs.push({ id, mode });
-    return this.runResult;
-  }
 }
 
 type Handler = (event: unknown, ctx?: unknown) => unknown;
@@ -138,7 +148,7 @@ async function reconcile(enabled = true, abortSignal?: AbortSignal): Promise<voi
   await __drainCronSync();
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   __resetCronSyncState();
   dir = mkdtempSync(join(tmpdir(), "cron-sync-"));
   // Paths resolved without a scheduler fall back to OPENCLAW_STATE_DIR: never the real home.
@@ -159,6 +169,8 @@ beforeEach(() => {
   const a = api();
   registerCronSyncHooks(a);
   registerCronSyncService(a);
+  // Every accepted ping of the agent server confirms this process holds the owner's session.
+  await leaveCronStandby();
 });
 
 afterEach(async () => {
@@ -240,6 +252,12 @@ describe("snapshot projection", () => {
       join(dir, "state", "sellerclaw-cron-sync.json"),
       JSON.stringify({ storeEpoch: "epoch-a", lastSeq: Date.now() + 60_000, pendingRemovedIds: [], standby: null }),
     );
+    // The gateway restarts: the plugin reads the file afresh and is confirmed by the next ping.
+    __resetCronSyncState();
+    const a = api();
+    registerCronSyncHooks(a);
+    registerCronSyncService(a);
+    await leaveCronStandby();
     await reconcile();
     const [snapshot] = calls("/agent/cron/state");
     expect(snapshot?.store_epoch).toBe("epoch-a");
@@ -407,7 +425,7 @@ describe("runs", () => {
 });
 
 describe("standby", () => {
-  it("disables the mirrored jobs, stops reporting and restores exactly those on leave", async () => {
+  it("disables the mirrored jobs, stops reporting, and on leave takes the cloud's current set", async () => {
     scheduler.jobs = [
       makeJob({ id: "ours", declarationKey: "sellerclaw:job:1" }),
       makeJob({ id: "legacy" }),
@@ -415,6 +433,7 @@ describe("standby", () => {
       makeJob({ id: "dream", declarationKey: "memory-core:x" }),
     ];
     await reconcile();
+    const epochBefore = stateFile().storeEpoch;
     const postedBefore = calls("/agent/cron/state").length;
     const backfillsBefore = calls("/internal/openclaw/cron/backfill-runs").length;
 
@@ -438,38 +457,93 @@ describe("standby", () => {
     expect(calls("/agent/cron/runs")).toEqual([]);
     expect(calls("/internal/openclaw/cron/backfill-runs")).toHaveLength(backfillsBefore);
     expect(scheduler.adds).toEqual([]);
-    const refused = await executeCronCommand({ request_id: "r1", action: "run", job_id: "ours" });
+    const refused = await executeCronCommand({ request_id: "r1", action: "remove", job_id: "ours" });
     expect(refused.ok).toBe(false);
     expect(refused.error).toMatch(/replaced/);
-    expect(scheduler.runs).toEqual([]);
+    expect(scheduler.removes).toEqual([]);
 
+    // Meanwhile the owner deleted task 1 on the other instance; the cloud hands back task 2 only.
+    cloudResponses.push({
+      status: 200,
+      body: {
+        accepted: true,
+        restore: [{ name: "Paused task", enabled: false, declarationKey: "sellerclaw:job:2", schedule: { kind: "cron", expr: "0 8 * * *" } }],
+      },
+    });
     const left = await leaveCronStandby();
+    for (const id of left.jobIds) handlers.get("cron_changed")?.({ action: "removed", jobId: id }, {});
     await __drainCronSync();
-    expect(left).toEqual({ ok: true, standby: false, jobIds: ["ours", "legacy"], error: null });
-    expect(scheduler.jobs.map((j) => [j.id, j.enabled])).toEqual([
-      ["ours", true],
-      ["legacy", true],
-      ["paused", false],
-      ["dream", true],
+
+    expect(left).toEqual({ ok: true, standby: false, jobIds: ["ours", "legacy", "paused"], error: null });
+    expect(scheduler.removes).toEqual(["ours", "legacy", "paused"]);
+    expect(scheduler.adds.map((a) => a.input.declarationKey)).toEqual(["sellerclaw:job:2"]);
+    expect(scheduler.jobs.map((j) => [j.declarationKey ?? null, j.enabled])).toEqual([
+      ["memory-core:x", true],
+      ["sellerclaw:job:2", false],
     ]);
     expect(stateFile().standby).toBeNull();
-    expect(calls("/agent/cron/state").length).toBeGreaterThan(postedBefore);
+    // A new store: the cloud restores rather than taking the dropped jobs for deletions.
+    expect(stateFile().storeEpoch).not.toBe(epochBefore);
+    const resumed = calls("/agent/cron/state").slice(postedBefore);
+    expect(resumed.length).toBeGreaterThan(0);
+    expect(resumed.every((body) => (body.removed_job_ids as string[]).length === 0)).toBe(true);
+    expect(resumed[0].store_epoch).toBe(stateFile().storeEpoch);
   });
 
-  it("stays on standby until every job it disabled is back on", async () => {
+  it("stays on standby until every mirrored job is dropped", async () => {
     scheduler.jobs = [makeJob({ id: "a" }), makeJob({ id: "b" })];
     await reconcile();
     await enterCronStandby();
-    scheduler.failUpdateFor.add("b");
+    scheduler.failRemoveFor.add("b");
     const left = await leaveCronStandby();
-    expect(left).toMatchObject({ ok: false, standby: true, jobIds: ["b"] });
-    expect(stateFile().standby).toMatchObject({ disabledJobIds: ["b"] });
-    scheduler.failUpdateFor.clear();
+    expect(left).toMatchObject({ ok: false, standby: true, jobIds: ["a"] });
+    expect(stateFile().standby).not.toBeNull();
+    scheduler.failRemoveFor.clear();
     expect(await leaveCronStandby()).toMatchObject({ ok: true, standby: false, jobIds: ["b"] });
+  });
+
+  it("leaves standby in one go when a dropped job's session cleanup fails", async () => {
+    scheduler.jobs = [makeJob({ id: "ran-before" }), makeJob({ id: "never-ran" })];
+    await reconcile();
+    await enterCronStandby();
+    // A job that has run sessions: OpenClaw drops it, then fails to clean them up.
+    scheduler.removeThenFailFor.add("ran-before");
+    const left = await leaveCronStandby();
+    expect(left).toEqual({ ok: true, standby: false, jobIds: ["ran-before", "never-ran"], error: null });
+    expect(scheduler.jobs.filter((j) => isMirroredJob(j))).toEqual([]);
+    expect(stateFile().standby).toBeNull();
   });
 
   it("is a no-op to leave a standby never entered", async () => {
     expect(await leaveCronStandby()).toEqual({ ok: true, standby: false, jobIds: [], error: null });
+    expect(scheduler.removes).toEqual([]);
+  });
+});
+
+describe("before the agent server confirms this instance", () => {
+  beforeEach(() => {
+    // A freshly started gateway: nothing confirmed yet (as on a laptop just woken up).
+    __resetCronSyncState();
+    const a = api();
+    registerCronSyncHooks(a);
+    registerCronSyncService(a);
+  });
+
+  it("reports neither jobs nor runs, and catches up once confirmed", async () => {
+    scheduler.jobs = [makeJob({ id: "j1", declarationKey: "sellerclaw:job:1" })];
+    await reconcile();
+    handlers.get("cron_changed")?.({ action: "finished", jobId: "j1", runAtMs: 9, status: "ok" }, {});
+    await __drainCronSync();
+    expect(calls("/agent/cron/state")).toEqual([]);
+    expect(calls("/agent/cron/runs")).toEqual([]);
+    expect(calls("/internal/openclaw/cron/backfill-runs")).toEqual([]);
+
+    await leaveCronStandby();
+    await __drainCronSync();
+
+    expect(calls("/agent/cron/state")).toHaveLength(1);
+    // The run that finished meanwhile reaches the cloud through the history backfill.
+    expect(calls("/internal/openclaw/cron/backfill-runs")).toHaveLength(1);
   });
 });
 
@@ -493,6 +567,33 @@ describe("executeCronCommand", () => {
     expect(result).toMatchObject({ ok: true, job: { id: "j1", enabled: false } });
   });
 
+  it("answers ok for an applied update even when the job cannot be read back", async () => {
+    scheduler.resetListCalls();
+    scheduler.failListOnCall = 2; // the target check reads fine, the read-back fails
+    const result = await executeCronCommand({ request_id: "r", action: "update", job_id: "j1", patch: { enabled: false } });
+    expect(scheduler.updates).toEqual([{ id: "j1", patch: { enabled: false } }]);
+    expect(result).toMatchObject({ ok: true, error: null, job: null });
+  });
+
+  it.each([
+    ["update", { patch: { enabled: false } }],
+    ["remove", {}],
+  ])("refuses to %s a system job", async (action, extra) => {
+    scheduler.jobs.push(makeJob({ id: "dream", declarationKey: "memory-core:memory-dreaming-promotion" }));
+    const result = await executeCronCommand({ request_id: "r", action, job_id: "dream", ...extra });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/not a scheduled task/) });
+    expect([scheduler.updates, scheduler.removes]).toEqual([[], []]);
+  });
+
+  it.each([
+    ["a foreign key", { declarationKey: "memory-core:memory-dreaming-promotion" }],
+    ["no key", {}],
+  ])("refuses to add a job with %s", async (_name, key) => {
+    const result = await executeCronCommand({ request_id: "r", action: "add", job: { name: "X", ...key } });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/declarationKey starting with sellerclaw:job:/) });
+    expect(scheduler.adds).toEqual([]);
+  });
+
   it("reports an update of an unknown job as a failure", async () => {
     const result = await executeCronCommand({ request_id: "r", action: "update", job_id: "nope", patch: { enabled: true } });
     expect(result).toMatchObject({ ok: false, error: "unknown cron job id: nope", job: null });
@@ -507,16 +608,79 @@ describe("executeCronCommand", () => {
     expect(scheduler.removes).toEqual([id]);
   });
 
-  it("starts a forced run and returns its id", async () => {
-    const result = await executeCronCommand({ request_id: "r", action: "run", job_id: "j1" });
-    expect(scheduler.runs).toEqual([{ id: "j1", mode: "force" }]);
-    expect(result).toMatchObject({ ok: true, run_id: "manual:j1:1" });
+  it("reports a job that went despite a cleanup error as removed", async () => {
+    scheduler.removeThenFailFor.add("j1");
+    const result = await executeCronCommand({ request_id: "r", action: "remove", job_id: "j1" });
+    expect(result).toMatchObject({ ok: true, error: null });
+    expect(scheduler.jobs.map((j) => j.id)).not.toContain("j1");
   });
 
-  it("reports a run that did not start", async () => {
-    scheduler.runResult = { ok: true, ran: false, reason: "already-running" };
-    const result = await executeCronCommand({ request_id: "r", action: "run", job_id: "j1" });
-    expect(result).toMatchObject({ ok: false, error: "The job did not start: already-running.", run_id: null });
+  it("reports a remove that left the job in place as a failure", async () => {
+    scheduler.failRemoveFor.add("j1");
+    const result = await executeCronCommand({ request_id: "r", action: "remove", job_id: "j1" });
+    expect(result).toMatchObject({ ok: false, error: "store busy" });
+    expect(scheduler.jobs.map((j) => j.id)).toContain("j1");
+  });
+
+  it("removes from the service's background scheduler, outside the request", async () => {
+    __resetCronSyncState();
+    const scheduled: string[] = [];
+    let dispatching = false;
+    const seenInside: boolean[] = [];
+    const remove = scheduler.remove.bind(scheduler);
+    scheduler.remove = async (id: string) => {
+      seenInside.push(dispatching);
+      return await remove(id);
+    };
+    registerCronSyncService({
+      config: CONFIG,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      registerService: (service: { start: (ctx: unknown) => void }) =>
+        service.start({
+          getCron: () => scheduler,
+          scheduler: {
+            schedule: ({ id, run }: { id: string; run: () => Promise<unknown> }) => {
+              scheduled.push(id);
+              setTimeout(() => {
+                dispatching = true;
+                const work = run();
+                dispatching = false;
+                void work;
+              }, 0);
+            },
+          },
+        }),
+    } as unknown as OpenClawPluginApi);
+
+    const result = await executeCronCommand({ request_id: "r", action: "remove", job_id: "j1" });
+
+    expect(result).toMatchObject({ ok: true, error: null });
+    expect(scheduler.removes).toEqual(["j1"]);
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]).toMatch(/^cron-command:/);
+    expect(seenInside).toEqual([true]);
+  });
+
+  it("reports a closed service scheduler as a failed remove", async () => {
+    __resetCronSyncState();
+    registerCronSyncService({
+      config: CONFIG,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      registerService: (service: { start: (ctx: unknown) => void }) =>
+        service.start({
+          getCron: () => scheduler,
+          scheduler: {
+            schedule: () => {
+              throw new Error("Plugin service scheduler is closed");
+            },
+          },
+        }),
+    } as unknown as OpenClawPluginApi);
+
+    const result = await executeCronCommand({ request_id: "r", action: "remove", job_id: "j1" });
+
+    expect(result).toMatchObject({ ok: false, error: "Plugin service scheduler is closed" });
+    expect(scheduler.removes).toEqual([]);
   });
 
   it.each([
@@ -524,6 +688,7 @@ describe("executeCronCommand", () => {
     ["update without patch", { action: "update", job_id: "j1" }, "update needs job_id and patch"],
     ["remove without id", { action: "remove" }, "remove needs job_id"],
     ["unknown action", { action: "explode" }, "unknown action: explode"],
+    ["a run (the agent server starts it over RPC)", { action: "run", job_id: "j1" }, "unknown action: run"],
   ])("refuses %s", async (_name, frame, error) => {
     expect(await executeCronCommand({ request_id: "r", ...frame })).toMatchObject({ ok: false, error });
   });
@@ -538,7 +703,7 @@ describe("executeCronCommand", () => {
         registerService: (service: { start: (ctx: unknown) => void }) =>
           service.start({ getCron: () => scheduler, stateDir: serviceDir }),
       } as unknown as OpenClawPluginApi);
-      const result = await executeCronCommand({ request_id: "r", action: "run", job_id: "j1" });
+      const result = await executeCronCommand({ request_id: "r", action: "remove", job_id: "j1" });
       const file = JSON.parse(readFileSync(join(serviceDir, "state", "sellerclaw-cron-sync.json"), "utf-8"));
       expect(result.store_epoch).toBe(file.storeEpoch);
     } finally {
@@ -548,7 +713,7 @@ describe("executeCronCommand", () => {
 
   it("refuses while the service has no scheduler handle", async () => {
     __resetCronSyncState();
-    const result = await executeCronCommand({ request_id: "r", action: "run", job_id: "j1" });
+    const result = await executeCronCommand({ request_id: "r", action: "remove", job_id: "j1" });
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/not ready/);
   });

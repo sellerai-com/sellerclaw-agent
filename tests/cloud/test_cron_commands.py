@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 import pytest
+from openclaw_diagnostics.gateway import GatewayError, GatewayUnreachableError
 
 from sellerclaw_agent.cloud.cron_commands import CronCommandDispatcher, command_result
 from sellerclaw_agent.cloud.cron_standby import CronStandby
@@ -46,6 +47,44 @@ class _FakePlugin:
         return self.answer
 
 
+_A_MIRRORED_JOB: dict[str, Any] = {"id": "job-1", "declarationKey": "sellerclaw:job:1"}
+
+
+class _FakeRunGateway:
+    """The gateway RPC for "Run now": ``cron.get`` answers from a script, ``cron.run`` records calls."""
+
+    def __init__(
+        self,
+        *,
+        job: dict[str, Any] | Exception | None = _A_MIRRORED_JOB,
+        outcome: dict[str, Any] | None = None,
+        unreachable: bool = False,
+    ) -> None:
+        self.job = job
+        self.outcome = outcome if outcome is not None else {"ok": True, "enqueued": True, "runId": "manual:job-1:1"}
+        self.unreachable = unreachable
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def factory(self) -> _FakeRunGateway:
+        return self
+
+    async def __aenter__(self) -> _FakeRunGateway:
+        if self.unreachable:
+            raise GatewayUnreachableError("gateway unreachable at ws://127.0.0.1:7789")
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def call(self, method: str, params: dict[str, Any] | None = None, *, timeout: float | None = None) -> Any:
+        self.calls.append((method, params or {}))
+        if method == "cron.get":
+            if isinstance(self.job, Exception):
+                raise self.job
+            return self.job
+        return self.outcome
+
+
 class _FakeCloud:
     def __init__(self, *, accepted: bool = True, error: Exception | None = None) -> None:
         self.accepted = accepted
@@ -78,6 +117,7 @@ def _dispatcher(
     cloud: _FakeCloud,
     running: bool = True,
     standby: CronStandby | None = None,
+    gateway: _FakeRunGateway | None = None,
 ) -> CronCommandDispatcher:
     return CronCommandDispatcher(
         data_dir=tmp_path,
@@ -85,6 +125,7 @@ def _dispatcher(
         openclaw_gate=_gate(running, "running" if running else "stopped"),
         plugin_factory=lambda: plugin,
         cloud_factory=lambda: cloud,
+        run_gateway_factory=(gateway or _FakeRunGateway()).factory,
     )
 
 
@@ -231,7 +272,7 @@ async def test_commands_run_one_at_a_time_in_arrival_order(tmp_path: Path) -> No
     dispatcher = _dispatcher(tmp_path, plugin=plugin, cloud=cloud)
 
     dispatcher.submit(_frame(request_id="a", action="add", job={"name": "x"}, job_id=None, patch=None))
-    dispatcher.submit(_frame(request_id="b", action="run", job_id="job-1", patch=None))
+    dispatcher.submit(_frame(request_id="b", action="remove", job_id="job-1", patch=None))
     await asyncio.sleep(0.01)
     assert [f["request_id"] for f in plugin.frames] == ["a"], "the second waits for the first"
 
@@ -258,3 +299,80 @@ async def test_an_unreported_outcome_does_not_break_the_dispatcher(tmp_path: Pat
     await dispatcher.wait_idle()
 
     assert [f["request_id"] for f in plugin.frames] == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("gateway", "job_id", "result", "ran"),
+    [
+        pytest.param(
+            _FakeRunGateway(),
+            "job-1",
+            {"ok": True, "error": None, "store_epoch": None, "job": None, "run_id": "manual:job-1:1"},
+            True,
+            id="started",
+        ),
+        pytest.param(
+            _FakeRunGateway(job={"id": "job-1", "declarationKey": None}),
+            "job-1",
+            {"ok": True, "error": None, "store_epoch": None, "job": None, "run_id": "manual:job-1:1"},
+            True,
+            id="a-job-set-up-in-a-chat",
+        ),
+        pytest.param(
+            _FakeRunGateway(job={"id": "job-1", "declarationKey": "memory-core:memory-dreaming-promotion"}),
+            "job-1",
+            command_result(ok=False, error="That job is not a scheduled task (it belongs to the system); it was left alone."),
+            False,
+            id="system-job",
+        ),
+        pytest.param(
+            _FakeRunGateway(job=GatewayError("cron.get failed: INVALID_REQUEST: cron job not found: job-1")),
+            "job-1",
+            command_result(ok=False, error="This task is no longer on your assistant."),
+            False,
+            id="unknown-job",
+        ),
+        pytest.param(
+            _FakeRunGateway(job=None),
+            "job-1",
+            command_result(ok=False, error="This task is no longer on your assistant."),
+            False,
+            id="no-such-job-answered-empty",
+        ),
+        pytest.param(
+            _FakeRunGateway(job=GatewayError("cron.get timed out after 30s")),
+            "job-1",
+            command_result(ok=False, error="The job did not start: cron.get timed out after 30s"),
+            False,
+            id="lookup-timed-out-is-not-an-unknown-job",
+        ),
+        pytest.param(
+            _FakeRunGateway(outcome={"ok": True, "ran": False, "reason": "already-running"}),
+            "job-1",
+            command_result(ok=False, error="The job did not start: already-running."),
+            True,
+            id="not-started",
+        ),
+        pytest.param(
+            _FakeRunGateway(unreachable=True),
+            "job-1",
+            command_result(ok=False, error="The assistant is starting; try again in a minute."),
+            False,
+            id="gateway-starting",
+        ),
+        pytest.param(_FakeRunGateway(), None, command_result(ok=False, error="run needs job_id"), False, id="no-job-id"),
+    ],
+)
+async def test_run_now_goes_over_the_gateway_rpc_never_the_plugin(
+    tmp_path: Path, gateway: _FakeRunGateway, job_id: str | None, result: dict[str, Any], ran: bool
+) -> None:
+    plugin = _FakePlugin()
+    cloud = _FakeCloud()
+    dispatcher = _dispatcher(tmp_path, plugin=plugin, cloud=cloud, gateway=gateway)
+
+    dispatcher.submit(_frame(action="run", job_id=job_id, patch=None))
+    await dispatcher.wait_idle()
+
+    assert plugin.frames == []
+    assert cloud.results == [(REQUEST_ID, result)]
+    assert (("cron.run", {"id": "job-1", "mode": "force"}) in gateway.calls) is ran

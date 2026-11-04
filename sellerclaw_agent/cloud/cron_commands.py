@@ -3,9 +3,12 @@
 The cloud's scheduled-tasks page (pause / resume / edit / delete / run now, and Create in the
 wizard) sends one frame per action on the agent's event stream:
 ``{request_id, user_id, action: add|update|remove|run, job_id, job, patch}``. The
-``sellerclaw-ui`` plugin executes it through the gateway's scheduler (``cron-sync.ts``: the plugin
-service's ``ctx.getCron()`` normalizes input exactly like the ``cron.add`` RPC); this module hands
-the frame over and posts the outcome to ``POST /agent/cron/commands/{request_id}``.
+``sellerclaw-ui`` plugin executes add / update / remove through the gateway's scheduler
+(``cron-sync.ts``: the plugin service's ``ctx.getCron()`` normalizes input exactly like the
+``cron.add`` RPC). "Run now" goes over the gateway's own ``cron.run`` RPC instead: a run started
+through the plugin service's handle dies at once ("Async work scope is closed", OpenClaw
+2026.10.9), while the RPC — what ``openclaw cron run`` uses — runs it. This module posts the
+outcome to ``POST /agent/cron/commands/{request_id}``.
 
 Each frame runs as its own task, so the stream keeps flowing while a command waits on the
 gateway; commands still execute one at a time, in arrival order. A repeated ``request_id`` is
@@ -18,13 +21,16 @@ import asyncio
 from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
+from contextlib import AbstractAsyncContextManager
 from typing import Any, Final, Protocol
 
 import httpx
 import structlog
+from openclaw_diagnostics.gateway import GatewayConnection, GatewayError, GatewayUnreachableError
 
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.cron_runs_backfill import CronGateway, is_mirrored_job
 from sellerclaw_agent.cloud.cron_standby import CronStandby
 from sellerclaw_agent.cloud.edge_sse_common import OpenClawGate
 from sellerclaw_agent.cloud.exceptions import CloudAuthError, CloudConnectionError
@@ -37,6 +43,17 @@ _log = structlog.get_logger(__name__)
 _FRAME_FIELDS: Final[tuple[str, ...]] = ("request_id", "action", "job_id", "job", "patch")
 _ACTIONS: Final[frozenset[str]] = frozenset({"add", "update", "remove", "run"})
 _MAX_ERROR_CHARS: Final[int] = 2000
+#: ``cron.run`` is an admin method.
+CRON_RUN_SCOPES: Final[tuple[str, ...]] = ("operator.admin",)
+_RPC_TIMEOUT_S: Final[float] = 30.0
+FOREIGN_JOB_ERROR: Final[str] = "That job is not a scheduled task (it belongs to the system); it was left alone."
+UNKNOWN_JOB_ERROR: Final[str] = "This task is no longer on your assistant."
+
+RunGatewayFactory = Callable[[], AbstractAsyncContextManager[CronGateway]]
+
+
+def _default_run_gateway() -> AbstractAsyncContextManager[CronGateway]:
+    return GatewayConnection(scopes=CRON_RUN_SCOPES)
 
 
 class CronCommandPlugin(Protocol):
@@ -111,12 +128,14 @@ class CronCommandDispatcher:
         openclaw_gate: OpenClawGate | None = None,
         plugin_factory: Callable[[], CronCommandPlugin] | None = None,
         cloud_factory: Callable[[], CronCommandCloud] | None = None,
+        run_gateway_factory: RunGatewayFactory | None = None,
         remember: int = 1024,
     ) -> None:
         self._standby = standby
         self._gate = openclaw_gate
         self._plugin_factory = plugin_factory or _default_plugin_factory(data_dir)
         self._cloud_factory = cloud_factory or _default_cloud_factory(data_dir)
+        self._run_gateway_factory = run_gateway_factory or _default_run_gateway
         self._remember = remember
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._lock = asyncio.Lock()
@@ -161,6 +180,10 @@ class CronCommandDispatcher:
             running, status, _err = await self._gate()
             if not running:
                 return command_result(ok=False, error=f"The assistant is not running ({status}).")
+        if action == "run":
+            result = await self._run_now(str(payload.get("job_id") or "").strip())
+            _log.info("cron_command_done", request_id=request_id, action=action, ok=result["ok"], error=result["error"])
+            return result
         frame = {key: payload.get(key) for key in _FRAME_FIELDS}
         try:
             answer = await self._plugin_factory().post_cron_command_json(frame)
@@ -177,6 +200,35 @@ class CronCommandDispatcher:
         result = _result_from_plugin(answer)
         _log.info("cron_command_done", request_id=request_id, action=action, ok=result["ok"], error=result["error"])
         return result
+
+    async def _run_now(self, job_id: str) -> dict[str, Any]:
+        """Force one run of a job the cloud mirrors, over ``cron.run`` — never a system job."""
+        if not job_id:
+            return command_result(ok=False, error="run needs job_id")
+        try:
+            async with self._run_gateway_factory() as gateway:
+                try:
+                    job = await gateway.call("cron.get", {"id": job_id}, timeout=_RPC_TIMEOUT_S)
+                except GatewayError as exc:
+                    # Only the gateway's refusal means it has no such job; a timeout or a dropped
+                    # connection says nothing about the job and is reported as what it is.
+                    if not str(exc).startswith("cron.get failed:"):
+                        raise
+                    return command_result(ok=False, error=UNKNOWN_JOB_ERROR)
+                if job is None:
+                    return command_result(ok=False, error=UNKNOWN_JOB_ERROR)
+                if not is_mirrored_job(job):
+                    return command_result(ok=False, error=FOREIGN_JOB_ERROR)
+                outcome = await gateway.call("cron.run", {"id": job_id, "mode": "force"}, timeout=_RPC_TIMEOUT_S)
+        except GatewayUnreachableError:
+            return command_result(ok=False, error="The assistant is starting; try again in a minute.")
+        except GatewayError as exc:
+            return command_result(ok=False, error=f"The job did not start: {exc}")
+        if isinstance(outcome, dict) and outcome.get("ok") is True and outcome.get("enqueued") is True:
+            run_id = outcome.get("runId")
+            return command_result(ok=True, run_id=run_id if isinstance(run_id, str) and run_id else None)
+        reason = outcome.get("reason") or outcome.get("error") if isinstance(outcome, dict) else None
+        return command_result(ok=False, error=f"The job did not start{f': {reason}' if reason else ''}.")
 
     async def _report(self, request_id: str, result: dict[str, Any]) -> None:
         if self._standby.is_standby():

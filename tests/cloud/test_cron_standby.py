@@ -42,24 +42,24 @@ def test_standby_is_persisted_in_the_data_dir(tmp_path: Path) -> None:
     assert CronStandby(tmp_path, plugin_factory=_FakePlugin).is_standby() is False
 
 
-async def test_reconcile_delivers_each_wish_once(tmp_path: Path) -> None:
+async def test_standby_is_delivered_once_and_active_on_every_reconcile(tmp_path: Path) -> None:
     plugin = _FakePlugin()
     standby = CronStandby(tmp_path, plugin_factory=lambda: plugin)
 
-    # A fresh process does not know the plugin's state: it says "active" once.
+    # "Active" is the plugin's go-ahead to report, and a restarted OpenClaw has forgotten it.
     assert await standby.reconcile() is True
     assert await standby.reconcile() is True
-    assert plugin.requested == [False]
+    assert plugin.requested == [False, False]
 
     standby.request_standby()
     standby.request_standby()  # repeated refusals change nothing
     assert await standby.reconcile() is True
     assert await standby.reconcile() is True
-    assert plugin.requested == [False, True]
+    assert plugin.requested == [False, False, True]
 
     standby.request_active()
     assert await standby.reconcile() is True
-    assert plugin.requested == [False, True, False]
+    assert plugin.requested == [False, False, True, False]
 
 
 _REQUEST = httpx.Request("POST", "http://gw.test/api/channels/sellerclaw-ui/cron/standby")

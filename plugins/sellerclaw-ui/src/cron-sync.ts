@@ -30,16 +30,19 @@ import { getSharedState } from "./shared-state.js";
  * - A `finished` event is posted as a run (`POST /agent/cron/runs`); after each reconciliation the
  *   agent server backfills recent run history (the scheduler handle has no history read).
  *
- * Writes (restore, cloud commands, standby) go through the handle a plugin SERVICE gets from
- * `ctx.getCron()`: it normalizes input exactly like the gateway's `cron.add` RPC does
- * (`normalizeCronJobCreate` / `normalizeCronJobPatch`) and offers `enqueueRun`. The scheduler a
+ * Writes (restore, cloud commands add / update / remove, standby) go through the handle a plugin
+ * SERVICE gets from `ctx.getCron()`: it normalizes input exactly like the gateway's `cron.add` RPC
+ * does (`normalizeCronJobCreate` / `normalizeCronJobPatch`). "Run now" is not here — a run started
+ * through that handle dies at once, so the agent server sends it over `cron.run`. The scheduler a
  * hook gets is the raw one — it would store an un-normalized job (no `deleteAfterRun` on one-shot
  * jobs, no default stagger) — so it is only ever read here.
  *
  * Standby: when another agent instance took over this owner's session, the agent server puts this
  * plugin on standby. Nothing leaves the machine any more (no snapshot, no run, no restore), and
  * the jobs the cloud mirrors are disabled so two machines never run the same task. Leaving standby
- * re-enables exactly the jobs standby disabled.
+ * starts over: those jobs are dropped and the cloud hands back the owner's current set to a new
+ * store epoch. Nothing is reported either until the agent server confirms (on every accepted ping)
+ * that this process holds the session.
  *
  * All state lives in a process-wide slot (`shared-state.ts`): OpenClaw re-evaluates plugin modules
  * on every registry pass and replaces the hook registry each time, while `cron_reconciled` fires
@@ -136,7 +139,11 @@ export type CronWriter = {
   add(input: JsonRecord): Promise<unknown>;
   update(id: string, patch: JsonRecord): Promise<unknown>;
   remove(id: string): Promise<unknown>;
-  enqueueRun?: (id: string, mode: string) => Promise<unknown>;
+};
+
+/** The host scheduler a plugin service gets (`ctx.scheduler`, `PluginServiceSchedulerV1`). */
+type ServiceScheduler = {
+  schedule(params: { id: string; delayMs: number; run: () => Promise<unknown> }): unknown;
 };
 
 /** Persisted next to the cron store, so it shares the store's lifetime. */
@@ -160,6 +167,8 @@ type SyncState = {
   worker: Promise<void>;
   activeAttempt: AbortController | null;
   writerGetter: (() => CronWriter | undefined) | null;
+  /** Runs work in the service's own background context (see {@link inServiceBackground}). */
+  serviceScheduler: ServiceScheduler | null;
   stateDir: string | null;
   /** OpenClaw's own state dir as a plugin service sees it (`ctx.stateDir`). */
   serviceStateDir: string | null;
@@ -167,6 +176,14 @@ type SyncState = {
   fileChain: Promise<unknown>;
   mirroredIds: Set<string>;
   foreignIds: Set<string>;
+  /**
+   * The agent server confirmed this process holds the owner's session. Until then nothing
+   * cron-related leaves it: a laptop waking up after another instance took over learns that only
+   * a ping later, and must not report its stale jobs meanwhile.
+   */
+  confirmedActive: boolean;
+  /** Jobs this process removed itself when it came back from standby: not the owner's deletions. */
+  resetJobIds: Set<string>;
   restoreQueue: JsonRecord[];
   restoreKeys: Set<string>;
   restoreWorker: Promise<void> | null;
@@ -194,12 +211,15 @@ function createState(): SyncState {
     worker: Promise.resolve(),
     activeAttempt: null,
     writerGetter: null,
+    serviceScheduler: null,
     stateDir: null,
     serviceStateDir: null,
     file: null,
     fileChain: Promise.resolve(),
     mirroredIds: new Set(),
     foreignIds: new Set(),
+    confirmedActive: false,
+    resetJobIds: new Set(),
     restoreQueue: [],
     restoreKeys: new Set(),
     restoreWorker: null,
@@ -283,6 +303,37 @@ function currentAccount(): ScwUiAccount | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Run `work` from the service's background context, not the caller's.
+ *
+ * A command arrives on an HTTP route whose caller authority lacks `operator.admin`. Removing a job
+ * from there drops it, then fails to clean up its run sessions ("missing scope: operator.admin");
+ * the service scheduler dispatches outside any request — the way OpenClaw starts its own
+ * background work — and the cleanup goes through. ("Run now" is not here: a run started through
+ * the service handle dies at once, so the agent server sends it over the `cron.run` RPC.)
+ */
+function inServiceBackground<T>(work: () => Promise<T>): Promise<T> {
+  const scheduler = state().serviceScheduler;
+  if (!scheduler) return work();
+  return new Promise<T>((resolve, reject) => {
+    try {
+      scheduler.schedule({
+        id: `cron-command:${randomUUID()}`,
+        delayMs: 0,
+        run: async () => {
+          try {
+            resolve(await work());
+          } catch (err) {
+            reject(err);
+          }
+        },
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
 }
 
 function currentWriter(): CronWriter | null {
@@ -583,6 +634,7 @@ function rememberJobIds(jobs: unknown[]): JsonRecord[] {
 
 async function projectOnce(reader: CronReader, signal: AbortSignal): Promise<void> {
   const s = state();
+  if (!s.confirmedActive) return; // the confirmation projects again
   const file = await loadSyncFile();
   if (file.standby) return; // replaced by another instance: nothing leaves this machine
   if (!s.cronEnabled) {
@@ -745,6 +797,11 @@ export function runEntryFromEvent(event: JsonRecord): JsonRecord | null {
 function postRuns(entries: JsonRecord[]): Promise<void> {
   const s = state();
   const work = async (): Promise<void> => {
+    if (!s.confirmedActive) {
+      // Not known to be the active instance yet: the backfill after the first snapshot sends it.
+      s.needsRunBackfill = true;
+      return;
+    }
     for (let attempt = 0; attempt < RUN_POST_ATTEMPTS; attempt++) {
       const file = await loadSyncFile();
       if (file.standby) return;
@@ -811,7 +868,7 @@ async function triggerRunBackfill(account: ScwUiAccount): Promise<void> {
  * the agent server re-reads this job's latest runs and the cloud merges them into the same row.
  */
 async function completeFinishedRun(jobId: string): Promise<void> {
-  if (isStandby()) return;
+  if (isStandby() || !state().confirmedActive) return;
   const account = currentAccount();
   if (account) await requestRunBackfill(account, [jobId]);
 }
@@ -863,7 +920,7 @@ export function onCronChanged(event: unknown, ctx: HookCtx): void {
   }
   if (isRecord(event)) {
     const action = event.action;
-    if (action === "removed" && isMirroredEvent(event)) {
+    if (action === "removed" && isMirroredEvent(event) && !s.resetJobIds.has(asString(event.jobId))) {
       void noteRemovedJobId(asString(event.jobId)).catch((err: unknown) => {
         warn(`sellerclaw-ui[cron]: could not record a removed job: ${errorText(err)}`);
       });
@@ -925,7 +982,7 @@ export function registerCronSyncHooks(api: OpenClawPluginApi): void {
   });
 }
 
-type ServiceCtx = { getCron?: () => unknown; stateDir?: unknown } | undefined;
+type ServiceCtx = { getCron?: () => unknown; stateDir?: unknown; scheduler?: unknown } | undefined;
 
 /**
  * Register the plugin service whose `ctx.getCron()` is the normalized write handle (and the read
@@ -943,6 +1000,8 @@ export function registerCronSyncService(api: OpenClawPluginApi): void {
     start: (ctx: ServiceCtx) => {
       const s = state();
       s.serviceStateDir = asString(ctx?.stateDir) || null;
+      const scheduler = ctx?.scheduler as Partial<ServiceScheduler> | undefined;
+      s.serviceScheduler = typeof scheduler?.schedule === "function" ? (scheduler as ServiceScheduler) : null;
       const getCron = ctx?.getCron;
       s.writerGetter =
         typeof getCron === "function" ? () => (getCron.call(ctx) as CronWriter | undefined) : null;
@@ -973,6 +1032,7 @@ export function registerCronSyncService(api: OpenClawPluginApi): void {
     stop: () => {
       const s = state();
       s.writerGetter = null;
+      s.serviceScheduler = null;
       if (s.bootstrapTimer) {
         clearTimeout(s.bootstrapTimer);
         s.bootstrapTimer = null;
@@ -990,6 +1050,33 @@ export type CronCommandResult = {
   job: JsonRecord | null;
   run_id: string | null;
 };
+
+const FOREIGN_JOB_ERROR = "That job is not a scheduled task (it belongs to the system); it was left alone.";
+
+/** The job a command names, as the scheduler has it (`null` when it does not know the id). */
+async function commandTarget(writer: CronWriter, id: string): Promise<JsonRecord | null> {
+  const jobs = await writer.list({ includeDisabled: true });
+  const job = (Array.isArray(jobs) ? jobs : []).find((j) => isRecord(j) && j.id === id);
+  return isRecord(job) ? job : null;
+}
+
+/**
+ * Remove a job from the service's background context ({@link inServiceBackground}); `true` when it
+ * went. OpenClaw can drop the job and then fail on a side step (cleaning up its run sessions needs
+ * `operator.admin`): the job is gone, which is what was asked — not an error. A job still there
+ * after a failure is one.
+ */
+async function removeJob(writer: CronWriter, id: string): Promise<boolean> {
+  try {
+    const remove = writer.remove.bind(writer);
+    const outcome = await inServiceBackground(() => remove(id));
+    return isRecord(outcome) && outcome.removed === true;
+  } catch (err) {
+    if (await commandTarget(writer, id)) throw err;
+    warn(`sellerclaw-ui[cron]: job ${id} removed with a cleanup error: ${errorText(err)}`);
+    return true;
+  }
+}
 
 async function readBackJob(writer: CronWriter, id: string): Promise<JsonRecord | null> {
   const jobs = await writer.list({ includeDisabled: true });
@@ -1033,37 +1120,40 @@ export async function executeCronCommand(frame: JsonRecord): Promise<CronCommand
   try {
     if (action === "add") {
       if (!isRecord(frame.job)) return result({ error: "add needs job" });
+      // The key makes a repeated add a no-op — and a foreign key would overwrite a system job.
+      if (!asString(frame.job.declarationKey).startsWith(SELLERCLAW_DECLARATION_PREFIX)) {
+        return result({ error: `add needs a declarationKey starting with ${SELLERCLAW_DECLARATION_PREFIX}` });
+      }
       const job = addedJob(await writer.add(frame.job));
       void requestCronProjection();
       return result({ ok: true, job: job ? publicCronJob(job) : null });
     }
     if (action === "update") {
       if (!jobId || !isRecord(frame.patch)) return result({ error: "update needs job_id and patch" });
+      const target = await commandTarget(writer, jobId);
+      if (target && !isMirroredJob(target)) return result({ error: FOREIGN_JOB_ERROR });
       await writer.update(jobId, frame.patch);
       void requestCronProjection();
-      return result({ ok: true, job: await readBackJob(writer, jobId) });
+      // The change is in: a failed read-back only means the cloud learns the job from the snapshot.
+      let job: JsonRecord | null = null;
+      try {
+        job = await readBackJob(writer, jobId);
+      } catch (err) {
+        warn(`sellerclaw-ui[cron]: could not read back job ${jobId} after an update: ${errorText(err)}`);
+      }
+      return result({ ok: true, job });
     }
     if (action === "remove") {
       if (!jobId) return result({ error: "remove needs job_id" });
-      const outcome = await writer.remove(jobId);
+      const target = await commandTarget(writer, jobId);
+      if (target && !isMirroredJob(target)) return result({ error: FOREIGN_JOB_ERROR });
+      const removed = await removeJob(writer, jobId);
       // Removing a job the scheduler does not know is done already: deletes are idempotent.
-      if (isRecord(outcome) && outcome.removed === true && state().mirroredIds.has(jobId)) {
+      if (removed && state().mirroredIds.has(jobId)) {
         await noteRemovedJobId(jobId);
       }
       void requestCronProjection();
       return result({ ok: true });
-    }
-    if (action === "run") {
-      if (!jobId) return result({ error: "run needs job_id" });
-      if (typeof writer.enqueueRun !== "function") {
-        return result({ error: "This OpenClaw version cannot start a job on request." });
-      }
-      const outcome = await writer.enqueueRun(jobId, "force");
-      if (isRecord(outcome) && outcome.ok === true && outcome.enqueued === true) {
-        return result({ ok: true, run_id: asString(outcome.runId) || null });
-      }
-      const reason = isRecord(outcome) ? asString(outcome.reason) || asString(outcome.error) : "";
-      return result({ error: `The job did not start${reason ? `: ${reason}` : ""}.` });
     }
     return result({ error: `unknown action: ${action || "(none)"}` });
   } catch (err) {
@@ -1085,6 +1175,7 @@ export type StandbyResult = { ok: boolean; standby: boolean; jobIds: string[]; e
  */
 export async function enterCronStandby(): Promise<StandbyResult> {
   const s = state();
+  s.confirmedActive = false;
   const file = await loadSyncFile();
   if (!file.standby) {
     file.standby = { since: Date.now(), disabledJobIds: [] };
@@ -1119,48 +1210,51 @@ export async function enterCronStandby(): Promise<StandbyResult> {
 }
 
 /**
- * This instance holds the session again: re-enable exactly the jobs standby disabled (a job
- * removed meanwhile is skipped), then resume reporting. Stays on standby until all of them are on.
+ * The agent server says this instance holds the owner's session — on every accepted ping.
+ *
+ * Coming back from standby starts over: every job we mirror is dropped and the store takes a new
+ * epoch, so the cloud hands back the owner's current set. Tasks deleted, paused or changed on the
+ * other instance meanwhile stay that way, and none runs twice; re-enabling the old jobs would
+ * revive them. Their run history is kept in the cloud.
  */
 export async function leaveCronStandby(): Promise<StandbyResult> {
   const s = state();
   const file = await loadSyncFile();
-  const standby = file.standby;
-  if (!standby) return { ok: true, standby: false, jobIds: [], error: null };
+  if (!file.standby) {
+    if (!s.confirmedActive) {
+      s.confirmedActive = true;
+      if (s.reader) void requestCronProjection();
+    }
+    return { ok: true, standby: false, jobIds: [], error: null };
+  }
   const writer = currentWriter();
-  if (!writer) {
-    return { ok: false, standby: true, jobIds: [...standby.disabledJobIds], error: "scheduler not ready" };
-  }
+  if (!writer) return { ok: false, standby: true, jobIds: [], error: "scheduler not ready" };
   const jobs = await writer.list({ includeDisabled: true });
-  const byId = new Map<string, JsonRecord>();
-  for (const job of Array.isArray(jobs) ? jobs : []) {
-    if (isRecord(job) && asString(job.id)) byId.set(asString(job.id), job);
-  }
-  const enabled: string[] = [];
-  const remaining: string[] = [];
+  const dropped: string[] = [];
   const failures: string[] = [];
-  for (const id of standby.disabledJobIds) {
-    const job = byId.get(id);
-    if (!job || job.enabled !== false) continue;
+  for (const job of Array.isArray(jobs) ? jobs : []) {
+    if (!isMirroredJob(job)) continue;
+    s.resetJobIds.add(job.id); // before the removal: its hook event may arrive at any moment
     try {
-      await writer.update(id, { enabled: true });
-      enabled.push(id);
+      // Through the service, like the owner's Delete: from this route a job with run sessions
+      // would go and then fail its cleanup, holding standby for another ping.
+      await removeJob(writer, job.id);
+      dropped.push(job.id);
     } catch (err) {
-      remaining.push(id);
-      failures.push(`${id}: ${errorText(err)}`);
+      failures.push(`${job.id}: ${errorText(err)}`);
     }
   }
-  if (remaining.length) {
-    standby.disabledJobIds = remaining;
-    await saveSyncFile();
-    return { ok: false, standby: true, jobIds: remaining, error: failures.join("; ") };
-  }
+  if (failures.length) return { ok: false, standby: true, jobIds: dropped, error: failures.join("; ") };
   file.standby = null;
+  file.storeEpoch = randomUUID();
+  file.pendingRemovedIds = [];
   await saveSyncFile();
-  warn("sellerclaw-ui[cron]: this agent instance is active again; reporting resumed");
+  s.mirroredIds.clear();
+  s.confirmedActive = true;
   s.needsRunBackfill = true;
+  warn("sellerclaw-ui[cron]: this agent instance is active again; its jobs come back from the cloud");
   if (s.reader) void requestCronProjection();
-  return { ok: true, standby: false, jobIds: enabled, error: null };
+  return { ok: true, standby: false, jobIds: dropped, error: null };
 }
 
 /** Test-only: forget everything (timers included). */
