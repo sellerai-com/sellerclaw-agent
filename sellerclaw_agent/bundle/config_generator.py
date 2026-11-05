@@ -664,7 +664,10 @@ def generate_openclaw_config(
                     # capture (``llm_output`` + ``agent_end``) and the reasoning relay are silently
                     # dropped at load — the owner then gets the subagent's raw internal envelope
                     # instead of the supervisor's answer, and no "Thinking…" panel at all.
-                    "hooks": {"allowConversationAccess": True},
+                    # Prompt injection carries the owner's active goal into the supervisor's turns
+                    # (``before_prompt_build``); it is allowed by default, stated here so a changed
+                    # default cannot silently drop the goal from every session.
+                    "hooks": {"allowConversationAccess": True, "allowPromptInjection": True},
                     "config": sellerclaw_ui_plugin_config,
                 },
                 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID: {"enabled": True},

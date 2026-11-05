@@ -187,9 +187,11 @@ def test_generate_openclaw_config_has_gateway_and_models(
     # Path-loaded plugin: conversation-access hooks must be opted into, otherwise the
     # completion-delivery guard's answer capture and the reasoning relay (both ``llm_output`` /
     # ``agent_end``) are silently dropped at plugin load.
-    assert (
-        payload["plugins"]["entries"]["sellerclaw-ui"]["hooks"]["allowConversationAccess"] is True
-    )
+    assert payload["plugins"]["entries"]["sellerclaw-ui"]["hooks"] == {
+        "allowConversationAccess": True,
+        # The owner's active goal reaches the supervisor's turns through ``before_prompt_build``.
+        "allowPromptInjection": True,
+    }
 
 
 def test_generate_openclaw_config_stamps_runtime_version_in_meta(

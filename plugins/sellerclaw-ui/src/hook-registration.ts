@@ -3,6 +3,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { registerBackgroundHandinRelay } from "./background-handin.js";
 import { registerCompletionDeliveryGuard } from "./completion-delivery.js";
 import { registerCronSyncHooks } from "./cron-sync.js";
+import { registerGoalBrief } from "./goal-brief.js";
 import { logWarn } from "./log.js";
 import { registerReasoningRelay } from "./reasoning-relay.js";
 import { getSharedState } from "./shared-state.js";
@@ -64,6 +65,7 @@ export function registerLifecycleHooks(api: OpenClawPluginApi): void {
   registerYieldGuard(api);
   registerBackgroundHandinRelay(api);
   registerCronSyncHooks(api);
+  registerGoalBrief(api);
 }
 
 type RegistrableEntry = { register: (api: OpenClawPluginApi) => void };

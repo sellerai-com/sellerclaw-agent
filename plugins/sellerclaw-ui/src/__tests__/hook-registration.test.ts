@@ -51,6 +51,8 @@ describe("registerLifecycleHooks", () => {
     expect(on.mock.calls.filter((call) => call[0] === "llm_output").length).toBe(1);
     // A specialist spawned from a background run is reported to the cloud when it ends.
     expect(names).toContain("subagent_ended");
+    // The owner's active goal is put in front of the coordinator's turns.
+    expect(on.mock.calls.filter((call) => call[0] === "before_prompt_build").length).toBe(1);
   });
 
   it("registers again on a fresh api — each registry pass must get its own hooks", () => {
