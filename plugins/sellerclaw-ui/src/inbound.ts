@@ -490,8 +490,9 @@ const QUEUED_TURN_MAX_WAIT_MS = 60 * 60_000;
 export const STEP_WAIT_MS = 3_000;
 
 /**
- * How often a running turn tells the cloud its reply is still being worked on. The cloud closes a
- * reply after two quiet minutes, so a beat every half minute survives a lost one or two.
+ * How often a running turn tells the cloud the agent is still at work on it. The cloud stops
+ * showing the agent at work after two and a half missed beats and closes an open reply after two
+ * quiet minutes, so a beat every half minute survives a lost one or two.
  */
 export const TURN_ALIVE_INTERVAL_MS = 30_000;
 
@@ -1269,21 +1270,23 @@ async function startInboundTurn(params: {
   };
 
   /**
-   * Heartbeat for the reply this turn has open.
+   * Heartbeat: the agent is at work on this turn.
    *
-   * The cloud closes a reply after two quiet minutes — its safety net for an agent that went away
-   * mid-turn — and a long tool call or a wait on a specialist shows nothing for that long. The
-   * owner then saw the agent finished while it worked on, and its later words were appended to a
-   * message already closed (2026-11-08). Beats only once the reply exists (before that the cloud
-   * has nothing to close) and stops the moment the dispatch settles, before the turn is
-   * finalized. A failed beat is dropped: the next is due in half a minute, a cloud older than the
-   * route answers 404 to every one of them, and for an agent that really went away the beats stop
-   * and the safety net does its job.
+   * The chat shows "the agent is working" while these keep coming. Often no reply is open for
+   * minutes — the agent's first line went out as a message of its own, then it worked on — and the
+   * owner saw nothing at all while it did (2026-11-08). A reply that is open is also held off the
+   * cloud's safety net, which closes one after two quiet minutes: a long tool call or a wait on a
+   * specialist shows nothing for that long, and the reply read as finished while the agent worked
+   * on. So the beats run from the first second of the dispatch and stop the moment it settles,
+   * before the turn is finalized. A failed beat is dropped: the next is due in half a minute, a
+   * cloud older than the route answers 404 to every one of them, and for an agent that really went
+   * away the beats stop and the chat stops showing it at work.
    */
-  const heartbeat = setInterval(() => {
-    if (!partsTurnStarted) return;
+  const beat = (): void => {
     void postTurnAlive(account, sessionKey, partsMessageId, payload.chat_id).catch(() => {});
-  }, TURN_ALIVE_INTERVAL_MS);
+  };
+  beat();
+  const heartbeat = setInterval(beat, TURN_ALIVE_INTERVAL_MS);
 
   try {
     try {

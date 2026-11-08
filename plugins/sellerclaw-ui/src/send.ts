@@ -410,10 +410,10 @@ export async function postTurnStep(
 }
 
 /**
- * Tell the cloud the agent is still working on this turn's reply.
+ * Tell the cloud the agent is still at work on this turn, a reply open or not.
  *
- * The cloud closes a reply after two quiet minutes, its safety net for an agent that went away
- * mid-turn; a long tool call or a wait on a specialist has nothing to show for that long.
+ * The chat shows the agent at work while these keep coming, and an open reply is held off the
+ * cloud's safety net, which closes one after two quiet minutes.
  */
 export async function postTurnAlive(
   account: ScwUiAccount,

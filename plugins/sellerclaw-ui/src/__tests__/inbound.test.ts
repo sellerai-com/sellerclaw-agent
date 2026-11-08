@@ -98,23 +98,25 @@ function getHandler(registerHttpRoute: ReturnType<typeof vi.fn>): HandlerFn {
 function setFetchResponses(
   responses: Array<{ ok: boolean; status?: number; body?: ArrayBuffer; contentType?: string }>,
 ): { fetchMock: ReturnType<typeof vi.fn> } {
-  const fetchMock = vi.fn();
-  for (const r of responses) {
-    fetchMock.mockResolvedValueOnce({
-      ok: r.ok,
-      status: r.status ?? (r.ok ? 200 : 500),
-      headers: { get: () => r.contentType ?? "application/octet-stream" },
-      arrayBuffer: async () => r.body ?? new ArrayBuffer(0),
-    });
-  }
+  const queued = responses.map((r) => ({
+    ok: r.ok,
+    status: r.status ?? (r.ok ? 200 : 500),
+    headers: { get: () => r.contentType ?? "application/octet-stream" },
+    arrayBuffer: async () => r.body ?? new ArrayBuffer(0),
+  }));
   // Trailing default for the turn/part/end posts that finalize the (possibly empty)
   // assistant turn after dispatch — these tests assert on attachment ingest, not delivery.
-  fetchMock.mockResolvedValue({
+  // The turn's heartbeat goes out from its first second, so it is answered here too and never
+  // takes a response queued for an attachment.
+  const ok = {
     ok: true,
     status: 200,
     headers: { get: () => "application/json" },
     arrayBuffer: async () => new ArrayBuffer(0),
-  });
+  };
+  const fetchMock = vi.fn(async (url: unknown) =>
+    String(url).endsWith("/alive") ? ok : (queued.shift() ?? ok),
+  );
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   return { fetchMock };
 }
@@ -1196,7 +1198,7 @@ describe("registerInboundRoute", () => {
        * A run that keeps working until the test lets it finish. The inbound handler holds its
        * request until the turn is over, so it is started rather than awaited.
        */
-      async function startRun(): Promise<{
+      async function startRun(cloud?: ReturnType<typeof vi.fn>): Promise<{
         deliver: DeliverWithInfo;
         finish: () => Promise<void>;
       }> {
@@ -1207,7 +1209,7 @@ describe("registerInboundRoute", () => {
               release = resolve;
             }),
         );
-        fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+        fetchMock = cloud ?? vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
         globalThis.fetch = fetchMock as unknown as typeof fetch;
         readBodyMock.mockResolvedValue({
           ok: true,
@@ -1235,37 +1237,27 @@ describe("registerInboundRoute", () => {
       it.each([
         { name: "a cloud that keeps it open", status: 204 },
         { name: "a cloud older than the heartbeat", status: 404 },
-      ])("beats every half minute while the reply is open, with $name", async ({ status }) => {
-        const { deliver, finish } = await startRun();
-        fetchMock.mockImplementation(async (url: unknown) =>
+      ])("beats from the first second and every half minute after, with $name", async ({ status }) => {
+        fetchMock = vi.fn(async (url: unknown) =>
           String(url).endsWith("/alive")
             ? new Response(null, { status })
             : new Response(null, { status: 200 }),
         );
+        const { deliver, finish } = await startRun(fetchMock);
+        const beat = { user_id: "user-1", session_key: expect.any(String), chat_id: "c1" };
+
+        // At once, before anything reached the chat: the agent is at work from the start.
+        expect(bodiesFor("alive")).toEqual([beat]);
+        vi.advanceTimersByTime(TURN_ALIVE_INTERVAL_MS);
         await deliver({ text: "Reading the catalog." }, block(0));
+        vi.advanceTimersByTime(TURN_ALIVE_INTERVAL_MS);
 
-        vi.advanceTimersByTime(TURN_ALIVE_INTERVAL_MS * 2);
-
-        expect(bodiesFor("alive")).toEqual([
-          { user_id: "user-1", session_key: expect.any(String), chat_id: "c1" },
-          { user_id: "user-1", session_key: expect.any(String), chat_id: "c1" },
-        ]);
+        expect(bodiesFor("alive")).toEqual([beat, beat, beat]);
         // The run ends as usual, whatever the cloud said to the beats — and the beats stop with it.
         await finish();
         expect(bodiesFor("end")).toEqual([expect.objectContaining({ status: "completed" })]);
         vi.advanceTimersByTime(TURN_ALIVE_INTERVAL_MS * 3);
-        expect(bodiesFor("alive")).toHaveLength(2);
-      });
-
-      it("does not beat before the reply exists", async () => {
-        const { deliver, finish } = await startRun();
-
-        vi.advanceTimersByTime(TURN_ALIVE_INTERVAL_MS * 3);
-
-        expect(bodiesFor("alive")).toEqual([]);
-        // Answered at the very end, so the turn closes without being asked again.
-        await deliver({ text: "Done." }, final(0));
-        await finish();
+        expect(bodiesFor("alive")).toHaveLength(3);
       });
     });
   });
@@ -1469,10 +1461,11 @@ describe("registerInboundRoute", () => {
     });
 
     // Host rewritten from localhost:8000 to apiBaseUrl host.
-    expect(
-      fetchMock.mock.calls.filter((c) => !String(c[0]).includes("/internal/openclaw/turn")).length,
-    ).toBe(1);
-    const [fetchedUrl, fetchInit] = fetchMock.mock.calls[0] as [
+    const downloads = fetchMock.mock.calls.filter(
+      (c) => !String(c[0]).includes("/internal/openclaw/turn"),
+    );
+    expect(downloads.length).toBe(1);
+    const [fetchedUrl, fetchInit] = downloads[0] as unknown as [
       string,
       { headers: Record<string, string> },
     ];
