@@ -6,6 +6,7 @@ import {
 import type { ChannelOutboundSessionRoute, OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 import { questionForReplyTarget, recordReplyDelivered } from "./owner-turns.js";
+import { continueRunningTurnsBelow } from "./running-turns.js";
 import {
   enqueueSend,
   postTurnEnd,
@@ -334,6 +335,9 @@ async function deliverOutboundAsParts(
   await postTurnEnd(account, sessionKey, messageId, chatId);
   recordOutboundDelivery(chatId);
   if ("replyTo" in pairing) recordReplyDelivered(pairing.replyTo);
+  // Published into the chat just now: a turn still writing there goes on below it, or its next
+  // words would land above this message in a reply opened earlier.
+  continueRunningTurnsBelow(chatId);
   return { messageId };
 }
 

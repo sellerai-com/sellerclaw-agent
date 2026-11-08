@@ -55,6 +55,7 @@ import {
   STEP_WAIT_MS,
   TURN_ALIVE_INTERVAL_MS,
 } from "../inbound.js";
+import { resolveSellerclawUiAccount, sellerclawUiChannelPlugin } from "../channel.js";
 
 const DEFAULT_CONFIG = {
   channels: {
@@ -1260,6 +1261,149 @@ describe("registerInboundRoute", () => {
         expect(bodiesFor("alive")).toHaveLength(3);
       });
     });
+
+    describe("something landing in the chat while the run is going", () => {
+      const CHAT = "2d3e4f50-6172-4839-a4b5-c6d7e8f90a1b";
+      const TASK_ID = "0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9";
+      const NOTE_ID = "1c2d3e4f-5061-4728-93a4-b5c6d7e8f901";
+      const STEERED = {
+        dispatched: true,
+        dispatchResult: { deferredToActiveRun: "steer", queuedFinal: false, counts: {} },
+      };
+
+      /** Every call the turns made to the cloud, in order: which road, which reply, what body. */
+      function roadsTaken(): Array<{ road: string; id: string; body: Record<string, unknown> }> {
+        return fetchMock.mock.calls.flatMap((c) => {
+          const m = /\/internal\/openclaw\/turn(?:\/([0-9a-f-]+)\/(\w+))?$/.exec(String(c[0]));
+          if (!m) return [];
+          const body = JSON.parse(String((c[1] as RequestInit).body)) as Record<string, unknown>;
+          return [{ road: m[2] ?? "start", id: m[1] ?? String(body.message_id), body }];
+        });
+      }
+
+      /** An owner message reaching the inbound route; its turn is started, not awaited. */
+      function ownerWrites(
+        registerHttpRoute: ReturnType<typeof vi.fn>,
+        messageId: string,
+      ): Promise<boolean> {
+        readBodyMock.mockResolvedValueOnce({
+          ok: true,
+          value: { chat_id: CHAT, agent_id: "a", user_id: "u", text: "go", message_id: messageId },
+        });
+        return getHandler(registerHttpRoute)(
+          { headers: {} } as IncomingMessage,
+          { statusCode: 0, end: vi.fn() } as unknown as ServerResponse,
+        );
+      }
+
+      /**
+       * A run that works until the test ends it. With ``withNote`` the next dispatch is the owner's
+       * note, which the run takes.
+       */
+      async function runWithNote(withNote = true): Promise<{
+        registerHttpRoute: ReturnType<typeof vi.fn>;
+        deliver: DeliverWithInfo;
+        endRun: () => void;
+        task: Promise<boolean>;
+      }> {
+        fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
+        let endRun: () => void = () => {};
+        dispatchMock.mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              endRun = resolve;
+            }),
+        );
+        if (withNote) dispatchMock.mockImplementationOnce(async () => STEERED);
+        const { api, registerHttpRoute } = buildApi();
+        registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+        const task = ownerWrites(registerHttpRoute, TASK_ID);
+        await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+        const deliver = (dispatchMock.mock.calls[0]![0] as { deliver: DeliverWithInfo }).deliver;
+        return { registerHttpRoute, deliver, endRun: () => endRun(), task };
+      }
+
+      it("closes the reply written so far and answers the note in a new one below it", async () => {
+        const { registerHttpRoute, deliver, endRun, task } = await runWithNote();
+        await deliver({ text: "Rewrote both suppliers' descriptions." }, final(0));
+
+        await ownerWrites(registerHttpRoute, NOTE_ID);
+        await deliver({ text: "Reverted Shenzhen; only Porto changed." }, final(1));
+        endRun();
+        await task;
+
+        const roads = roadsTaken();
+        const parts = roads.filter((r) => r.road === "part");
+        const [before, after] = parts.map((r) => r.id);
+        // Written before the run took the note, the first words stay in the reply above it; the
+        // answer to the note is a reply of its own, opened as the note's.
+        expect(parts.map((r) => r.body.text)).toEqual([
+          "Rewrote both suppliers' descriptions.",
+          "Reverted Shenzhen; only Porto changed.",
+        ]);
+        expect(after).not.toBe(before);
+        const opened = (id: string) => roads.findIndex((r) => r.road === "start" && r.id === id);
+        const closed = (id: string) => roads.findIndex((r) => r.road === "end" && r.id === id);
+        expect(roads[opened(before!)]!.body.reply_to_message_id).toBe(TASK_ID);
+        expect(roads[opened(after!)]!.body.reply_to_message_id).toBe(NOTE_ID);
+        // The reply above is closed before the one below opens, and the new one is the turn at work.
+        expect(closed(before!)).toBeGreaterThan(-1);
+        expect(closed(before!)).toBeLessThan(opened(after!));
+        expect(roads.find((r) => r.road === "end" && r.id === before)!.body.status).toBe("completed");
+        expect(roads.some((r) => r.road === "alive" && r.id === after)).toBe(true);
+        expect(roads.filter((r) => r.road === "end" && r.id === after)).toHaveLength(1);
+      });
+
+      it("goes on below a status line the agent sent on its own", async () => {
+        const { deliver, endRun, task } = await runWithNote(false);
+        // Words streamed first open the reply; a tool starts, and the agent sends its status line.
+        await deliver({ text: "Starting the check." }, block(0));
+        const plugin = sellerclawUiChannelPlugin as unknown as {
+          outbound: { sendText: (p: unknown) => Promise<unknown> };
+        };
+        await plugin.outbound.sendText({
+          account: resolveSellerclawUiAccount(DEFAULT_CONFIG as never),
+          to: `sellerclaw-ui:direct:${CHAT}`,
+          text: "Starting — this takes about a minute.",
+        });
+        await deliver({ text: "Done." }, final(1));
+        endRun();
+        await task;
+
+        const roads = roadsTaken();
+        const textOf = (id: string) =>
+          roads.filter((r) => r.road === "part" && r.id === id).map((r) => r.body.text);
+        const opened = (id: string) => roads.findIndex((r) => r.road === "start" && r.id === id);
+        const closed = (id: string) => roads.findIndex((r) => r.road === "end" && r.id === id);
+        const [early, status, late] = roads.filter((r) => r.road === "start").map((r) => r.id);
+        expect(textOf(status!)).toEqual(["Starting — this takes about a minute."]);
+        // The reply opened before the status line holds none of what came after it: "Done." opens
+        // a reply of its own, below the status line, still answering the owner's task.
+        expect(textOf(early!)).toEqual([]);
+        expect(textOf(late!)).toEqual(["Done."]);
+        expect(closed(status!)).toBeLessThan(closed(early!));
+        expect(closed(early!)).toBeLessThan(opened(late!));
+        expect(roads[opened(late!)]!.body.reply_to_message_id).toBe(TASK_ID);
+      });
+
+      it("leaves a reply that has not opened yet alone: it opens below the note anyway", async () => {
+        const { registerHttpRoute, deliver, endRun, task } = await runWithNote();
+
+        await ownerWrites(registerHttpRoute, NOTE_ID);
+        await deliver({ text: "Only Porto changed." }, final(0));
+        endRun();
+        await task;
+
+        const roads = roadsTaken();
+        const parts = roads.filter((r) => r.road === "part");
+        expect(parts.map((r) => r.body.text)).toEqual(["Only Porto changed."]);
+        const reply = roads.find((r) => r.road === "start" && r.id === parts[0]!.id)!;
+        expect(reply.body.reply_to_message_id).toBe(TASK_ID);
+        // One reply, closed once, at the end of the run.
+        expect(roads.filter((r) => r.road === "end" && r.id === parts[0]!.id)).toHaveLength(1);
+      });
+    });
   });
 
   describe("readDeliverPayload", () => {
@@ -1349,10 +1493,11 @@ describe("registerInboundRoute", () => {
     });
 
     // URL host rewritten from localhost:8000 to apiBaseUrl host (api.example).
-    expect(
-      fetchMock.mock.calls.filter((c) => !String(c[0]).includes("/internal/openclaw/turn")).length,
-    ).toBe(1);
-    const [fetchedUrl, fetchInit] = fetchMock.mock.calls[0] as [
+    const downloads = fetchMock.mock.calls.filter(
+      (c) => !String(c[0]).includes("/internal/openclaw/turn"),
+    );
+    expect(downloads.length).toBe(1);
+    const [fetchedUrl, fetchInit] = downloads[0] as unknown as [
       string,
       { headers: Record<string, string> },
     ];

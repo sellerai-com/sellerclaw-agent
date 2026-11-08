@@ -43,6 +43,7 @@ import {
   type ScwUiAccount,
 } from "./send.js";
 import { getRuntime } from "./runtime-store.js";
+import { continueRunningTurnsBelow, registerRunningTurn, type RunningTurn } from "./running-turns.js";
 
 interface InboundPayload {
   chat_id: string;
@@ -554,7 +555,15 @@ async function startInboundTurn(params: {
   const ownerTurn = openOwnerTurn(payload.chat_id, questionId);
   // One streaming assistant message per turn, started lazily on the first delivered
   // part (or eagerly at finish for an empty dispatch) and finalized after dispatch.
-  const partsMessageId = params.partsMessageId ?? crypto.randomUUID();
+  // A new one once the owner wrote mid-run and the run took it (see ``continueBelowNote``).
+  let partsMessageId = params.partsMessageId ?? crypto.randomUUID();
+  /** The owner message this turn's reply answers: the note, once the reply continued below it. */
+  let replyTo = questionId;
+  /**
+   * Drops what the dispatch keeps about the reply being written, and says when the steps already
+   * on their way to it have landed. Set by ``runDispatch``.
+   */
+  let releaseDispatchReply: () => Promise<void> = () => Promise.resolve();
   // Monotonic counter for thought stream parts (per assistant message). Frontend dedupes by seq.
   let thoughtSeq = params.thoughtSeqStart ?? 0;
   /**
@@ -609,20 +618,31 @@ async function startInboundTurn(params: {
    * as an unprompted update, with the owner's question already marked answered by nothing.
    */
   let heldOpenForReask = false;
+  /** The reply's opening on its way to the cloud: a close sent for it waits for this first. */
+  let partsTurnOpening: Promise<void> = Promise.resolve();
+  /** The previous reply's close (see ``continueBelow``): the next one opens only after it. */
+  let previousReplyClosed: Promise<void> = Promise.resolve();
   const ensurePartsTurn = async (): Promise<void> => {
     if (partsTurnStarted) return;
     partsTurnStarted = true;
+    let opened: () => void = () => {};
+    partsTurnOpening = new Promise<void>((resolve) => {
+      opened = resolve;
+    });
     try {
+      await previousReplyClosed;
       await postTurnStart(
         account,
         sessionKey,
         partsMessageId,
         payload.chat_id,
-        questionId ? { replyTo: questionId } : undefined,
+        replyTo ? { replyTo } : undefined,
       );
     } catch (err) {
       partsTurnStarted = false;
       logError(api, `sellerclaw-ui: turn-start failed session_key=${sessionKey}: ${String(err)}`);
+    } finally {
+      opened();
     }
   };
 
@@ -730,11 +750,11 @@ async function startInboundTurn(params: {
     let previewSinceStep = false;
     let previewInFlight: Promise<void> = Promise.resolve();
     let stepChain: Promise<void> = Promise.resolve();
-    const promotePreviewToStepNow = async (): Promise<void> => {
+    const promotePreviewToStepNow = async (target: string): Promise<void> => {
       await previewInFlight;
-      if (!previewSinceStep) return;
+      if (!previewSinceStep || target !== partsMessageId) return;
       try {
-        await postTurnStep(account, sessionKey, partsMessageId, payload.chat_id, {
+        await postTurnStep(account, sessionKey, target, payload.chat_id, {
           agent_id: thoughtAgentId,
           seq: thoughtSeq++,
         });
@@ -747,8 +767,17 @@ async function startInboundTurn(params: {
       previewMessageIndex = null;
     };
     const promotePreviewToStep = (): Promise<void> => {
-      stepChain = stepChain.then(promotePreviewToStepNow);
+      const target = partsMessageId;
+      stepChain = stepChain.then(() => promotePreviewToStepNow(target));
       return stepChain;
+    };
+    releaseDispatchReply = () => {
+      const landed = Promise.all([previewInFlight, stepChain]).then(() => undefined);
+      prevTail = "";
+      previewMessageIndex = null;
+      committedAnyText = false;
+      previewSinceStep = false;
+      return landed;
     };
 
     // A catch-up re-delivery dispatches as a fresh OpenClaw turn: a new MessageSid so any
@@ -980,6 +1009,13 @@ async function startInboundTurn(params: {
       },
     });
     deferredTo = deferredToActiveRun(turnResult);
+    if (deferredTo === "steer") {
+      // The run took this message just now: what it writes from here on answers it.
+      continueRunningTurnsBelow(payload.chat_id, {
+        except: runningTurn,
+        replyTo: questionId || undefined,
+      });
+    }
     if (deferredTo === "followup") {
       // Queued behind the run going in the session (a subagent report the message could not be
       // added to): its run starts once that one ends, and answers through the outbound road with
@@ -990,6 +1026,65 @@ async function startInboundTurn(params: {
       await waitForQueuedRun(queuedSettled, ownerTurn.abort.signal);
     }
   };
+
+  /**
+   * Heartbeat: the agent is at work on this turn.
+   *
+   * The chat shows "the agent is working" while these keep coming. Often no reply is open for
+   * minutes — the agent's first line went out as a message of its own, then it worked on — and the
+   * owner saw nothing at all while it did (2026-11-08). A reply that is open is also held off the
+   * cloud's safety net, which closes one after two quiet minutes: a long tool call or a wait on a
+   * specialist shows nothing for that long, and the reply read as finished while the agent worked
+   * on. So the beats run from the first second of the dispatch and stop the moment it settles,
+   * before the turn is finalized. A failed beat is dropped: the next is due in half a minute, a
+   * cloud older than the route answers 404 to every one of them, and for an agent that really went
+   * away the beats stop and the chat stops showing it at work.
+   */
+  const beat = (): void => {
+    void postTurnAlive(account, sessionKey, partsMessageId, payload.chat_id).catch(() => {});
+  };
+  beat();
+  const heartbeat = setInterval(beat, TURN_ALIVE_INTERVAL_MS);
+
+  /**
+   * Something landed in the chat while this turn writes — the owner's note the run took just now,
+   * or a message the agent published on its own (a status line sent with the ``message`` tool):
+   * close the reply written so far and go on in a new one below it.
+   *
+   * What the run wrote before stays above; what it writes from here on came after, so it belongs
+   * below. Written into the reply opened earlier, the answer to a correction landed above the
+   * correction, and a final "done" above the "starting" line (2026-11-08). The switch is made at
+   * once — the run's next words may already be on their way — and the old reply is closed once its
+   * opening and the steps already sent to it have landed. A reply with no words of its own, only
+   * steps, is then dropped by the cloud, its thinking handed to the message above. A reply not
+   * opened yet needs none of this: it opens below anyway.
+   */
+  const continueBelow = (replyToNext?: string): void => {
+    if (!partsTurnStarted) return;
+    const closing = partsMessageId;
+    const landed = Promise.all([releaseDispatchReply(), partsTurnOpening]);
+    partsMessageId = crypto.randomUUID();
+    partsTurnStarted = false;
+    if (replyToNext) replyTo = replyToNext;
+    // The new reply is the one at work now: say so before the old one's end reaches the chat.
+    beat();
+    logDelivery(
+      api,
+      `inbound reply continues below a newer message closed=${closing} opened=${partsMessageId} ` +
+        `session_key=${sessionKey}`,
+    );
+    previousReplyClosed = landed
+      .then(() => postTurnEnd(account, sessionKey, closing, payload.chat_id, "completed"))
+      .catch((err) => {
+        logError(
+          api,
+          `sellerclaw-ui: closing the reply above a newer message failed ` +
+            `session_key=${sessionKey}: ${String(err)}`,
+        );
+      });
+  };
+  const runningTurn: RunningTurn = { continueBelow };
+  const unregisterRunningTurn = registerRunningTurn(payload.chat_id, runningTurn);
 
   // Started eagerly, exactly as before: the HTTP route has already answered 202 and the owner is
   // watching the chat, so the turn must not wait on anything before it begins.
@@ -1015,7 +1110,8 @@ async function startInboundTurn(params: {
    *    **and** resume, while attempts remain. The owner keeps whatever was already streamed or
    *    sent through the ``message`` tool, and the continuation delivers the finished work;
    *  - nothing reached them because the engine injected the message into a run already going
-   *    (``steer`` queue mode) → closed quietly: the answer comes through that run's own turn. A
+   *    (``steer`` queue mode) → closed quietly: the answer comes through that run's own turn, in a
+   *    reply of its own below this message (``continueRunningTurnsBelow``). A
    *    message the engine queued behind that run instead is judged like any other, once its own
    *    run is over (see ``waitForQueuedRun``);
    *  - silent again after being asked → closed quietly: the agent chose it knowing nothing had
@@ -1269,28 +1365,12 @@ async function startInboundTurn(params: {
     throw lastError;
   };
 
-  /**
-   * Heartbeat: the agent is at work on this turn.
-   *
-   * The chat shows "the agent is working" while these keep coming. Often no reply is open for
-   * minutes — the agent's first line went out as a message of its own, then it worked on — and the
-   * owner saw nothing at all while it did (2026-11-08). A reply that is open is also held off the
-   * cloud's safety net, which closes one after two quiet minutes: a long tool call or a wait on a
-   * specialist shows nothing for that long, and the reply read as finished while the agent worked
-   * on. So the beats run from the first second of the dispatch and stop the moment it settles,
-   * before the turn is finalized. A failed beat is dropped: the next is due in half a minute, a
-   * cloud older than the route answers 404 to every one of them, and for an agent that really went
-   * away the beats stop and the chat stops showing it at work.
-   */
-  const beat = (): void => {
-    void postTurnAlive(account, sessionKey, partsMessageId, payload.chat_id).catch(() => {});
-  };
-  beat();
-  const heartbeat = setInterval(beat, TURN_ALIVE_INTERVAL_MS);
-
   try {
     try {
-      await dispatchWithAdmissionRetries().finally(() => clearInterval(heartbeat));
+      await dispatchWithAdmissionRetries().finally(() => {
+        clearInterval(heartbeat);
+        unregisterRunningTurn();
+      });
       await finishTurn();
     } catch (err: unknown) {
       logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
