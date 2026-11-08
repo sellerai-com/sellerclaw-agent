@@ -7,6 +7,8 @@ from uuid import UUID
 
 import pytest
 from sellerclaw_agent.bundle.manifest import (
+    ADVISOR_REVIEW_INSTRUCTIONS_MAX_CHARS,
+    AdvisorManifest,
     ModelRef,
     WebSearchManifest,
     bundle_manifest_from_mapping,
@@ -32,6 +34,49 @@ def test_parse_config_version_present_and_absent() -> None:
     assert bundle_manifest_from_mapping(data).config_version == 0
     data["config_version"] = "not-a-number"
     assert bundle_manifest_from_mapping(data).config_version == 0
+
+
+_LONG_WORDS = "word " * 900  # 4500 chars of five-letter words and spaces
+
+
+@pytest.mark.parametrize(
+    ("advisor", "expected"),
+    [
+        pytest.param(None, None, id="absent-off"),
+        pytest.param(
+            {"review_instructions": "  Default to NO_CHANGE.\n"},
+            AdvisorManifest(review_instructions="Default to NO_CHANGE."),
+            id="present-on-stripped",
+        ),
+        pytest.param({}, AdvisorManifest(review_instructions=""), id="no-instructions-on-upstream-guidance"),
+        pytest.param({"review_instructions": 42}, AdvisorManifest(review_instructions=""), id="non-string-instructions-ignored"),
+        pytest.param("yes", None, id="malformed-block-leaves-off"),
+        pytest.param(
+            {"review_instructions": _LONG_WORDS},
+            # 4000 falls on the boundary after a full word ("word " * 800), so nothing is dropped.
+            AdvisorManifest(review_instructions=("word " * 800).rstrip()),
+            id="over-limit-cut-at-word-boundary",
+        ),
+        pytest.param(
+            {"review_instructions": "xy" + _LONG_WORDS},
+            # Shifted by two, 4000 splits the 800th word ("wor|d"): that partial word goes.
+            AdvisorManifest(review_instructions=("xy" + "word " * 799).rstrip()),
+            id="over-limit-drops-partial-word",
+        ),
+    ],
+)
+def test_parse_advisor_block(advisor: object, expected: AdvisorManifest | None) -> None:
+    data = _v2()
+    data.pop("advisor", None)
+    if advisor is not None:
+        data["advisor"] = advisor
+    manifest = bundle_manifest_from_mapping(data)
+    assert manifest.advisor == expected
+    if manifest.advisor is not None:
+        assert len(manifest.advisor.review_instructions) <= ADVISOR_REVIEW_INSTRUCTIONS_MAX_CHARS
+        # Round-trips through the save mapping.
+        again = bundle_manifest_from_mapping(manifest.to_save_manifest_mapping())
+        assert again.advisor == manifest.advisor
 
 
 def test_parse_happy_path_from_fixture() -> None:

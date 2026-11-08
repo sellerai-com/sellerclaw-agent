@@ -8,6 +8,9 @@ from uuid import UUID
 import pytest
 from sellerclaw_agent.assembly import AssembledAgentConfig
 from sellerclaw_agent.bundle.config_generator import (
+    ADVISOR_EVERY_MINUTES,
+    ADVISOR_EVERY_TOOL_CALLS,
+    OPENCLAW_ADVISOR_PLUGIN_ID,
     OPENCLAW_BUNDLE_BOOTSTRAP_MAX_CHARS,
     OPENCLAW_BUNDLE_CONSOLE_STYLE,
     OPENCLAW_BUNDLE_LOG_LEVEL,
@@ -630,6 +633,56 @@ def test_generate_openclaw_config_memory_disabled_has_no_mem0_plugin_or_slot(
     assert MEM0_PLUGIN_ID not in payload["plugins"]["allow"]
     assert MEM0_PLUGIN_ID not in payload["plugins"]["entries"]
     assert OPENCLAW_PLUGIN_PATH_MEM0 not in payload["plugins"]["load"]["paths"]
+
+
+@pytest.mark.parametrize(
+    ("instructions", "expected_entry"),
+    [
+        pytest.param(None, None, id="absent-advisor-off"),
+        pytest.param(
+            "Default to NO_CHANGE.",
+            {
+                "enabled": True,
+                "config": {
+                    "everyToolCalls": ADVISOR_EVERY_TOOL_CALLS,
+                    "everyMinutes": ADVISOR_EVERY_MINUTES,
+                    "reviewInstructions": "Default to NO_CHANGE.",
+                },
+            },
+            id="with-instructions",
+        ),
+        pytest.param(
+            "",
+            {
+                "enabled": True,
+                "config": {
+                    "everyToolCalls": ADVISOR_EVERY_TOOL_CALLS,
+                    "everyMinutes": ADVISOR_EVERY_MINUTES,
+                },
+            },
+            # An empty value would fail nothing, but upstream's guidance is the honest default.
+            id="no-instructions-key-omitted",
+        ),
+    ],
+)
+def test_generate_openclaw_config_advisor_plugin(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+    instructions: str | None,
+    expected_entry: dict[str, object] | None,
+) -> None:
+    payload = json.loads(
+        _generate(_supervisor_only(make_assembled_agent), advisor_review_instructions=instructions)
+    )
+    plugins = payload["plugins"]
+    if expected_entry is None:
+        assert OPENCLAW_ADVISOR_PLUGIN_ID not in plugins["allow"]
+        assert OPENCLAW_ADVISOR_PLUGIN_ID not in plugins["entries"]
+    else:
+        # Our non-empty allowlist disables every unlisted bundled plugin, so both are required.
+        assert OPENCLAW_ADVISOR_PLUGIN_ID in plugins["allow"]
+        assert plugins["entries"][OPENCLAW_ADVISOR_PLUGIN_ID] == expected_entry
+        # Bundled plugin: never on a load path.
+        assert all("advisor" not in path for path in plugins["load"]["paths"])
 
 
 def test_generate_openclaw_config_browser_disabled(

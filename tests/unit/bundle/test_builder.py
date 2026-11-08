@@ -81,6 +81,35 @@ def test_bundle_builder_produces_config_and_workspaces(
     assert "supervisor/skills/tasks/SKILL.md" in result.workspaces
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected_instructions"),
+    [
+        pytest.param({}, None, id="no-advisor-block-off"),
+        pytest.param(
+            {"advisor": {"review_instructions": "Default to NO_CHANGE."}},
+            "Default to NO_CHANGE.",
+            id="advisor-block-reaches-config",
+        ),
+    ],
+)
+def test_bundle_builder_wires_advisor_from_manifest(
+    make_manifest: Callable[..., GenericManifest],
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, Any],
+    expected_instructions: str | None,
+) -> None:
+    monkeypatch.setenv("AGENT_API_KEY", "unit-test-agent-key")
+    result = BundleBuilder().build(
+        make_manifest(overrides=overrides), gateway_token=_GW, hooks_token=_HOOKS
+    )
+    entries = json.loads(result.openclaw_config)["plugins"]["entries"]
+    if expected_instructions is None:
+        assert "advisor" not in entries
+    else:
+        assert entries["advisor"]["enabled"] is True
+        assert entries["advisor"]["config"]["reviewInstructions"] == expected_instructions
+
+
 def test_bundle_builder_includes_subagent_workspaces(
     make_manifest: Callable[..., GenericManifest],
     monkeypatch: pytest.MonkeyPatch,

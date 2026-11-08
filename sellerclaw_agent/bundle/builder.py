@@ -421,6 +421,9 @@ class BundleBuilder:
             cron_enabled=manifest.cron_enabled,
             web_fetch_enabled=manifest.web_fetch_enabled,
             memory_enabled=manifest.memory_enabled,
+            advisor_review_instructions=(
+                manifest.advisor.review_instructions if manifest.advisor is not None else None
+            ),
         )
         version = build_gateway_version(
             openclaw_config=openclaw_config,

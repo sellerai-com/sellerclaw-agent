@@ -160,6 +160,18 @@ class AgentsManifest:
     heartbeat_target: str = "none"
 
 
+#: OpenClaw's advisor plugin schema caps ``reviewInstructions`` at this many characters; a longer
+#: value fails config validation and the gateway does not start.
+ADVISOR_REVIEW_INSTRUCTIONS_MAX_CHARS = 4000
+
+
+@dataclass(frozen=True)
+class AdvisorManifest:
+    """OpenClaw's bundled advisor plugin: present = on, with the cloud's review instructions."""
+
+    review_instructions: str = ""
+
+
 @dataclass(frozen=True)
 class GenericManifest:
     """Generic agent manifest: pre-rendered per-agent content + LLM/channel wiring.
@@ -179,6 +191,8 @@ class GenericManifest:
     web_fetch_enabled: bool = True
     # Long-term memory (OpenClaw mem0 plugin, platform mode → cloud Mem0-compatible adapter).
     memory_enabled: bool = False
+    # OpenClaw's advisor (reviews user-directed work, steers one short correction). None = off.
+    advisor: AdvisorManifest | None = None
     # Monotonic version this manifest represents (cloud-assigned). Stamped into openclaw.json
     # meta.configVersion and reported back in pings so the cloud can detect undelivered changes.
     config_version: int = 0
@@ -221,6 +235,11 @@ class GenericManifest:
             },
             "cron": {"enabled": self.cron_enabled},
             "web_fetch": {"enabled": self.web_fetch_enabled},
+            **(
+                {"advisor": {"review_instructions": self.advisor.review_instructions}}
+                if self.advisor is not None
+                else {}
+            ),
         }
 
 
@@ -736,6 +755,28 @@ def _parse_web_search(data: dict[str, object]) -> WebSearchManifest:
     return WebSearchManifest(enabled=_parse_enabled_toggle(data, "web_search", default=False))
 
 
+def _parse_advisor(value: object) -> AdvisorManifest | None:
+    """``advisor`` is optional; its presence turns OpenClaw's advisor on.
+
+    Lenient on purpose, unlike the toggles above: a malformed required block rightly stops the
+    manifest, but this one only adds a reviewer — so a bad shape leaves the advisor off instead of
+    leaving the whole agent unconfigured. Instructions over OpenClaw's limit are cut at a word
+    boundary: a longer value would fail config validation and keep the gateway from starting.
+    """
+    if not isinstance(value, dict):
+        return None
+    raw = value.get("review_instructions")
+    text = raw.strip() if isinstance(raw, str) else ""
+    limit = ADVISOR_REVIEW_INSTRUCTIONS_MAX_CHARS
+    if len(text) > limit:
+        cut = text[:limit]
+        if not (text[limit].isspace() or cut[-1].isspace()):
+            head = cut.rsplit(None, 1)
+            cut = head[0] if len(head) > 1 else cut
+        text = cut.rstrip()
+    return AdvisorManifest(review_instructions=text)
+
+
 def _parse_config_version(value: object) -> int:
     """Parse the optional manifest ``config_version`` into a non-negative int (0 if absent/bad)."""
     if value is None:
@@ -769,6 +810,7 @@ def bundle_manifest_from_mapping(data: dict[str, object]) -> GenericManifest:
         cron_enabled=_parse_enabled_toggle(data, "cron", default=True),
         web_fetch_enabled=_parse_enabled_toggle(data, "web_fetch", default=True),
         memory_enabled=_parse_enabled_toggle(data, "memory", default=False),
+        advisor=_parse_advisor(data.get("advisor")),
         config_version=_parse_config_version(data.get("config_version")),
         raw={str(k): v for k, v in data.items()},
     )

@@ -102,6 +102,18 @@ OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID = "document-extract"
 # runtime/Dockerfile.
 OPENCLAW_WEB_READABILITY_PLUGIN_ID = "web-readability"
 
+# OpenClaw's bundled advisor (experimental, off upstream by default): during user-triggered runs it
+# reviews a fork of the conversation on the session's own model and, when it finds a clear wrong
+# turn (repeating a failing call, drifting from the owner's request), steers the run with one short
+# correction. It never runs tools or grants anything. On when the manifest carries ``advisor``;
+# needs both the allow entry (our allowlist disables unlisted bundled plugins) and the image keeping
+# its extension dir — see the prune in runtime/Dockerfile. Reviews are sparser than upstream's
+# 10 calls / 20 minutes: fewer, cheaper reviews and less second-guessing of normal long work, while
+# a real loop (hundreds of identical failures) still trips the tool-call counter early.
+OPENCLAW_ADVISOR_PLUGIN_ID = "advisor"
+ADVISOR_EVERY_TOOL_CALLS = 15
+ADVISOR_EVERY_MINUTES = 30
+
 # The bundled telegram channel plugin is deliberately NOT in ``plugins.allow``. Every boot warns
 # that a configured channel's plugin is "omitted from plugins.allow" and auto-enables it for that
 # run, which reads like an oversight — it is not: a bundled channel is enabled by its config alone.
@@ -157,6 +169,17 @@ def _merge_openclaw_channels(
     return channels
 
 
+def _advisor_plugin_entry(review_instructions: str) -> dict[str, object]:
+    """``plugins.entries.advisor``: on, our review cadence, and the cloud's instructions if any."""
+    config: dict[str, object] = {
+        "everyToolCalls": ADVISOR_EVERY_TOOL_CALLS,
+        "everyMinutes": ADVISOR_EVERY_MINUTES,
+    }
+    if review_instructions:
+        config["reviewInstructions"] = review_instructions
+    return {"enabled": True, "config": config}
+
+
 def generate_openclaw_config(
     *,
     assembled_agents: Sequence[AssembledAgentLike],
@@ -186,8 +209,12 @@ def generate_openclaw_config(
     cron_enabled: bool = True,
     web_fetch_enabled: bool = True,
     memory_enabled: bool = False,
+    advisor_review_instructions: str | None = None,
 ) -> str:
     """Build OpenClaw JSON config from assembled agents and flat parameters.
+
+    ``advisor_review_instructions`` turns OpenClaw's advisor on (``None`` = off; an empty string =
+    on with upstream's own review guidance).
 
     ``providers`` is the fully built ``models.providers`` mapping (manifest-driven,
     assembled by the bundle builder). ``model_defaults`` carries the manifest-derived
@@ -654,6 +681,7 @@ def generate_openclaw_config(
                 ),
                 *([MEM0_PLUGIN_ID] if memory_enabled else []),
                 *([OPENCLAW_WHATSAPP_PLUGIN_ID] if whatsapp_channel is not None else []),
+                *([OPENCLAW_ADVISOR_PLUGIN_ID] if advisor_review_instructions is not None else []),
             ],
             "load": {"paths": plugin_load_paths},
             "entries": {
@@ -681,6 +709,11 @@ def generate_openclaw_config(
                 ),
                 **({MEM0_PLUGIN_ID: memory_plugin_entry} if memory_enabled and memory_plugin_entry is not None else {}),
                 **({OPENCLAW_WHATSAPP_PLUGIN_ID: {"enabled": True}} if whatsapp_channel is not None else {}),
+                **(
+                    {OPENCLAW_ADVISOR_PLUGIN_ID: _advisor_plugin_entry(advisor_review_instructions)}
+                    if advisor_review_instructions is not None
+                    else {}
+                ),
             },
         },
         "browser": {
