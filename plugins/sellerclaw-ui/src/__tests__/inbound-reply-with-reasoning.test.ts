@@ -1,7 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { resolveRouteMock, createPipelineMock, runPreparedMock, normalizeMock } = vi.hoisted(() => ({
-  resolveRouteMock: vi.fn(),
+const {
+  resolveAgentRouteMock,
+  envelopeBuilderMock,
+  formatEnvelopeMock,
+  createPipelineMock,
+  runPreparedMock,
+  normalizeMock,
+} = vi.hoisted(() => ({
+  resolveAgentRouteMock: vi.fn(),
+  envelopeBuilderMock: vi.fn(),
+  formatEnvelopeMock: vi.fn(),
   createPipelineMock: vi.fn(),
   runPreparedMock: vi.fn(),
   // Like the real plugin-sdk normalizer, drops ``isError`` (it extracts text/media fields
@@ -12,14 +21,15 @@ const { resolveRouteMock, createPipelineMock, runPreparedMock, normalizeMock } =
   }),
 }));
 
-vi.mock("openclaw/plugin-sdk/inbound-envelope", () => ({
-  resolveInboundRouteEnvelopeBuilderWithRuntime: (...a: unknown[]) => resolveRouteMock(...a),
+vi.mock("openclaw/plugin-sdk/routing", () => ({
+  resolveAgentRoute: (...a: unknown[]) => resolveAgentRouteMock(...a),
 }));
 vi.mock("openclaw/plugin-sdk/channel-outbound", () => ({
   createChannelMessageReplyPipeline: (...a: unknown[]) => createPipelineMock(...a),
 }));
 vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
   runPreparedInboundReply: (...a: unknown[]) => runPreparedMock(...a),
+  createChannelInboundEnvelopeBuilderAsync: (...a: unknown[]) => envelopeBuilderMock(...a),
 }));
 vi.mock("openclaw/plugin-sdk/reply-payload", () => ({
   normalizeOutboundReplyPayload: (p: unknown) => normalizeMock(p as Record<string, unknown>),
@@ -28,11 +38,79 @@ vi.mock("openclaw/plugin-sdk/reply-payload", () => ({
 import { dispatchInboundDirectDmWithReasoning } from "../inbound-reply-with-reasoning.js";
 
 describe("dispatchInboundDirectDmWithReasoning", () => {
-  it("forwards onReasoningStream/onReasoningEnd into the reply dispatcher's replyOptions", async () => {
-    resolveRouteMock.mockReturnValue({
-      route: { sessionKey: "sk", agentId: "supervisor", accountId: "default" },
-      buildEnvelope: () => ({ storePath: "/store", body: "envelope-body" }),
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resolveAgentRouteMock.mockReturnValue({
+      sessionKey: "sk",
+      agentId: "supervisor",
+      accountId: "default",
     });
+    formatEnvelopeMock.mockReturnValue("envelope-body");
+    envelopeBuilderMock.mockResolvedValue(formatEnvelopeMock);
+  });
+
+  it("routes the message, builds its envelope with the awaited builder and records into the agent's store", async () => {
+    createPipelineMock.mockReturnValue({ onModelSelected: vi.fn() });
+    runPreparedMock.mockResolvedValue(undefined);
+    const resolveStorePath = vi.fn(() => "/state/agents/supervisor/sessions");
+    const recordInboundSession = vi.fn();
+    const cfg = { session: { store: "store" } };
+    const runtime = {
+      channel: {
+        reply: {
+          finalizeInboundContext: vi.fn((c: unknown) => c),
+          dispatchReplyWithBufferedBlockDispatcher: vi.fn(),
+        },
+        session: { recordInboundSession, resolveStorePath },
+      },
+    };
+
+    await dispatchInboundDirectDmWithReasoning({
+      cfg,
+      runtime,
+      channel: "sellerclaw-ui",
+      channelLabel: "SellerClaw UI",
+      accountId: "default",
+      peer: { kind: "direct", id: "c1" },
+      senderId: "u1",
+      senderAddress: "sellerclaw-ui:u1",
+      recipientAddress: "sellerclaw-ui:direct:c1",
+      conversationLabel: "c1",
+      rawBody: "hi",
+      messageId: "m1",
+      timestamp: 123,
+      commandAuthorized: true,
+      deliver: vi.fn(),
+    });
+
+    const route = { sessionKey: "sk", agentId: "supervisor", accountId: "default" };
+    expect(resolveAgentRouteMock).toHaveBeenCalledWith({
+      cfg,
+      channel: "sellerclaw-ui",
+      accountId: "default",
+      peer: { kind: "direct", id: "c1" },
+    });
+    expect(resolveStorePath).toHaveBeenCalledWith("store", { agentId: "supervisor" });
+    expect(envelopeBuilderMock).toHaveBeenCalledWith({ cfg, route });
+    expect(formatEnvelopeMock).toHaveBeenCalledWith({
+      channel: "SellerClaw UI",
+      from: "c1",
+      body: "hi",
+      timestamp: 123,
+    });
+    expect(runPreparedMock).toHaveBeenCalledTimes(1);
+    const prepared = runPreparedMock.mock.calls[0]![0] as Record<string, unknown>;
+    expect(prepared).toMatchObject({
+      channel: "sellerclaw-ui",
+      accountId: "default",
+      routeSessionKey: "sk",
+      storePath: "/state/agents/supervisor/sessions",
+      recordInboundSession,
+    });
+    expect((prepared.ctxPayload as Record<string, unknown>).Body).toBe("envelope-body");
+  });
+
+  it("forwards onReasoningStream/onReasoningEnd into the reply dispatcher's replyOptions", async () => {
     const onModelSelected = vi.fn();
     createPipelineMock.mockReturnValue({ onModelSelected, pipelineField: "x" });
 
@@ -50,7 +128,7 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
           dispatchReplyWithBufferedBlockDispatcher: dispatchReplyMock,
           dispatchReplyFromConfig: channelDispatch,
         },
-        session: { recordInboundSession: vi.fn() },
+        session: { recordInboundSession: vi.fn(), resolveStorePath: vi.fn(() => "/store") },
       },
     };
 
@@ -97,6 +175,51 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
     expect(callArg.dispatchReplyFromConfig).toBe(channelDispatch);
   });
 
+  it("asks the engine for tool starts when the caller listens for them", async () => {
+    createPipelineMock.mockReturnValue({ onModelSelected: vi.fn() });
+    runPreparedMock.mockImplementation(async (p: { runDispatch: () => Promise<void> }) => {
+      await p.runDispatch();
+    });
+    const dispatchReplyMock = vi.fn().mockResolvedValue(undefined);
+    const runtime = {
+      channel: {
+        reply: {
+          finalizeInboundContext: vi.fn((c: unknown) => ({ ctx: c })),
+          dispatchReplyWithBufferedBlockDispatcher: dispatchReplyMock,
+          dispatchReplyFromConfig: vi.fn(),
+        },
+        session: { recordInboundSession: vi.fn(), resolveStorePath: vi.fn(() => "/store") },
+      },
+    };
+    const onToolStart = vi.fn();
+
+    await dispatchInboundDirectDmWithReasoning({
+      cfg: { session: { store: "store" } },
+      runtime,
+      channel: "sellerclaw-ui",
+      channelLabel: "SellerClaw UI",
+      accountId: "default",
+      peer: { kind: "direct", id: "c1" },
+      senderId: "u1",
+      senderAddress: "sellerclaw-ui:u1",
+      recipientAddress: "sellerclaw-ui:direct:c1",
+      conversationLabel: "c1",
+      rawBody: "hi",
+      messageId: "m1",
+      timestamp: 123,
+      commandAuthorized: true,
+      replyOptions: { onToolStart },
+      deliver: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const callArg = dispatchReplyMock.mock.calls[0]![0] as { replyOptions: Record<string, unknown> };
+    // Without the second flag the engine keeps tool starts to channels that show tool summaries.
+    expect(callArg.replyOptions).toMatchObject({
+      onToolStart,
+      allowToolLifecycleWhenProgressHidden: true,
+    });
+  });
+
   it.each([
     {
       name: "an authorized sender",
@@ -108,17 +231,13 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
   ])(
     "builds the inbound context upstream builds, for $name",
     async ({ inboundAccessAuthorized, access }) => {
-      resolveRouteMock.mockReturnValue({
-        route: { sessionKey: "sk", agentId: "supervisor", accountId: "default" },
-        buildEnvelope: () => ({ storePath: "/store", body: "envelope-body" }),
-      });
       createPipelineMock.mockReturnValue({ onModelSelected: vi.fn() });
       runPreparedMock.mockResolvedValue(undefined);
       const finalizeInboundContext = vi.fn((c: unknown) => c);
       const runtime = {
         channel: {
           reply: { finalizeInboundContext, dispatchReplyWithBufferedBlockDispatcher: vi.fn() },
-          session: { recordInboundSession: vi.fn() },
+          session: { recordInboundSession: vi.fn(), resolveStorePath: vi.fn(() => "/store") },
         },
       };
 
@@ -172,10 +291,6 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
   );
 
   it("forwards the dispatcher's per-delivery info (kind/index) as the second deliver arg", async () => {
-    resolveRouteMock.mockReturnValue({
-      route: { sessionKey: "sk", agentId: "supervisor", accountId: "default" },
-      buildEnvelope: () => ({ storePath: "/store", body: "envelope-body" }),
-    });
     createPipelineMock.mockReturnValue({ onModelSelected: vi.fn() });
     runPreparedMock.mockImplementation(async (p: { runDispatch: () => Promise<void> }) => {
       await p.runDispatch();
@@ -188,7 +303,7 @@ describe("dispatchInboundDirectDmWithReasoning", () => {
           finalizeInboundContext: vi.fn((c: unknown) => ({ ctx: c })),
           dispatchReplyWithBufferedBlockDispatcher: dispatchReplyMock,
         },
-        session: { recordInboundSession: vi.fn() },
+        session: { recordInboundSession: vi.fn(), resolveStorePath: vi.fn(() => "/store") },
       },
     };
 

@@ -45,15 +45,29 @@ declare module "openclaw/plugin-sdk/channel-inbound" {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     params: Record<string, any>,
   ): Promise<unknown>;
+  /**
+   * Reads the session's previous timestamp once (in the session worker) and returns the envelope
+   * formatter for one inbound message: ``[channel from timestamp, elapsed] body``. Replaces the
+   * synchronous ``resolveInboundRouteEnvelopeBuilderWithRuntime`` (removed January 2027).
+   */
+  export function createChannelInboundEnvelopeBuilderAsync(params: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cfg: Record<string, any>;
+    route: { agentId: string; sessionKey: string };
+  }): Promise<
+    (input: { channel: string; from: string; body: string; timestamp?: number }) => string
+  >;
 }
 
-declare module "openclaw/plugin-sdk/inbound-envelope" {
+declare module "openclaw/plugin-sdk/routing" {
+  /** Picks the agent and session an inbound message belongs to (bindings, then the default agent). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  export function resolveInboundRouteEnvelopeBuilderWithRuntime(params: Record<string, any>): {
+  export function resolveAgentRoute(params: Record<string, any>): {
+    agentId: string;
+    sessionKey: string;
+    accountId?: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    route: Record<string, any>;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    buildEnvelope: (args: Record<string, any>) => { storePath: unknown; body: unknown };
+    [key: string]: any;
   };
 }
 
@@ -140,6 +154,47 @@ declare module "openclaw/plugin-sdk/core" {
     agent?: {
       events?: {
         registerAgentEventSubscription?: AgentEventSubscriptionRegistrar;
+      };
+    };
+    /**
+     * Session workflow (OpenClaw 2026.11). `steerActiveRun` hands text to the session's active run
+     * at its next step without starting a turn; the input is hidden plugin-authored context with no
+     * sender or owner authority. Needs `hooks.allowPromptInjection` and a live plugin instance.
+     * Optional: older hosts and metadata-only passes lack it.
+     */
+    session?: {
+      workflow?: {
+        steerActiveRun?: (params: {
+          sessionKey: string;
+          text: string;
+          idempotencyKey?: string;
+        }) => Promise<{ steered: boolean; runId?: string; reason?: string }>;
+      };
+    };
+    /**
+     * `runtime.subagent.forkSession` (OpenClaw 2026.11): a read-only side question to an existing
+     * session — the session's model replays it and answers once with tools denied, writing nothing
+     * back. Only for a session that ran a turn since the gateway started; 30 s default timeout;
+     * shares the subagent lane. Optional: older hosts and metadata-only passes lack it.
+     */
+    runtime?: {
+      subagent?: {
+        forkSession?: (params: {
+          sessionKey: string;
+          message: string;
+          timeoutMs?: number;
+          signal?: AbortSignal;
+        }) => Promise<{
+          text: string;
+          usage?: {
+            inputTokens?: number;
+            outputTokens?: number;
+            cacheReadTokens?: number;
+            cacheWriteTokens?: number;
+            totalTokens?: number;
+            costUsd?: number;
+          };
+        }>;
       };
     };
   };

@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.10.9
+ARG OPENCLAW_TAG=2026.11.1
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -87,16 +87,17 @@ RUN apt-get update \
     && adduser node ssl-cert \
     && rm -rf /var/lib/apt/lists/*
 
-# Playwright is required for browser tool internals and CDP flows. Resolved via NODE_PATH, so the
-# version OpenClaw picks up here must match the `playwright-core` it depends on itself — keep this ARG
-# in lockstep with the base image when OPENCLAW_TAG moves:
+# Playwright for whatever resolves the `playwright` package through NODE_PATH (scripts run in the
+# container). OpenClaw's own browser tool does not use this copy: it imports `playwright-core` from its
+# own /app/node_modules. Keep this ARG in lockstep with that version anyway, so both speak the same
+# protocol to the one Chrome — when OPENCLAW_TAG moves:
 #   docker run --rm --entrypoint sh ghcr.io/openclaw/openclaw:$OPENCLAW_TAG -c 'grep playwright-core /app/package.json'
-# (openclaw 2026.9.1-beta.1 pins playwright-core 1.62.1 exactly, and browsers come from the base image's
-# system Chrome — hence PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD.)
+# (openclaw 2026.11.1 pins playwright-core 1.63.0 exactly. The browser is the Chrome/Chromium the apt
+# step above installs — hence PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD.)
 # Unpinned before: `npm install -g playwright` took whatever npm called latest at build time, so the
 # shipped version changed silently the first time the layer cache missed — a rebuild today would jump
 # to 1.62.0 (Chromium 151) while every existing image runs 1.61.1 (Chromium 149).
-ARG PLAYWRIGHT_VERSION=1.62.1
+ARG PLAYWRIGHT_VERSION=1.63.0
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV NODE_PATH=/usr/local/lib/node_modules
 RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}"
@@ -179,6 +180,10 @@ RUN node --input-type=module -e "await import('grammy')"
 #                                                markdown (nav/footer/banners) cut at the fetch
 #                                                char limit. Enabled in config_generator too —
 #                                                keeping the dir alone does nothing.
+#   advisor                                   -> reviews user-triggered runs and steers one short
+#                                                correction on a clear wrong turn (a loop of
+#                                                failing calls). Enabled by config_generator when
+#                                                the manifest carries `advisor`.
 # Our own two plugins (sellerclaw-ui, sellerclaw-web-search) are kept defensively only: they are
 # COPYed into this directory further down, i.e. AFTER this prune runs. The entries cost nothing
 # and stop a future reordering from silently deleting the product's own plugins.
@@ -192,7 +197,7 @@ RUN node --input-type=module -e "await import('grammy')"
 # and the breakage only surfaces at runtime as a missing provider/plugin. Our own two plugins are
 # deliberately not checked — they arrive later in the build.
 RUN cd /app/dist/extensions && \
-    keep="browser telegram litellm memory-core anthropic google document-extract web-readability" && \
+    keep="browser telegram litellm memory-core anthropic google document-extract web-readability advisor" && \
     ours="sellerclaw-ui sellerclaw-web-search" && \
     for dir in */; do \
         case " $keep $ours " in \

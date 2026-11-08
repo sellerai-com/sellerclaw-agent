@@ -78,19 +78,21 @@ vi.mock("openclaw/plugin-sdk/plugin-runtime", () => ({
   getPluginRuntimeGatewayRequestScope: vi.fn(() => undefined),
 }));
 
-vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
-  dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue(undefined),
-  runPreparedInboundReply: vi.fn().mockResolvedValue(undefined),
-}));
-
 // Building blocks our local ``inbound-reply-with-reasoning`` composes. The plugin imports that
 // module at load time, so every test file that loads the plugin needs these specifiers to resolve
 // (they only exist inside the OpenClaw container at runtime). Tests that actually exercise the
 // dispatch mock the local module or these directly; here we just keep imports resolvable.
-vi.mock("openclaw/plugin-sdk/inbound-envelope", () => ({
-  resolveInboundRouteEnvelopeBuilderWithRuntime: vi.fn(() => ({
-    route: { sessionKey: "test-session", agentId: "supervisor", accountId: "default" },
-    buildEnvelope: () => ({ storePath: "/tmp/store", body: "envelope" }),
+vi.mock("openclaw/plugin-sdk/channel-inbound", () => ({
+  dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue(undefined),
+  runPreparedInboundReply: vi.fn().mockResolvedValue(undefined),
+  createChannelInboundEnvelopeBuilderAsync: vi.fn(async () => () => "envelope"),
+}));
+
+vi.mock("openclaw/plugin-sdk/routing", () => ({
+  resolveAgentRoute: vi.fn(() => ({
+    sessionKey: "test-session",
+    agentId: "supervisor",
+    accountId: "default",
   })),
 }));
 

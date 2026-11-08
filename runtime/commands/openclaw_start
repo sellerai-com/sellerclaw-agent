@@ -100,7 +100,11 @@ drop_log_noise() {
     # is a job that runs every 20 ms — ~50 identical lines a second at OPENCLAW_LOG_LEVEL=debug
     # (the local default). They bury `docker logs` and push real errors out of the tail the
     # activity probe reads, so exactly that line is dropped; every other line passes through.
-    grep --line-buffered -v -x -E '[0-9:]+ \[scheduler\] running event-loop-health'
+    # `-a`: the gateway's output is not guaranteed to be text — 2026.11.1 logs scheduler job keys
+    # with a NUL separator ("running github-publication:<agent>\0agent:…"). Without it GNU grep
+    # calls the stream binary at the first NUL, prints "binary file matches" and drops every line
+    # after it, silencing `docker logs` and the mirrored openclaw.log for the rest of the run.
+    grep -a --line-buffered -v -x -E '[0-9:]+ \[scheduler\] running event-loop-health'
 }
 
 rotate_log_if_oversize() {

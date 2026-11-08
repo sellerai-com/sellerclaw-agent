@@ -186,12 +186,19 @@ type OutboundParams = Record<string, unknown> & {
  *
  * Every outbound entry point goes through here so a new one cannot quietly skip normalization
  * and reintroduce ``Unknown target`` (or, worse, a turn posted without a ``chat_id``).
+ *
+ * ``to`` — where the send goes — always wins. Since OpenClaw 2026.11 send contexts also carry
+ * ``sessionKey``, which is the session the send comes FROM (docs: "the source session, not a
+ * session inferred from the delivery target"). Reading it first put every message the agent
+ * aimed at another chat — a team question retold in a new chat, the first words of a chat it
+ * opened, an update for the owner — into the chat it was writing from. The session fields stay
+ * only as a fallback for a context with no ``to`` at all.
  */
 function resolveOutboundDestination(
   p: OutboundParams,
   sendKind: string,
 ): { address: string; chatId: string | null } {
-  const raw = resolveSessionKey(p);
+  const raw = (typeof p.to === "string" && p.to.trim()) || resolveSessionKey(p);
   if (!raw) {
     throw new Error(`sellerclaw-ui: missing session key on outbound ${sendKind} params`);
   }

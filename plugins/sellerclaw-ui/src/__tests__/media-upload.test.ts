@@ -128,6 +128,50 @@ describe("outbound parts pipeline", () => {
     expect(partBody).toMatchObject({ kind: "text", text: "hello" });
   });
 
+  it.each([
+    ["the canonical address", "sellerclaw-ui:direct:7c3b611a-0000-4000-8000-000000000002"],
+    ["a bare chat id", "7c3b611a-0000-4000-8000-000000000002"],
+    ["the target chat's session key", "agent:supervisor:sellerclaw-ui:direct:7c3b611a-0000-4000-8000-000000000002"],
+  ])(
+    "sends to the chat named in `to` (%s), not the session the send comes from",
+    async (_label, to) => {
+      // OpenClaw 2026.11 adds `sessionKey` to every send context: the SOURCE session. A message
+      // the agent aims at another chat must still land in that other chat.
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+      globalThis.fetch = fetchMock;
+      const plugin = sellerclawUiChannelPlugin as {
+        outbound: { sendText: (p: unknown) => Promise<{ messageId: string }> };
+      };
+
+      await plugin.outbound.sendText({
+        account: partsAccount,
+        to,
+        sessionKey: "agent:supervisor:sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
+        text: "Hello from the new chat",
+      });
+
+      const startBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+      expect(startBody).toMatchObject({ chat_id: "7c3b611a-0000-4000-8000-000000000002" });
+    },
+  );
+
+  it("falls back to the session when a send context names no `to`", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    globalThis.fetch = fetchMock;
+    const plugin = sellerclawUiChannelPlugin as {
+      outbound: { sendText: (p: unknown) => Promise<{ messageId: string }> };
+    };
+
+    await plugin.outbound.sendText({
+      account: partsAccount,
+      sessionKey: "agent:supervisor:sellerclaw-ui:direct:550e8400-e29b-41d4-a716-446655440000",
+      text: "hello",
+    });
+
+    const startBody = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(startBody).toMatchObject({ chat_id: "550e8400-e29b-41d4-a716-446655440000" });
+  });
+
   it("sendMedia uploads a local path then delivers caption + image parts", async () => {
     const fetchMock = vi
       .fn()

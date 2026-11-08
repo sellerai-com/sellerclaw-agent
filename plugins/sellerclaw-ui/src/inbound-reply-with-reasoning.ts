@@ -1,7 +1,10 @@
-import { resolveInboundRouteEnvelopeBuilderWithRuntime } from "openclaw/plugin-sdk/inbound-envelope";
 import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
-import { runPreparedInboundReply } from "openclaw/plugin-sdk/channel-inbound";
+import {
+  createChannelInboundEnvelopeBuilderAsync,
+  runPreparedInboundReply,
+} from "openclaw/plugin-sdk/channel-inbound";
 import { normalizeOutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload";
+import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 
 /**
  * Local re-implementation of OpenClaw's ``dispatchInboundDirectDmWithRuntime`` that ALSO forwards
@@ -31,6 +34,20 @@ import { normalizeOutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload
  * subpath — the same function now ships from ``plugin-sdk/channel-outbound`` as
  * ``createChannelMessageReplyPipeline`` (same params, still returns ``onModelSelected``). The
  * inbound context fields upstream had gained since this copy was taken are mirrored too.
+ *
+ * Re-verified against 2026.11.1: the route + envelope step no longer goes through
+ * ``resolveInboundRouteEnvelopeBuilderWithRuntime``. That helper (family ``channel-inbound-envelope``)
+ * reads the session's previous timestamp with a synchronous SQLite call, warns as deprecated in
+ * 2026.11.1 (2026.10.9 does not yet) and is removed in the first stable release of January 2027. Its replacement —
+ * ``resolveAgentRoute`` + ``await createChannelInboundEnvelopeBuilderAsync`` — is what upstream's own
+ * ``dispatchInboundDirectDm`` uses; the same route resolver, store path and envelope formatter,
+ * with the timestamp read once in the session worker. The async builder returns only the body, so
+ * the store path comes from ``runtime.channel.session.resolveStorePath`` — the core helper the
+ * builder resolves it with internally. Both are present in 2026.10.9 too. Upstream's wrapper is itself
+ * deprecated now in favour of ``dispatchInboundDirectDm``, whose turn plan still hardcodes
+ * ``replyOptions: { onModelSelected }`` and drops the delivery label and ``isError`` — this copy
+ * still earns its keep, and ``dispatchInboundDirectDm`` (``buildDirectDmTurnPlan``) is what to
+ * compare against once the old wrapper is gone.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DispatchParams = Record<string, any>;
@@ -41,15 +58,17 @@ type DispatchParams = Record<string, any>;
  * case its answer is delivered by that run's turn, not by this dispatch.
  */
 export async function dispatchInboundDirectDmWithReasoning(params: DispatchParams): Promise<unknown> {
-  const { route, buildEnvelope } = resolveInboundRouteEnvelopeBuilderWithRuntime({
+  const route = resolveAgentRoute({
     cfg: params.cfg,
     channel: params.channel,
     accountId: params.accountId,
     peer: params.peer,
-    runtime: params.runtime.channel,
-    sessionStore: params.cfg.session?.store,
   });
-  const { storePath, body } = buildEnvelope({
+  const storePath = params.runtime.channel.session.resolveStorePath(params.cfg.session?.store, {
+    agentId: route.agentId,
+  });
+  const buildEnvelope = await createChannelInboundEnvelopeBuilderAsync({ cfg: params.cfg, route });
+  const body = buildEnvelope({
     channel: params.channelLabel,
     from: params.conversationLabel,
     body: params.rawBody,
@@ -145,6 +164,15 @@ export async function dispatchInboundDirectDmWithReasoning(params: DispatchParam
           onModelSelected,
           onReasoningStream: params.replyOptions?.onReasoningStream,
           onReasoningEnd: params.replyOptions?.onReasoningEnd,
+          // A tool starting tells the bridge that the text written just before it narrated the
+          // work rather than answered (``inbound.ts``, steps). The engine reports tool starts to a
+          // channel only when it asks for them while tool summaries stay hidden — ours do.
+          ...(params.replyOptions?.onToolStart
+            ? {
+                onToolStart: params.replyOptions.onToolStart,
+                allowToolLifecycleWhenProgressHidden: true,
+              }
+            : {}),
           ...(params.replyOptions?.abortSignal
             ? { abortSignal: params.replyOptions.abortSignal }
             : {}),
