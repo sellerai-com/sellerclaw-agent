@@ -36,6 +36,7 @@ import {
   postTurnPart,
   postTurnPreview,
   postTurnStart,
+  postTurnStep,
   resolveMediaKind,
   resolveOutboundMediaUrl,
   type ScwUiAccount,
@@ -481,6 +482,28 @@ const ADMISSION_REDISPATCH_DELAY_MS = 750;
 const QUEUED_TURN_MAX_WAIT_MS = 60 * 60_000;
 
 /**
+ * Longest a tool start waits for its step to reach the cloud. The tool is the agent's work and the
+ * step only tidies the chat: past this the tool runs, and the step lands whenever the cloud answers —
+ * or, if it never does, the words stay in the reply.
+ */
+export const STEP_WAIT_MS = 3_000;
+
+/** Wait for ``work``, but no longer than ``ms``. */
+async function settledOrAfter(work: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      work,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Run one chat turn: dispatch it to the agent, stream its parts to the cloud, finalize it, and —
  * when the run budget cut it short — resume it.
  *
@@ -683,6 +706,43 @@ async function startInboundTurn(params: {
       postThoughtText(rest);
     };
 
+    // Steps. Text the model writes right before starting a tool narrates the work ("Checking the
+    // card format:") rather than answers the owner — the same thing OpenClaw calls commentary for
+    // providers that label it, which ours does not. When a tool starts, the preview shown since the
+    // last step becomes a step in the "Thought" panel; the cloud puts the newest step back as the
+    // reply if the turn ends with nothing written after it, because then those words were the
+    // answer. Two signals, either one enough: the tool start itself (the engine delivers the blocks
+    // written before it first), and a block of a new assistant message — one only follows tool
+    // results, so the previous message ended in tools even if its start never reached us.
+    //
+    // One at a time: tools of one step start together, and a block waiting on a step must see
+    // the boundary state it left. The state moves only once the cloud took the step — after a
+    // failure (a cloud without the route answers 404) the words simply stay in the reply, and the
+    // next message is still separated from them as before.
+    let previewSinceStep = false;
+    let previewInFlight: Promise<void> = Promise.resolve();
+    let stepChain: Promise<void> = Promise.resolve();
+    const promotePreviewToStepNow = async (): Promise<void> => {
+      await previewInFlight;
+      if (!previewSinceStep) return;
+      try {
+        await postTurnStep(account, sessionKey, partsMessageId, payload.chat_id, {
+          agent_id: thoughtAgentId,
+          seq: thoughtSeq++,
+        });
+      } catch (err) {
+        logError(api, `sellerclaw-ui: step post failed session_key=${sessionKey}: ${String(err)}`);
+        return;
+      }
+      previewSinceStep = false;
+      prevTail = "";
+      previewMessageIndex = null;
+    };
+    const promotePreviewToStep = (): Promise<void> => {
+      stepChain = stepChain.then(promotePreviewToStepNow);
+      return stepChain;
+    };
+
     // A catch-up re-delivery dispatches as a fresh OpenClaw turn: a new MessageSid so any
     // session-level dedup on the original id can't suppress the re-run. A retry after a refused
     // admission needs the same treatment, and for the same reason. The engine hands this id back
@@ -727,6 +787,13 @@ async function startInboundTurn(params: {
       replyOptions: {
         onReasoningStream,
         onReasoningEnd,
+        // ``false``: a tool start shows the owner nothing new (a step only moves words already on
+        // screen). The engine counts any other answer as a visible reply, and on a queued turn that
+        // reply is what lets it skip telling the owner the run failed.
+        onToolStart: async (): Promise<false> => {
+          await settledOrAfter(promotePreviewToStep(), STEP_WAIT_MS);
+          return false;
+        },
         abortSignal: ownerTurn.abort.signal,
         turnAdoptionLifecycle: {
           admission: "cancel-only",
@@ -833,6 +900,9 @@ async function startInboundTurn(params: {
             // when no final ever arrived. So the boundary between sub-messages has to be right
             // here too, not only on the committed road below.
             const messageIndex = dispatchInfo.assistantMessageIndex ?? null;
+            if (previewMessageIndex !== null && messageIndex !== previewMessageIndex) {
+              await promotePreviewToStep();
+            }
             const startsNewSubMessage =
               previewMessageIndex !== null && messageIndex !== previewMessageIndex;
             previewMessageIndex = messageIndex;
@@ -841,10 +911,17 @@ async function startInboundTurn(params: {
             prevTail = outText.slice(-TAIL_KEEP_CHARS);
             try {
               await ensurePartsTurn();
-              await postTurnPreview(account, sessionKey, partsMessageId, payload.chat_id, {
+              const posting = postTurnPreview(account, sessionKey, partsMessageId, payload.chat_id, {
                 part_id: crypto.randomUUID(),
                 text: outText,
               });
+              // A tool start racing this delivery waits for it, so the step takes these words too.
+              previewInFlight = posting.then(
+                () => undefined,
+                () => undefined,
+              );
+              await posting;
+              previewSinceStep = true;
               // Counts as content: the cloud persists an orphaned preview tail at turn end,
               // so text the owner watched appear is real even if no final ever commits it.
               postedAnyContent = true;
@@ -866,6 +943,7 @@ async function startInboundTurn(params: {
             // Committing text drops the preview buffer cloud-side, so the next block starts a
             // fresh preview with nothing before it to be separated from.
             previewMessageIndex = null;
+            previewSinceStep = false;
             try {
               await ensurePartsTurn();
               await postTurnPart(

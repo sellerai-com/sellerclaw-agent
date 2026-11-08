@@ -389,6 +389,26 @@ export async function postTurnPreview(
   });
 }
 
+/**
+ * The preview shown since the last step was a step of the agent's work: the agent started a tool
+ * right after it. The cloud moves that text out of the reply into the "Thought" panel, and puts the
+ * newest step back as the reply if the turn ends with nothing written after it. ``seq`` comes from
+ * the turn's reasoning counter, so a step never collides with a thought block.
+ */
+export async function postTurnStep(
+  account: ScwUiAccount,
+  sessionKey: string,
+  messageId: string,
+  chatId: string | null,
+  payload: { agent_id: string; seq: number },
+): Promise<void> {
+  await postTurnRequest(account, `${TURN_PATH}/${messageId}/step`, {
+    session_key: sessionKey,
+    ...(chatId ? { chat_id: chatId } : {}),
+    ...payload,
+  });
+}
+
 export async function postTurnEnd(
   account: ScwUiAccount,
   sessionKey: string,

@@ -48,7 +48,7 @@ vi.mock("../runtime-store.js", () => ({
   getRuntime: () => ({}),
 }));
 
-import { pickDeltaJoin, readDeliverPayload, registerInboundRoute } from "../inbound.js";
+import { pickDeltaJoin, readDeliverPayload, registerInboundRoute, STEP_WAIT_MS } from "../inbound.js";
 
 const DEFAULT_CONFIG = {
   channels: {
@@ -1068,13 +1068,18 @@ describe("registerInboundRoute", () => {
       expect(previewTexts()).toEqual(["Working on it.", "Answer one."]);
     });
 
-    it("separates sub-messages in the preview when no final ever arrives", async () => {
+    it("separates sub-messages in the preview when the cloud cannot take a step", async () => {
       // Regression: a run whose finals never landed (aborted, timed out, or a runtime that only
       // block-streams) has its preview persisted by the cloud as the message body. Two separate
       // statements were joined with a single space there — `pickDeltaJoin` cannot tell a new
       // sub-message from a chunk cut mid-sentence — so a "starting now" note ran straight into
-      // the report of what had been done, reading as one confused paragraph.
+      // the report of what had been done, reading as one confused paragraph. Today the first
+      // sub-message becomes a step and leaves the preview; when the cloud refuses the step (an
+      // older one has no such route), both stay in the reply and must still be separated.
       const deliver = await dispatchOnce();
+      fetchMock.mockImplementation(async (url: unknown) =>
+        new Response(null, { status: String(url).endsWith("/step") ? 404 : 200 }),
+      );
       await deliver({ text: "I will take this product and start publishing." }, block(0));
       await deliver({ text: "This will take a few minutes." }, block(0));
       await deliver({ text: "Publishing started in every store." }, block(1));
@@ -1094,6 +1099,86 @@ describe("registerInboundRoute", () => {
       await deliver({ text: "hours" }, { kind: "block" });
 
       expect(previewTexts().join("")).toBe("a few hours");
+    });
+
+    describe("steps — the line written right before a tool", () => {
+      /** The engine reporting that a tool started (``replyOptions.onToolStart``). */
+      async function toolStart(): Promise<unknown> {
+        const arg = dispatchMock.mock.calls.at(-1)![0] as {
+          replyOptions: { onToolStart: (payload: unknown) => Promise<unknown> };
+        };
+        return await arg.replyOptions.onToolStart({ name: "exec", phase: "start" });
+      }
+
+      /** Which roads the turn took, in order — preview, step, part. */
+      function roads(): string[] {
+        return fetchMock.mock.calls
+          .map((c) => /\/internal\/openclaw\/turn\/[0-9a-f-]+\/(\w+)$/.exec(String(c[0]))?.[1])
+          .filter((road): road is string => road === "preview" || road === "step" || road === "part");
+      }
+
+      it("turns the previewed line into a step when a tool starts, and starts the answer afresh", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "Checking the card format:" }, block(0));
+        // Nothing new reached the owner, and the engine is told so: it counts any other answer as
+        // a visible reply.
+        expect(await toolStart()).toBe(false);
+        await deliver({ text: "Two orders wait to ship." }, block(1));
+
+        expect(roads()).toEqual(["preview", "step", "preview"]);
+        expect(bodiesFor("step")).toEqual([
+          expect.objectContaining({ agent_id: "a", seq: 0, session_key: expect.any(String) }),
+        ]);
+        // Nothing before it to be separated from: the step took the previous line away.
+        expect(previewTexts()).toEqual(["Checking the card format:", "Two orders wait to ship."]);
+      });
+
+      it("closes the previous message as a step when the next one streams, even without a tool start", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "Looking at the orders." }, block(0));
+        await deliver({ text: "Here they are." }, block(1));
+
+        expect(roads()).toEqual(["preview", "step", "preview"]);
+        expect(previewTexts()).toEqual(["Looking at the orders.", "Here they are."]);
+      });
+
+      it("lets the tool start once it has waited its limit on a cloud that does not answer", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "Reading the catalog." }, block(0));
+        fetchMock.mockImplementation((url: unknown) =>
+          String(url).endsWith("/step")
+            ? new Promise<Response>(() => {})
+            : Promise.resolve(new Response(null, { status: 200 })),
+        );
+        vi.useFakeTimers();
+        try {
+          const started = toolStart();
+          await vi.advanceTimersByTimeAsync(STEP_WAIT_MS);
+          await expect(started).resolves.toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("makes one step of one line, however many tools that step starts", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "Reading the catalog and the stock." }, block(0));
+        await toolStart();
+        await toolStart();
+
+        expect(bodiesFor("step")).toHaveLength(1);
+      });
+
+      it.each([
+        { name: "nothing was written yet", text: null },
+        { name: "the line was committed as the model's final text", text: "Working on it." },
+      ])("posts no step when $name", async ({ text }) => {
+        const deliver = await dispatchOnce();
+        if (text !== null) await deliver({ text }, final(0));
+        await toolStart();
+
+        expect(bodiesFor("step")).toEqual([]);
+      });
     });
   });
 
