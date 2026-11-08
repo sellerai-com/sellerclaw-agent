@@ -66,6 +66,7 @@ async def _run_unified_consume(
     gateway: _GatewayRecorder,
     monkeypatch: pytest.MonkeyPatch,
     cron_commands: _RecordingDispatcher | None = None,
+    session_questions: _RecordingDispatcher | None = None,
 ) -> None:
     monkeypatch.setenv("SELLERCLAW_API_URL", "http://cloud.test")
 
@@ -93,6 +94,7 @@ async def _run_unified_consume(
             dedup=cl._MessageIdDedup(),
             stop=asyncio.Event(),
             cron_commands=cron_commands,  # type: ignore[arg-type]
+            session_questions=session_questions,  # type: ignore[arg-type]
         )
 
 
@@ -111,6 +113,26 @@ async def test_unified_hands_cron_commands_to_the_dispatcher(monkeypatch: pytest
     )
     assert dispatcher.frames == [frame]
     # The retired scheduled_run frame runs nothing.
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unified_hands_session_questions_to_their_dispatcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``session_question`` is handed off to its own task, never to the cron dispatcher or the gateway."""
+    frame = {"request_id": "q1", "session_key": "agent:supervisor:x", "question": "Stuck?", "timeout_ms": 45000}
+    questions = _RecordingDispatcher()
+    cron = _RecordingDispatcher()
+    gateway = _GatewayRecorder()
+    await _run_unified_consume(
+        sse_body=_sse_bytes([("session_question", frame)]),
+        supervisor=_FakeSupervisor(status="running"),
+        gateway=gateway,
+        monkeypatch=monkeypatch,
+        cron_commands=cron,
+        session_questions=questions,
+    )
+    assert questions.frames == [frame]
+    assert cron.frames == []
     assert gateway.calls == []
 
 

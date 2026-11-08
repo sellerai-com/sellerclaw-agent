@@ -17,6 +17,8 @@ INBOUND_FORWARD_TIMEOUT = httpx.Timeout(60.0, connect=2.0)
 #: The ``sellerclaw-ui`` plugin's cron routes (``plugins/sellerclaw-ui/src/cron-routes.ts``).
 CRON_COMMAND_PATH = "/api/channels/sellerclaw-ui/cron/command"
 CRON_STANDBY_PATH = "/api/channels/sellerclaw-ui/cron/standby"
+STEER_PATH = "/api/channels/sellerclaw-ui/steer"
+SESSION_QUESTION_PATH = "/api/channels/sellerclaw-ui/session/question"
 
 
 def openclaw_gateway_base_url() -> str:
@@ -165,6 +167,61 @@ class LocalOpenClawForwarder:
             raise ValueError("cron command route answered a non-object")
         return payload
 
+    async def post_steer_json(self, body: dict[str, Any]) -> dict[str, Any]:
+        """POST ``{sessionKey, text, idempotencyKey}`` to the plugin's steer route; return its outcome.
+
+        The plugin hands the text to the session's active run and answers 200 with
+        ``{steered: true, runId?}`` or ``{steered: false, reason}``.
+
+        Raises:
+            httpx.ConnectError: the local gateway is not listening.
+            httpx.TimeoutException: connect/read timeout talking to the gateway.
+            httpx.HTTPStatusError: the route refused the body (non-2xx), e.g. an older plugin.
+            ValueError: the route answered something that is not a JSON object.
+        """
+        response = await self._post_gateway(STEER_PATH, body)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _log.warning(
+                "openclaw_steer_forward_failed status=%s body=%s",
+                exc.response.status_code,
+                (exc.response.text or "")[:500],
+            )
+            raise
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("steer route answered a non-object")
+        return payload
+
+    async def post_session_question_json(self, body: dict[str, Any], *, answer_timeout_s: float) -> dict[str, Any]:
+        """POST ``{sessionKey, question, timeoutMs}`` to the plugin's session-question route.
+
+        The plugin forks the session read-only and answers 200 with ``{ok: true, text, usage?}`` or
+        ``{ok: false, error}``. The read timeout outlasts ``answer_timeout_s``, the fork's own budget.
+
+        Raises:
+            httpx.ConnectError: the local gateway is not listening.
+            httpx.TimeoutException: connect/read timeout talking to the gateway.
+            httpx.HTTPStatusError: the route refused the body (non-2xx), e.g. an older plugin.
+            ValueError: the route answered something that is not a JSON object.
+        """
+        timeout = httpx.Timeout(answer_timeout_s + 15.0, connect=2.0)
+        response = await self._post_gateway(SESSION_QUESTION_PATH, body, timeout=timeout)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            _log.warning(
+                "openclaw_session_question_forward_failed status=%s body=%s",
+                exc.response.status_code,
+                (exc.response.text or "")[:500],
+            )
+            raise
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("session question route answered a non-object")
+        return payload
+
     async def post_cron_standby_json(self, *, standby: bool) -> tuple[bool, dict[str, Any]]:
         """Ask the plugin to enter (``True``) or leave (``False``) cron standby.
 
@@ -181,13 +238,17 @@ class LocalOpenClawForwarder:
             payload = {}
         return response.status_code == 200, payload if isinstance(payload, dict) else {}
 
-    async def _post_gateway(self, path: str, body: dict[str, Any]) -> httpx.Response:
+    async def _post_gateway(
+        self, path: str, body: dict[str, Any], *, timeout: httpx.Timeout | None = None
+    ) -> httpx.Response:
         url = f"{self._base}{path}"
         headers = _gateway_headers(self._gateway_token)
         if self._http is not None:
-            return await self._http.post(url, headers=headers, json=body)
+            if timeout is None:
+                return await self._http.post(url, headers=headers, json=body)
+            return await self._http.post(url, headers=headers, json=body, timeout=timeout)
         async with async_client(
-            timeout=INBOUND_FORWARD_TIMEOUT,
+            timeout=timeout or INBOUND_FORWARD_TIMEOUT,
             transport=self._transport,
         ) as client:
             return await client.post(url, headers=headers, json=body)

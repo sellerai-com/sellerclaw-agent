@@ -669,6 +669,44 @@ async def test_cron_command_goes_to_the_dispatcher_not_to_the_gateway(
 
 
 @pytest.mark.asyncio
+async def test_session_question_goes_to_its_dispatcher_not_to_the_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``session_question`` frame is handed off (its own task); the chat stream never waits on the model."""
+    frame = {"request_id": "q1", "session_key": "agent:supervisor:x", "question": "Stuck?", "timeout_ms": 45000}
+    questions = _RecordingDispatcher()
+    cron = _RecordingDispatcher()
+    inbound = _InboundRecorder(behavior="ok")
+    monkeypatch.setenv("SELLERCLAW_API_URL", "http://cloud.test")
+    chat_transport = _chat_sse_transport(_sse_bytes([("session_question", frame)]))
+    orig_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs.setdefault("transport", chat_transport)
+        return orig_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(cl.httpx, "AsyncClient", patched_async_client)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(inbound)) as inbound_http:
+        forwarder = LocalOpenClawForwarder(
+            base_url="http://gw.test", hooks_token="tok", gateway_token="gw-tok", http_client=inbound_http
+        )
+        await cl._consume_chat_sse(
+            agent_token="sca_access",
+            agent_instance_id=uuid4(),
+            forwarder=forwarder,
+            supervisor_mgr=_FakeSupervisor(status="running"),  # type: ignore[arg-type]
+            dedup=cl._MessageIdDedup(),
+            stop=asyncio.Event(),
+            cron_commands=cron,  # type: ignore[arg-type]
+            session_questions=questions,  # type: ignore[arg-type]
+        )
+
+    assert questions.frames == [frame]
+    assert cron.frames == []
+    assert inbound.calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("event_name", ["scheduled_run", "feasibility_check"])
 async def test_retired_scheduled_task_frames_are_ignored(
     monkeypatch: pytest.MonkeyPatch, event_name: str

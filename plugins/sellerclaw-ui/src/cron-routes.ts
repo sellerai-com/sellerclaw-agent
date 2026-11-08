@@ -1,9 +1,7 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
-
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import { readJsonWebhookBodyOrReject } from "openclaw/plugin-sdk/webhook-ingress";
 
 import { enterCronStandby, executeCronCommand, leaveCronStandby } from "./cron-sync.js";
+import { readObjectBody, reply } from "./local-route-body.js";
 import { logWarn } from "./log.js";
 
 /**
@@ -16,33 +14,6 @@ export const CRON_COMMAND_PATH = "/api/channels/sellerclaw-ui/cron/command";
 export const CRON_STANDBY_PATH = "/api/channels/sellerclaw-ui/cron/standby";
 
 const COMMAND_ACTIONS = new Set(["add", "update", "remove", "run"]);
-
-function reply(res: ServerResponse, status: number, body: unknown): true {
-  res.statusCode = status;
-  res.end(JSON.stringify(body));
-  return true;
-}
-
-async function readObjectBody(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<Record<string, unknown> | null> {
-  const readResult = await readJsonWebhookBodyOrReject({ req, res });
-  if (
-    !readResult ||
-    typeof readResult !== "object" ||
-    !("ok" in readResult) ||
-    !(readResult as { ok: boolean }).ok
-  ) {
-    return null; // already answered by the reader
-  }
-  const body = (readResult as { ok: true; value: unknown }).value;
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    reply(res, 400, { error: "Invalid JSON body" });
-    return null;
-  }
-  return body as Record<string, unknown>;
-}
 
 /**
  * `POST …/cron/command` — body: the `cron_command` frame. Answers 200 with the outcome the agent

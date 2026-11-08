@@ -213,6 +213,24 @@ the first snapshot.
 The bundle sets `cron.skipMissedJobs: true`: a recurring slot missed while the machine was off is
 skipped, not caught up at boot.
 
+### Staff side questions (protocol v8)
+
+SellerClaw staff ask the owner's agent about one chat from the admin panel; the owner and the chat
+never see it.
+
+Cloud → agent: the SSE frame `event: session_question` on `/agent/stream` (or the legacy
+`/agent/chat/stream`), data `{"request_id", "session_key", "question", "timeout_ms"}`. The agent
+runs each frame as its own task, one at a time, drops a repeated `request_id`, and posts
+`{sessionKey, question, timeoutMs}` (budget clamped to 5–120 s, 45 s by default) to the plugin's
+`POST /api/channels/sellerclaw-ui/session/question`. The plugin answers from a read-only copy of the
+session (OpenClaw `runtime.subagent.forkSession`): tools denied, no transcript written, nothing
+delivered. OpenClaw forks only a session that ran a turn since the gateway started.
+
+Agent → cloud: `POST /agent/session-questions/{request_id}` —
+`{"ok": bool, "answer": str|null, "error": str|null, "usage": {"input_tokens", "output_tokens",
+"total_tokens", "cost_usd"}|null}`; an unmeasured part is `null`, and a zero cost (a model OpenClaw
+has no price for) is sent as `null`. An instance on cron standby neither answers nor reports.
+
 ### Command lifecycle (server view)
 
 ```text
@@ -287,8 +305,9 @@ Any transport error (timeout, 5xx, DNS) is treated as transient: the agent logs 
 
 ## Protocol version
 
-Every ping carries `protocol_version` — the agent's own constant, not the value saved with the edge session at connect (a session saved by an older agent survives an upgrade on a persistent `/data`). The current agent version is **7**:
+Every ping carries `protocol_version` — the agent's own constant, not the value saved with the edge session at connect (a session saved by an older agent survives an upgrade on a persistent `/data`). The current agent version is **8**:
 
+- **8** — understands a `steer` hook envelope: `{"endpoint": "steer", "hookId", "body": {sessionKey, text, idempotencyKey}}` hands the text to the session's active run at its next step (OpenClaw `steerActiveRun`) instead of starting a turn; it is reported back like any named hook, with `delivered: false` (and the reason) when no run took it — the session is never woken. Also answers `session_question` frames (see [Staff side questions](#staff-side-questions-protocol-v8)). The cloud sends both only to agents at `>= 8`.
 - **7** — OpenClaw's native cron is the only scheduler: the agent reports its cron store (`/agent/cron/state`, `/agent/cron/runs`), restores the jobs the cloud hands back, executes `cron_command` frames and answers them on `/agent/cron/commands/{request_id}`, and goes on cron standby when another instance holds the session (see [Recurring tasks](#recurring-tasks-openclaw-cron-protocol-v7)). It no longer understands `scheduled_run` / `feasibility_check` and no longer sends `/agent/cron/snapshot`. The cloud offers its scheduled-task actions only to agents at `>= 7`.
 - **6** — understands a `send` hook envelope: `{"endpoint": "send", "hookId", "body": {channel, to, message, agentId?, idempotencyKey}}` goes to the gateway's `send` RPC — the text is delivered to the messenger as written, with no agent turn, and mirrored into the agent's conversation with that chat — and is reported back like any named hook. The cloud sends its notifications to WhatsApp only to agents at `>= 6` (an older agent would turn them into a model run that answers nothing).
 - **5** — understands `whatsapp_link` / `whatsapp_logout` and sends `whatsapp` in the ping (the cloud gates WhatsApp linking on `>= 5`).

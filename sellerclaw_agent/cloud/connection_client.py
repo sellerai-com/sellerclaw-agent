@@ -189,10 +189,11 @@ class SellerClawConnectionClient:
         return False
 
     async def _post_cron_json(self, path: str, body: dict[str, Any]) -> bool:
-        """POST a cron report; True when accepted, False when this cloud has no such endpoint.
+        """POST a report (cron, session question); True when accepted, False when this cloud has no
+        such endpoint.
 
-        An older cloud (before agent protocol 7) answers 404 / 405 / 501: the caller drops the
-        report quietly instead of treating it as a failure.
+        An older cloud (before the agent protocol that brought the report) answers 404 / 405 / 501:
+        the caller drops the report quietly instead of treating it as a failure.
         """
         response = await self._request_raw(
             "POST",
@@ -215,6 +216,10 @@ class SellerClawConnectionClient:
     async def post_cron_command_result(self, *, request_id: str, result: dict[str, Any]) -> bool:
         """Report the outcome of one ``cron_command`` (``POST /agent/cron/commands/{request_id}``)."""
         return await self._post_cron_json(f"/agent/cron/commands/{request_id}", result)
+
+    async def post_session_question_answer(self, *, request_id: str, result: dict[str, Any]) -> bool:
+        """Report the answer to one ``session_question`` (``POST /agent/session-questions/{request_id}``)."""
+        return await self._post_cron_json(f"/agent/session-questions/{request_id}", result)
 
     async def post_cron_runs(self, runs: list[dict[str, Any]]) -> bool:
         """Report finished cron runs (``POST /agent/cron/runs``); the cloud merges repeats."""

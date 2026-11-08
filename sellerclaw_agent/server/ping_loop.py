@@ -62,11 +62,15 @@ _log = structlog.get_logger(__name__)
 #     (``/agent/cron/state`` + ``/agent/cron/runs``), restores the jobs the cloud hands back, and
 #     executes ``cron_command`` frames. The ``scheduled_run`` / ``feasibility_check`` frames and
 #     the ``/agent/cron/snapshot`` report are gone.
+# v8: understands a ``steer`` hook envelope — text handed to a session's active run (OpenClaw
+#     ``steerActiveRun``), reported back like any named hook — and ``session_question`` frames: a
+#     read-only side question to a session (``forkSession``), answered to
+#     ``/agent/session-questions/{request_id}``.
 #
 # Every ping carries this constant, not the version saved with the edge session at connect:
 # with a persistent /data (self-hosted, local compose) a session saved by an older agent
 # survives the upgrade, and the cloud would keep gating new commands on the old number.
-AGENT_PROTOCOL_VERSION = 7
+AGENT_PROTOCOL_VERSION = 8
 
 # Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
 # build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the

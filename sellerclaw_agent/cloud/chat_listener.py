@@ -40,6 +40,7 @@ from sellerclaw_agent.cloud.openclaw_forwarder import (
     LocalOpenClawForwarder,
     openclaw_gateway_base_url,
 )
+from sellerclaw_agent.cloud.session_questions import SessionQuestionDispatcher
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
 from sellerclaw_agent.cloud.sse_codec import iter_sse_events
 from sellerclaw_agent.cloud.supervisor_manager import (
@@ -222,6 +223,16 @@ def dispatch_cron_command(payload: dict[str, Any], *, cron_commands: CronCommand
     cron_commands.submit(payload)
 
 
+def dispatch_session_question(
+    payload: dict[str, Any], *, session_questions: SessionQuestionDispatcher | None
+) -> None:
+    """Hand a ``session_question`` frame to its own task: the stream never waits on the model."""
+    if session_questions is None:
+        _log.warning("session_question_dropped_no_dispatcher", request_id=payload.get("request_id"))
+        return
+    session_questions.submit(payload)
+
+
 async def _consume_chat_sse(
     *,
     agent_token: str,
@@ -231,6 +242,7 @@ async def _consume_chat_sse(
     dedup: _MessageIdDedup,
     stop: asyncio.Event,
     cron_commands: CronCommandDispatcher | None = None,
+    session_questions: SessionQuestionDispatcher | None = None,
 ) -> None:
     _openclaw_gate = make_openclaw_gate(supervisor_mgr)
 
@@ -266,6 +278,9 @@ async def _consume_chat_sse(
                     continue
                 if event_name == "cron_command":
                     dispatch_cron_command(payload, cron_commands=cron_commands)
+                    continue
+                if event_name == "session_question":
+                    dispatch_session_question(payload, session_questions=session_questions)
 
 
 async def run_edge_chat_sse_loop(
@@ -280,6 +295,11 @@ async def run_edge_chat_sse_loop(
     supervisor_mgr = create_supervisor_manager()
     dedup = _MessageIdDedup()
     cron_commands = CronCommandDispatcher(
+        data_dir=data_dir,
+        standby=get_cron_standby(data_dir),
+        openclaw_gate=make_openclaw_gate(supervisor_mgr),
+    )
+    session_questions = SessionQuestionDispatcher(
         data_dir=data_dir,
         standby=get_cron_standby(data_dir),
         openclaw_gate=make_openclaw_gate(supervisor_mgr),
@@ -331,6 +351,7 @@ async def run_edge_chat_sse_loop(
                         dedup=dedup,
                         stop=stop,
                         cron_commands=cron_commands,
+                        session_questions=session_questions,
                     )
                 finally:
                     if registry is not None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -61,7 +62,7 @@ _DELIVERY_REPORT_TIMEOUT = httpx.Timeout(15.0)
 #: tried for background nudges and dropped — a queued event runs only once the session goes idle,
 #: and it is accepted with a 200 either way, so a hook could sit unrun for minutes while the report
 #: below called it delivered.
-_HOOK_ENDPOINTS = frozenset({"agent", "send"})
+_HOOK_ENDPOINTS = frozenset({"agent", "send", "steer"})
 
 
 async def report_hook_delivery(
@@ -146,6 +147,9 @@ async def forward_hook_event(
             _log.info("messenger_send_ok", channel=body.get("channel"))
             await _report(True, None)
         return
+    if endpoint == "steer":
+        await _steer_active_run(body, forwarder=forwarder, report=_report)
+        return
     try:
         await forwarder.post_hooks_agent_json(body)
     except httpx.ConnectError as exc:
@@ -159,6 +163,36 @@ async def forward_hook_event(
         await _report(False, str(exc)[:500])
     else:
         await _report(True, None)
+
+
+async def _steer_active_run(
+    body: dict[str, Any],
+    *,
+    forwarder: LocalOpenClawForwarder,
+    report: Callable[[bool, str | None], Awaitable[None]],
+) -> None:
+    """A ``steer`` envelope: hand the text to the session's active run, report whether it took.
+
+    The cloud sends one only for a session that is mid-run, which must never be woken with a hook
+    (the gateway's refusal discards the reply being prepared). So nothing here falls back to a
+    wake: a run that did not take the text — or a gateway that failed to answer — is reported as
+    not delivered, and the cloud keeps the update for its next sweep.
+    """
+    session_key = body.get("sessionKey")
+    try:
+        outcome = await forwarder.post_steer_json(body)
+    except (httpx.HTTPError, ValueError) as exc:
+        _log.info("hook_steer_failed", session_key=session_key, error=str(exc)[:500])
+        await report(False, f"steer_failed: {str(exc)[:500]}")
+        return
+    except Exception as exc:  # noqa: BLE001 - the outcome is reported, then left in the log
+        _log.exception("hook_steer_crashed", session_key=session_key)
+        await report(False, str(exc)[:500])
+        return
+    steered = outcome.get("steered") is True
+    reason = None if steered else str(outcome.get("reason") or "not steered")[:500]
+    _log.info("hook_steer_done", session_key=session_key, steered=steered, reason=reason)
+    await report(steered, reason)
 
 
 def _read_hook_envelope(payload: dict[str, Any]) -> tuple[str, dict[str, Any], str | None]:

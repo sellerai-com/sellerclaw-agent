@@ -6,6 +6,8 @@ import { registerCronCommandRoute, registerCronStandbyRoute } from "./src/cron-r
 import { registerCronSyncService } from "./src/cron-sync.js";
 import { withPerPassHooks } from "./src/hook-registration.js";
 import { registerAbortRoute, registerInboundRoute } from "./src/inbound.js";
+import { registerSessionQuestionRoute } from "./src/session-question-route.js";
+import { registerSteerRoute } from "./src/steer-route.js";
 
 /**
  * The bundled channel entry for SellerClaw UI.
@@ -42,6 +44,8 @@ export default withPerPassHooks(
       registerAbortRoute(api);
       registerCronCommandRoute(api);
       registerCronStandbyRoute(api);
+      registerSteerRoute(api);
+      registerSessionQuestionRoute(api);
       registerCronSyncService(api);
     },
   }),

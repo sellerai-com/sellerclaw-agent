@@ -178,7 +178,7 @@ async def test_an_accepted_ping_releases_standby(monkeypatch: pytest.MonkeyPatch
 
     assert standby.is_standby() is False
     assert plugin.requested == [False]
-    assert client.ping.await_args.kwargs["protocol_version"] == 7
+    assert client.ping.await_args.kwargs["protocol_version"] == 8
 
 
 async def test_an_invalidated_session_alone_is_not_standby(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

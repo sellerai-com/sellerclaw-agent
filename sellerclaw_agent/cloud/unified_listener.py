@@ -1,7 +1,8 @@
 """Background task: single SellerClaw edge SSE → local OpenClaw (chat + hooks merged).
 
 Supersedes ``chat_listener`` + ``hooks_listener``: one ``/agent/stream`` connection carries
-chat (``user_message``/``cancel``), hooks (``hook_event``) and cron (``cron_command``) events,
+chat (``user_message``/``cancel``), hooks (``hook_event``), cron (``cron_command``) and staff
+side questions (``session_question``) events,
 halving the number of long-lived connections each agent holds to the cloud. Per-event handling is reused verbatim
 from the two listeners; this module only adds the merged consume + its reconnect loop.
 """
@@ -31,6 +32,7 @@ from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.cloud.chat_listener import (
     _MessageIdDedup,
     dispatch_cron_command,
+    dispatch_session_question,
     forward_cancel,
     forward_user_message,
 )
@@ -52,6 +54,7 @@ from sellerclaw_agent.cloud.openclaw_forwarder import (
     LocalOpenClawForwarder,
     openclaw_gateway_base_url,
 )
+from sellerclaw_agent.cloud.session_questions import SessionQuestionDispatcher
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
 from sellerclaw_agent.cloud.sse_codec import iter_sse_events
 from sellerclaw_agent.cloud.supervisor_manager import create_supervisor_manager
@@ -106,8 +109,9 @@ async def _consume_unified_sse(
     dedup: _MessageIdDedup,
     stop: asyncio.Event,
     cron_commands: CronCommandDispatcher | None = None,
+    session_questions: SessionQuestionDispatcher | None = None,
 ) -> None:
-    """Drain the unified SSE stream, routing each frame to the chat, hooks or cron handler by name."""
+    """Drain the unified SSE stream, routing each frame to its handler by name."""
     base = get_sellerclaw_api_url().rstrip("/")
     url = f"{base}/agent/stream"
     params = {"agent_instance_id": str(agent_instance_id)}
@@ -136,6 +140,8 @@ async def _consume_unified_sse(
                     )
                 elif event_name == "cron_command":
                     dispatch_cron_command(payload, cron_commands=cron_commands)
+                elif event_name == "session_question":
+                    dispatch_session_question(payload, session_questions=session_questions)
                 elif event_name == "cancel":
                     await forward_cancel(payload, forwarder=forwarder)
                 elif event_name == "hook_event":
@@ -160,6 +166,11 @@ async def run_edge_unified_sse_loop(
     openclaw_gate = make_openclaw_gate(supervisor_mgr)
     dedup = _MessageIdDedup()
     cron_commands = CronCommandDispatcher(
+        data_dir=data_dir,
+        standby=get_cron_standby(data_dir),
+        openclaw_gate=openclaw_gate,
+    )
+    session_questions = SessionQuestionDispatcher(
         data_dir=data_dir,
         standby=get_cron_standby(data_dir),
         openclaw_gate=openclaw_gate,
@@ -219,6 +230,7 @@ async def run_edge_unified_sse_loop(
                         dedup=dedup,
                         stop=stop,
                         cron_commands=cron_commands,
+                        session_questions=session_questions,
                     )
                 finally:
                     if registry is not None:

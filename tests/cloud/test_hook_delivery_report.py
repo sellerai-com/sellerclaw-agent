@@ -344,3 +344,99 @@ async def test_a_send_while_openclaw_is_down_never_reaches_the_gateway(
     assert send_gateway.calls == []
     assert reports[0]["delivered"] is False
     assert "openclaw_not_running" in (reports[0]["error"] or "")
+
+
+class _SteerGateway:
+    """The plugin's steer route: records what it was asked, answers with ``outcome`` (or a status)."""
+
+    def __init__(self, *, outcome: dict[str, Any] | None = None, status: int = 200) -> None:
+        self.outcome = outcome if outcome is not None else {"steered": True, "runId": "run-1"}
+        self.status = status
+        self.paths: list[str] = []
+        self.bodies: list[dict[str, Any]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.paths.append(request.url.path)
+        self.bodies.append(json.loads(request.content.decode("utf-8")))
+        if self.status != 200:
+            return httpx.Response(self.status, text="Not Found")
+        return httpx.Response(200, json=self.outcome)
+
+
+_STEER_BODY = {
+    "sessionKey": "agent:supervisor:sellerclaw-ui:direct:c1",
+    "text": "The owner answered: go with supplier B.",
+    "idempotencyKey": "h-steer",
+}
+
+
+@pytest.mark.parametrize(
+    ("gateway", "expected_report"),
+    [
+        pytest.param(
+            _SteerGateway(),
+            {"hook_id": "h-steer", "delivered": True, "error": None},
+            id="steered-is-delivered",
+        ),
+        pytest.param(
+            _SteerGateway(outcome={"steered": False, "reason": "no active run"}),
+            {"hook_id": "h-steer", "delivered": False, "error": "no active run"},
+            id="not-steered-is-reported-with-the-reason",
+        ),
+        pytest.param(
+            _SteerGateway(outcome={"steered": False}),
+            {"hook_id": "h-steer", "delivered": False, "error": "not steered"},
+            id="not-steered-without-a-reason",
+        ),
+    ],
+)
+async def test_a_steer_envelope_goes_to_the_plugin_and_never_wakes_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+    gateway: _SteerGateway,
+    expected_report: dict[str, Any],
+) -> None:
+    """A steer envelope is only ever sent for a session mid-run, which a hook would cost its reply:
+    whatever the plugin answers, ``/hooks/agent`` is never called."""
+    reports = await _forward(
+        {"endpoint": "steer", "hookId": "h-steer", "body": dict(_STEER_BODY)},
+        monkeypatch=monkeypatch,
+        gateway=gateway,  # type: ignore[arg-type]
+    )
+
+    assert gateway.paths == ["/api/channels/sellerclaw-ui/steer"]
+    assert gateway.bodies == [_STEER_BODY]
+    assert reports == [expected_report]
+
+
+async def test_a_plugin_without_the_steer_route_is_not_delivered_and_not_woken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An agent image whose plugin predates the route answers 404: not delivered, no hook."""
+    gateway = _SteerGateway(status=404)
+    reports = await _forward(
+        {"endpoint": "steer", "hookId": "h-steer", "body": dict(_STEER_BODY)},
+        monkeypatch=monkeypatch,
+        gateway=gateway,  # type: ignore[arg-type]
+    )
+
+    assert gateway.paths == ["/api/channels/sellerclaw-ui/steer"]
+    assert len(reports) == 1
+    assert reports[0]["hook_id"] == "h-steer"
+    assert reports[0]["delivered"] is False
+    assert reports[0]["error"].startswith("steer_failed: Client error '404 Not Found'")
+
+
+async def test_a_steer_envelope_waits_for_a_running_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    gateway = _SteerGateway()
+    reports = await _forward(
+        {"endpoint": "steer", "hookId": "h-steer", "body": dict(_STEER_BODY)},
+        monkeypatch=monkeypatch,
+        gateway=gateway,  # type: ignore[arg-type]
+        supervisor=_FakeSupervisor(status="stopped"),
+    )
+
+    assert gateway.paths == []
+    assert len(reports) == 1
+    assert reports[0]["hook_id"] == "h-steer"
+    assert reports[0]["delivered"] is False
+    assert reports[0]["error"].startswith("openclaw_not_running")
