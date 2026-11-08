@@ -48,7 +48,13 @@ vi.mock("../runtime-store.js", () => ({
   getRuntime: () => ({}),
 }));
 
-import { pickDeltaJoin, readDeliverPayload, registerInboundRoute, STEP_WAIT_MS } from "../inbound.js";
+import {
+  pickDeltaJoin,
+  readDeliverPayload,
+  registerInboundRoute,
+  STEP_WAIT_MS,
+  TURN_ALIVE_INTERVAL_MS,
+} from "../inbound.js";
 
 const DEFAULT_CONFIG = {
   channels: {
@@ -1178,6 +1184,88 @@ describe("registerInboundRoute", () => {
         await toolStart();
 
         expect(bodiesFor("step")).toEqual([]);
+      });
+    });
+
+    describe("heartbeat — the reply stays open while the agent works", () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      /**
+       * A run that keeps working until the test lets it finish. The inbound handler holds its
+       * request until the turn is over, so it is started rather than awaited.
+       */
+      async function startRun(): Promise<{
+        deliver: DeliverWithInfo;
+        finish: () => Promise<void>;
+      }> {
+        let release: () => void = () => {};
+        dispatchMock.mockImplementationOnce(
+          () =>
+            new Promise<void>((resolve) => {
+              release = resolve;
+            }),
+        );
+        fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
+        readBodyMock.mockResolvedValue({
+          ok: true,
+          value: { chat_id: "c1", agent_id: "a", user_id: "u", text: "go" },
+        });
+        const { api, registerHttpRoute } = buildApi();
+        registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+        // Only the heartbeat's own clock: everything else in the turn keeps real time.
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const turn = getHandler(registerHttpRoute)(
+          { headers: {} } as IncomingMessage,
+          { statusCode: 0, end: vi.fn() } as unknown as ServerResponse,
+        );
+        await vi.waitFor(() => expect(dispatchMock).toHaveBeenCalled());
+        const deliver = (dispatchMock.mock.calls.at(-1)![0] as { deliver: DeliverWithInfo }).deliver;
+        return {
+          deliver,
+          finish: async () => {
+            release();
+            await turn;
+          },
+        };
+      }
+
+      it.each([
+        { name: "a cloud that keeps it open", status: 204 },
+        { name: "a cloud older than the heartbeat", status: 404 },
+      ])("beats every half minute while the reply is open, with $name", async ({ status }) => {
+        const { deliver, finish } = await startRun();
+        fetchMock.mockImplementation(async (url: unknown) =>
+          String(url).endsWith("/alive")
+            ? new Response(null, { status })
+            : new Response(null, { status: 200 }),
+        );
+        await deliver({ text: "Reading the catalog." }, block(0));
+
+        vi.advanceTimersByTime(TURN_ALIVE_INTERVAL_MS * 2);
+
+        expect(bodiesFor("alive")).toEqual([
+          { user_id: "user-1", session_key: expect.any(String), chat_id: "c1" },
+          { user_id: "user-1", session_key: expect.any(String), chat_id: "c1" },
+        ]);
+        // The run ends as usual, whatever the cloud said to the beats — and the beats stop with it.
+        await finish();
+        expect(bodiesFor("end")).toEqual([expect.objectContaining({ status: "completed" })]);
+        vi.advanceTimersByTime(TURN_ALIVE_INTERVAL_MS * 3);
+        expect(bodiesFor("alive")).toHaveLength(2);
+      });
+
+      it("does not beat before the reply exists", async () => {
+        const { deliver, finish } = await startRun();
+
+        vi.advanceTimersByTime(TURN_ALIVE_INTERVAL_MS * 3);
+
+        expect(bodiesFor("alive")).toEqual([]);
+        // Answered at the very end, so the turn closes without being asked again.
+        await deliver({ text: "Done." }, final(0));
+        await finish();
       });
     });
   });

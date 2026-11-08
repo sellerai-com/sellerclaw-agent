@@ -409,6 +409,24 @@ export async function postTurnStep(
   });
 }
 
+/**
+ * Tell the cloud the agent is still working on this turn's reply.
+ *
+ * The cloud closes a reply after two quiet minutes, its safety net for an agent that went away
+ * mid-turn; a long tool call or a wait on a specialist has nothing to show for that long.
+ */
+export async function postTurnAlive(
+  account: ScwUiAccount,
+  sessionKey: string,
+  messageId: string,
+  chatId: string | null,
+): Promise<void> {
+  await postTurnRequest(account, `${TURN_PATH}/${messageId}/alive`, {
+    session_key: sessionKey,
+    ...(chatId ? { chat_id: chatId } : {}),
+  });
+}
+
 export async function postTurnEnd(
   account: ScwUiAccount,
   sessionKey: string,

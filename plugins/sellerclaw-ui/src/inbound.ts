@@ -32,6 +32,7 @@ import {
 } from "./run-outcome.js";
 import {
   postThought,
+  postTurnAlive,
   postTurnEnd,
   postTurnPart,
   postTurnPreview,
@@ -487,6 +488,12 @@ const QUEUED_TURN_MAX_WAIT_MS = 60 * 60_000;
  * or, if it never does, the words stay in the reply.
  */
 export const STEP_WAIT_MS = 3_000;
+
+/**
+ * How often a running turn tells the cloud its reply is still being worked on. The cloud closes a
+ * reply after two quiet minutes, so a beat every half minute survives a lost one or two.
+ */
+export const TURN_ALIVE_INTERVAL_MS = 30_000;
 
 /** Wait for ``work``, but no longer than ``ms``. */
 async function settledOrAfter(work: Promise<unknown>, ms: number): Promise<void> {
@@ -1261,9 +1268,26 @@ async function startInboundTurn(params: {
     throw lastError;
   };
 
+  /**
+   * Heartbeat for the reply this turn has open.
+   *
+   * The cloud closes a reply after two quiet minutes — its safety net for an agent that went away
+   * mid-turn — and a long tool call or a wait on a specialist shows nothing for that long. The
+   * owner then saw the agent finished while it worked on, and its later words were appended to a
+   * message already closed (2026-11-08). Beats only once the reply exists (before that the cloud
+   * has nothing to close) and stops the moment the dispatch settles, before the turn is
+   * finalized. A failed beat is dropped: the next is due in half a minute, a cloud older than the
+   * route answers 404 to every one of them, and for an agent that really went away the beats stop
+   * and the safety net does its job.
+   */
+  const heartbeat = setInterval(() => {
+    if (!partsTurnStarted) return;
+    void postTurnAlive(account, sessionKey, partsMessageId, payload.chat_id).catch(() => {});
+  }, TURN_ALIVE_INTERVAL_MS);
+
   try {
     try {
-      await dispatchWithAdmissionRetries();
+      await dispatchWithAdmissionRetries().finally(() => clearInterval(heartbeat));
       await finishTurn();
     } catch (err: unknown) {
       logError(api, `sellerclaw-ui: inbound dispatch failed: ${String(err)}`);
