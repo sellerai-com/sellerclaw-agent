@@ -8,6 +8,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { resolveSellerclawUiAccount, type ScwUiAccount } from "./channel.js";
 import { logInfo, logWarn } from "./log.js";
 import { getSharedState } from "./shared-state.js";
+import { takeSkippedRun } from "./subscription-gate.js";
 
 /**
  * The cloud's copy of the owner's OpenClaw cron jobs, kept from inside the gateway.
@@ -791,6 +792,14 @@ export function runEntryFromEvent(event: JsonRecord): JsonRecord | null {
   }
   const job = isRecord(event.job) ? event.job : null;
   if (job && typeof job.name === "string") entry.jobName = job.name;
+  // A run the subscription gate held (the owner's own AI plan is used up or signed out) is a skip,
+  // not a success: report it as one, with the gate's reason as what the owner reads.
+  const skipReason = takeSkippedRun(asString(event.runId));
+  if (skipReason !== null) {
+    entry.status = "skipped";
+    entry.summary = skipReason;
+    delete entry.error;
+  }
   return entry;
 }
 

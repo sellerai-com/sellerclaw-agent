@@ -47,6 +47,7 @@ WATCH_STOPPED_HINT = (
 _LABEL_CLOUD = "Cloud connection"
 _LABEL_AGENT = "Agent (OpenClaw)"
 _LABEL_CHAT = "Chat with agent"
+_LABEL_AI = "AI"
 _LABEL_BROWSER = "Browser"
 _LABEL_MODULES = "Active modules"
 _LABEL_INTEGRATIONS = "Integrations"
@@ -459,7 +460,10 @@ def render_status_panel(
     now: float,
     manifest: dict[str, Any] | None = None,
     fetch_error: str | None = None,
+    ai_row: tuple[str, str] | None = None,
 ) -> RenderableType:
+    """``ai_row`` — what powers the agent (credits or the owner's own plan) as (text, style);
+    without it the row is left out rather than guessed."""
     table = Table.grid(padding=(0, 2))
     table.add_column(justify="left", style="dim", no_wrap=True)
     table.add_column(justify="left", overflow="fold")
@@ -479,6 +483,10 @@ def render_status_panel(
         snapshot, signed_in=signed_in, manifest_loaded=manifest_loaded
     )
     table.add_row(_LABEL_CHAT, Text(chat_text, style=chat_style))
+
+    if ai_row is not None:
+        ai_text, ai_style = ai_row
+        table.add_row(_LABEL_AI, Text(ai_text, style=ai_style))
 
     if not manifest_loaded:
         if signed_in:
@@ -580,6 +588,19 @@ def _safe_get_manifest(
     return result if isinstance(result, dict) else None
 
 
+def _safe_get_ai_row(
+    get_ai_row: Callable[[], tuple[str, str] | None] | None,
+) -> tuple[str, str] | None:
+    if get_ai_row is None:
+        return None
+    try:
+        return get_ai_row()
+    except KeyboardInterrupt:
+        raise
+    except Exception:  # noqa: BLE001 - the AI row is optional, never block the watch
+        return None
+
+
 def run_status_watch(
     base_url: str,
     console: Console,
@@ -587,6 +608,7 @@ def run_status_watch(
     poll_interval: float = 2.0,
     get_snapshot: Callable[[str], dict[str, Any]],
     get_manifest: Callable[[], dict[str, Any] | None] | None = None,
+    get_ai_row: Callable[[], tuple[str, str] | None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], float] = time.time,
     live_factory: LiveFactory | None = None,
@@ -602,7 +624,9 @@ def run_status_watch(
     try:
         snap, err = _safe_get_snapshot(get_snapshot, base_url)
         manifest = _safe_get_manifest(get_manifest)
-        panel = render_status_panel(snap, now=now(), manifest=manifest, fetch_error=err)
+        panel = render_status_panel(
+            snap, now=now(), manifest=manifest, fetch_error=err, ai_row=_safe_get_ai_row(get_ai_row)
+        )
         with factory(
             panel,
             console=console,
@@ -614,7 +638,11 @@ def run_status_watch(
                 snap, err = _safe_get_snapshot(get_snapshot, base_url)
                 manifest = _safe_get_manifest(get_manifest)
                 panel = render_status_panel(
-                    snap, now=now(), manifest=manifest, fetch_error=err
+                    snap,
+                    now=now(),
+                    manifest=manifest,
+                    fetch_error=err,
+                    ai_row=_safe_get_ai_row(get_ai_row),
                 )
                 live.update(panel, refresh=True)
     except KeyboardInterrupt:

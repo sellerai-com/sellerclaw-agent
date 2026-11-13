@@ -23,6 +23,9 @@ class AssembledAgentConfig:
     agents_md: str
     memory_md: str
     model_ref: str = ""
+    # Further candidates for ``model_ref`` (the owner's own subscription lists several; the
+    # credits path has none). Rendered as ``{primary, fallbacks}`` when non-empty.
+    model_fallbacks: tuple[str, ...] = ()
     soul_md: str | None = None
     user_md: str | None = None
     tools_md: str | None = None

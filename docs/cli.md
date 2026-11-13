@@ -59,9 +59,41 @@ sellerclaw-agent browser     # where to watch the agent's browser
 sellerclaw-agent version     # installed agent version
 sellerclaw-agent update      # pull the newest image and recreate the container
 sellerclaw-agent uninstall   # remove it (add --purge to delete stored data too)
+sellerclaw-agent connect chatgpt # run the agent on your own ChatGPT plan instead of credits
+sellerclaw-agent connect claude  # run the agent on your own Claude plan instead of credits
+sellerclaw-agent disconnect      # back to SellerClaw credits
 ```
 
 `status`, `login` and `logout` run the very CLI documented below — inside the container, through `docker exec`, so the host needs no Python.
+
+### Your own AI plan
+
+`sellerclaw-agent connect claude` puts the agent's thinking on the owner's own Claude Pro or Max plan
+instead of SellerClaw credits (images, video, web search and memory still use credits). It installs
+Anthropic's Claude Code on the data volume with Anthropic's official installer (pinned version, no
+self-updates), runs Claude Code's own sign-in in your terminal — the link and the code are between
+you and Anthropic — and rebuilds the OpenClaw config. Everything lives under
+`/data/ai-subscription/`, so `sellerclaw-agent update` keeps the sign-in. When the plan's usage
+limit is used up the agent waits until it resets; it never switches to paid models. `status` shows
+the plan and how much of each limit is used. `sellerclaw-agent connect` with no plan named asks
+"What should power your agent?" — on credits: credits or a plan; on a plan: keep it, switch to the
+other one, sign in again (`connect <plan> --sign-in-again`: another account, or a sign-in that
+ended) or back to credits. The installer and `./setup.sh` ask it right after you sign in to your
+account. It only takes effect for an agent running on your own computer (Settings →
+Hosting in the web panel); the cloud sends the models for each plan in the manifest
+(`llm.subscription`).
+
+`sellerclaw-agent connect chatgpt` does the same on a ChatGPT Plus or Pro plan. The sign-in is
+OpenClaw's own device-code login: a link and a code appear in your terminal, you confirm them on
+OpenAI's page. While it runs, the agent loads OpenClaw's `openai` provider (models untouched); once
+it succeeds the agent restarts and the sign-in moves to OpenClaw's shared credential store, so the
+main agent and every specialist use one sign-in. A copy of it is kept in
+`/data/ai-subscription/chatgpt-auth.json` (owner-only, never sent anywhere) and put back when
+`sellerclaw-agent update` replaces the container. One plan at a time: connecting the other one
+signs the first one out. `disconnect` from ChatGPT restarts the agent to remove the sign-in.
+The ChatGPT sign-in goes through the running gateway, so `connect chatgpt` first waits up to two
+minutes for OpenClaw to start (right after sign-in it waits for the cloud's configuration; an agent
+its owner stopped needs **Start agent** in the web panel's chat).
 
 ## Run from source (contributors)
 
@@ -170,12 +202,14 @@ See the [cloud connection protocol](./connection-protocol.md) for how the ping l
 
 | Command | Description |
 |---------|-------------|
-| `setup` | **Default** when no argument is given: `docker compose up -d --build`, wait for `GET /health`, interactive cloud sign-in. |
+| `setup` | **Default** when no argument is given: `docker compose up -d --build`, wait for `GET /health`, interactive cloud sign-in; "What should power your agent?" (the question `connect` asks with no plan named); then the live status panel (its **AI** row says what powers the agent). |
 | `start` | Start the stack only: `docker compose up -d --build` in the agent directory. |
 | `stop` | Stop the stack: `docker compose down`. |
 | `status` | Show whether the agent is connected to the cloud (`GET /auth/status`). |
 | `login` | Sign in to the cloud (server must be running): up to 15 s wait for the agent, then the same interactive flow as `setup`. `login --browser` skips the menu and signs in by link. |
 | `logout` | Clear stored cloud credentials on the agent (`POST /auth/disconnect`). |
+| `connect [chatgpt\|claude]` | Without a plan: "What should power your agent?". With one: run the agent on your own plan ([Your own AI plan](#your-own-ai-plan)). In a checkout it runs inside the container (`docker compose exec`), where OpenClaw and Claude Code live. |
+| `disconnect` | Back to SellerClaw credits. |
 | `help` | Short help. Same idea: `-h`, `--help`, `help`. |
 
 Unknown command: exit code `2`.

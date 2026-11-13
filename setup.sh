@@ -9,6 +9,8 @@
 #   ./setup.sh status                — show connection status
 #   ./setup.sh login                 — connect to your account
 #   ./setup.sh logout                — disconnect from your account
+#   ./setup.sh connect chatgpt|claude — run the agent on your own ChatGPT or Claude plan
+#   ./setup.sh disconnect            — back to SellerClaw credits
 #   ./setup.sh help                  — show CLI help
 #
 # The full installer (no subcommand / 'setup') runs system checks and installs
@@ -58,6 +60,9 @@ Commands:
   status          Show connection status.
   login           Connect to your account.
   logout          Disconnect from your account.
+  connect chatgpt|claude
+                  Run the agent on your own ChatGPT or Claude plan instead of credits.
+  disconnect      Run the agent on SellerClaw credits again.
   help            Show CLI help.
 
 Options:
@@ -111,6 +116,10 @@ case "$SUBCMD" in
     ;;
   status|login|logout)
     NEED_CLI_UPGRADE=1
+    ;;
+  connect|disconnect)
+    # `connect` signs in inside the agent's container (docker compose exec, the profile's env file).
+    NEED_ENV_FILE=1
     ;;
   help|"")
     ;;

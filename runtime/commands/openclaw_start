@@ -411,6 +411,20 @@ cleanup_stale_session_locks() {
     done < <(find "${agents_root}" -type f -name '*.lock' -path '*/sessions/*' -print0)
 }
 
+settle_chatgpt_sign_in() {
+    # The owner's ChatGPT sign-in lives in OpenClaw's state databases, which only a stopped gateway
+    # lets us touch: a fresh device-code login moves from the main agent's store to the shared one
+    # every agent reads, a container that an update replaced gets it back from the copy on /data,
+    # and after a disconnect it is removed. A failure here never stops the agent from starting —
+    # the monitor then reports the plan as signed out and the owner reconnects.
+    local outcome
+    if outcome="$(python -m sellerclaw_agent.subscription.chatgpt_auth settle 2>&1)"; then
+        log "${outcome}"
+    else
+        log "ChatGPT sign-in was not settled (${outcome}); starting anyway"
+    fi
+}
+
 migrate_state_for_openclaw_version() {
     # A new OpenClaw release can raise the schema of the per-agent session databases
     # (agents/*/agent/openclaw-agent.sqlite) and then refuse the ones an older release wrote:
@@ -622,6 +636,7 @@ main() {
         gateway)
             cleanup_stale_session_locks
             migrate_state_for_openclaw_version
+            settle_chatgpt_sign_in
             sync_all_workspaces
             start_gateway
             ;;

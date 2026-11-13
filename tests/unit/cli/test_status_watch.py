@@ -157,6 +157,28 @@ def test_panel_shows_human_labels_no_jargon_when_healthy() -> None:
     assert "ping_loop" not in text
 
 
+@pytest.mark.parametrize(
+    "ai_row",
+    [
+        pytest.param(("your Claude plan (Max), limits used: 5-hour 47%, weekly 6%", "green"), id="own-plan"),
+        pytest.param(("SellerClaw credits (to use your ChatGPT or Claude plan: ./setup.sh connect chatgpt | claude)", ""), id="credits"),
+    ],
+)
+def test_panel_says_what_powers_the_agent(ai_row: tuple[str, str]) -> None:
+    snap = _health_snapshot(ping_last_success_at=_iso(offset_s=-3.0))
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=_full_manifest(), ai_row=ai_row), width=160)
+
+    row = next(line for line in text.splitlines() if line.strip("│ ").startswith("ai "))
+    assert ai_row[0].lower() in row
+
+
+def test_panel_leaves_the_ai_row_out_when_the_agent_cannot_say() -> None:
+    snap = _health_snapshot(ping_last_success_at=_iso(offset_s=-3.0))
+    text = _render_to_text(render_status_panel(snap, now=REF_TS, manifest=_full_manifest()))
+
+    assert not [line for line in text.splitlines() if line.strip("│ ").startswith("ai ")]
+
+
 def test_panel_without_manifest_when_signed_in_says_loading() -> None:
     """Fresh install after sign-in: manifest hasn't arrived from cloud yet.
 
@@ -656,6 +678,43 @@ def test_watch_survives_manifest_errors(monkeypatch: pytest.MonkeyPatch) -> None
     final = console.export_text().lower()
     assert "personalisation" in final
     assert "manifest file locked" not in final
+
+
+@pytest.mark.parametrize(
+    ("get_ai_row", "expected"),
+    [
+        pytest.param(lambda: ("your ChatGPT plan (Plus), limits used: 5-hour 12%", "green"), "your chatgpt plan (plus)", id="shown"),
+        pytest.param(lambda: (_ for _ in ()).throw(RuntimeError("agent api down")), None, id="error-left-out"),
+    ],
+)
+def test_watch_shows_what_powers_the_agent_and_survives_errors(
+    monkeypatch: pytest.MonkeyPatch, get_ai_row: Any, expected: str | None
+) -> None:
+    updates, _ = _spy_live_update(monkeypatch)
+
+    def get_snapshot(_: str) -> dict[str, Any]:
+        return _health_snapshot(ping_last_success_at=_iso(offset_s=-1.0))
+
+    sleep_fn, _ = _make_sleep_then_interrupt(2)
+    rc = run_status_watch(
+        "http://x",
+        _plain_console(),
+        poll_interval=0.0,
+        get_snapshot=get_snapshot,
+        get_manifest=_full_manifest,
+        get_ai_row=get_ai_row,
+        sleep=sleep_fn,
+        now=lambda: REF_TS,
+    )
+
+    assert rc == 0
+    rendered = [_render_snapshot_text(r) for r, _ in updates]
+    assert rendered
+    if expected is None:
+        assert all("agent api down" not in frame for frame in rendered)
+        assert all("cloud connection" in frame for frame in rendered)
+    else:
+        assert all(expected in frame for frame in rendered)
 
 
 def test_watch_captures_request_error_into_last_error(

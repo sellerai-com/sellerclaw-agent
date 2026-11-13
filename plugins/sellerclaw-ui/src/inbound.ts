@@ -2,7 +2,11 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { dispatchInboundDirectDmWithReasoning } from "./inbound-reply-with-reasoning.js";
 import { isReasoningReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { readJsonWebhookBodyOrReject } from "openclaw/plugin-sdk/webhook-ingress";
-import { ensureRouteScopeGatewayResolver, SUPERVISOR_TURN_SCOPE_SURFACE } from "./gateway-scope.js";
+import {
+  ensureRouteScopeGatewayResolver,
+  holdRouteScopeAuthorityForTurn,
+  SUPERVISOR_TURN_SCOPE_SURFACE,
+} from "./gateway-scope.js";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import {
   abortAgentHarnessRun,
@@ -43,6 +47,7 @@ import {
   type ScwUiAccount,
 } from "./send.js";
 import { getRuntime } from "./runtime-store.js";
+import { readAiSubscriptionSettings } from "./subscription-gate.js";
 import { continueRunningTurnsBelow, registerRunningTurn, type RunningTurn } from "./running-turns.js";
 
 interface InboundPayload {
@@ -1494,6 +1499,12 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         }`,
       );
 
+      // On the owner's own Claude plan the turn's tools run through OpenClaw's MCP loopback and
+      // check this request's authority, which OpenClaw ends with the 202 below: keep it for the
+      // turn (see holdRouteScopeAuthorityForTurn). Credits turns are left exactly as they were.
+      const releaseAuthority =
+        readAiSubscriptionSettings()?.provider === "claude" ? holdRouteScopeAuthorityForTurn() : null;
+
       res.statusCode = 202;
       res.end(JSON.stringify({ ok: true }));
 
@@ -1502,7 +1513,11 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
       // released the moment the handler returns; work that outlives it is refused with
       // `GatewayDrainingError: Gateway is draining` — the whole chat went silent that way.
       // Staying inside the handler also keeps the request's operator scope, which the run needs.
-      await startInboundTurn({ api, account, runtime, payload, sessionKey, inboundMessageId });
+      try {
+        await startInboundTurn({ api, account, runtime, payload, sessionKey, inboundMessageId });
+      } finally {
+        releaseAuthority?.();
+      }
 
       return true;
     },

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from sellerclaw_agent.assembly import AssembledAgentConfig
 from sellerclaw_agent.bundle.archive import build_gateway_version, build_workspaces_from_assembled
-from sellerclaw_agent.bundle.config_generator import ModelDefaults, generate_openclaw_config
-from sellerclaw_agent.bundle.manifest import AgentSpec, GenericManifest, ModelGroup, ModelRef
+from sellerclaw_agent.bundle.config_generator import (
+    ModelDefaults,
+    SubscriptionConfig,
+    generate_openclaw_config,
+)
+from sellerclaw_agent.bundle.manifest import AgentSpec, GenericManifest, LlmManifest, ModelGroup, ModelRef
 from sellerclaw_agent.bundle.result import BundleResult
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token_from_data_dir
 from sellerclaw_agent.cloud.settings import (
@@ -18,6 +22,13 @@ from sellerclaw_agent.cloud.settings import (
     get_sellerclaw_web_url,
 )
 from sellerclaw_agent.models import ModelTier
+from sellerclaw_agent.subscription.overlay import (
+    CLAUDE_MODE_PASSTHROUGH_GROUP,
+    SubscriptionOverlay,
+    resolve_overlay,
+)
+from sellerclaw_agent.subscription import chatgpt_auth
+from sellerclaw_agent.subscription.state import load_choice, status_path
 
 
 def _compose_agent_api_base_url(
@@ -312,7 +323,37 @@ def _model_block(
     return block
 
 
-def build_model_defaults(manifest: GenericManifest) -> ModelDefaults:
+def _rename_group(manifest: GenericManifest, old: str, new: str) -> GenericManifest:
+    """The same manifest with provider group ``old`` called ``new``, every ref following it."""
+    llm = manifest.llm
+    if old not in llm.groups:
+        return manifest
+
+    def ref(r: ModelRef | None) -> ModelRef | None:
+        return ModelRef(group=new, model=r.model) if r is not None and r.group == old else r
+
+    def refs(items: tuple[ModelRef, ...]) -> tuple[ModelRef, ...]:
+        return tuple(ref(r) or r for r in items)
+
+    renamed: LlmManifest = replace(
+        llm,
+        text_model={role: ref(r) or r for role, r in llm.text_model.items()},
+        image_model_primary=ref(llm.image_model_primary),
+        image_model_fallbacks=refs(llm.image_model_fallbacks),
+        video_model_primary=ref(llm.video_model_primary),
+        video_model_fallbacks=refs(llm.video_model_fallbacks),
+        pdf_model_primary=ref(llm.pdf_model_primary),
+        pdf_model_fallbacks=refs(llm.pdf_model_fallbacks),
+        compaction_model=ref(llm.compaction_model),
+        memory_flush_model=ref(llm.memory_flush_model),
+        groups={(new if name == old else name): group for name, group in llm.groups.items()},
+    )
+    return replace(manifest, llm=renamed)
+
+
+def build_model_defaults(
+    manifest: GenericManifest, subscription: SubscriptionOverlay | None = None
+) -> ModelDefaults:
     """Map the manifest ``llm`` block onto OpenClaw ``agents.defaults`` model blocks.
 
     - ``model`` <- ``text_model.primary`` (always present).
@@ -323,6 +364,23 @@ def build_model_defaults(manifest: GenericManifest) -> ModelDefaults:
     """
     llm = manifest.llm
     text_primary_ref = _openclaw_model_ref(manifest, llm.text_model["primary"])
+    if subscription is not None:
+        # All the agent's text runs on the owner's plan: the default model, compaction, the memory
+        # flush and (through it) the heartbeat. PDF reading stays on credits.
+        supervisor = subscription.supervisor
+        model: dict[str, object] = {"primary": supervisor.primary}
+        if supervisor.fallbacks:
+            model["fallbacks"] = list(supervisor.fallbacks)
+        return ModelDefaults(
+            model=model,
+            compaction_model=subscription.utility.primary,
+            memory_flush_model=subscription.utility.primary,
+            pdf_model=(
+                _model_block(manifest, llm.pdf_model_primary, llm.pdf_model_fallbacks)
+                if llm.pdf_model_primary is not None
+                else None
+            ),
+        )
     return ModelDefaults(
         model={"primary": text_primary_ref},
         compaction_model=(
@@ -377,8 +435,19 @@ class BundleBuilder:
                 "Sign in to SellerClaw (agent_token.json under SELLERCLAW_DATA_DIR) or set AGENT_API_KEY."
             )
 
+        # The owner's own subscription, when this machine is connected to one and the cloud sent
+        # its lineup. Claude runs ``anthropic/*`` on the Claude Code CLI, so our LiteLLM group of
+        # that name (PDF reading on credits) steps aside for the duration.
+        subscription = (
+            resolve_overlay(manifest.llm.subscription, load_choice(data_dir))
+            if data_dir is not None
+            else None
+        )
+        if subscription is not None and subscription.renames_anthropic_passthrough:
+            manifest = _rename_group(manifest, "anthropic", CLAUDE_MODE_PASSTHROUGH_GROUP)
+
         assembled = [
-            self._assemble_agent(manifest, agent) for agent in manifest.all_agents()
+            self._assemble_agent(manifest, agent, subscription) for agent in manifest.all_agents()
         ]
 
         sellerclaw_api_url = get_sellerclaw_api_url()
@@ -413,7 +482,7 @@ class BundleBuilder:
             browser_enabled=manifest.agents.browser_enabled_default,
             web_search_enabled=web_search_enabled,
             web_search_auth_token=web_search_auth_token,
-            model_defaults=build_model_defaults(manifest),
+            model_defaults=build_model_defaults(manifest, subscription),
             thinking_default=manifest.agents.thinking_default,
             reasoning_default=manifest.agents.reasoning_default,
             heartbeat_every=manifest.agents.heartbeat_every,
@@ -423,6 +492,26 @@ class BundleBuilder:
             memory_enabled=manifest.memory_enabled,
             advisor_review_instructions=(
                 manifest.advisor.review_instructions if manifest.advisor is not None else None
+            ),
+            # The ChatGPT sign-in runs through the gateway, so its provider plugin is held on for it.
+            # Also next to Claude: switching plans keeps Claude running until ChatGPT is signed in.
+            sign_in_plugin_id=(
+                chatgpt_auth.OPENAI_PROVIDER
+                if (subscription is None or subscription.provider != "chatgpt")
+                and data_dir is not None
+                and chatgpt_auth.login_pending(data_dir)
+                else None
+            ),
+            subscription=(
+                SubscriptionConfig(
+                    provider=subscription.provider,
+                    plugin_id=subscription.plugin_id,
+                    runtime_pins=subscription.runtime_pins(),
+                    utility_model=subscription.utility.primary,
+                    status_path=str(status_path(data_dir)),
+                )
+                if subscription is not None and data_dir is not None
+                else None
             ),
         )
         version = build_gateway_version(
@@ -455,6 +544,7 @@ class BundleBuilder:
         self,
         manifest: GenericManifest,
         agent: AgentSpec,
+        subscription: SubscriptionOverlay | None = None,
     ) -> AssembledAgentConfig:
         tools_allow, tools_deny = derive_agent_tools(
             is_entry_point=agent.is_entry_point,
@@ -466,11 +556,21 @@ class BundleBuilder:
         # The per-agent OpenClaw model ref is the manifest text-model ref for the agent's
         # resolved role ("primary"/"secondary"), with the group prefix applied.
         model_ref = _openclaw_model_ref(manifest, manifest.llm.text_model[agent.model])
+        model_fallbacks: tuple[str, ...] = ()
+        thinking = agent.thinking
+        if subscription is not None:
+            # On the owner's plan the "primary" agents (the supervisor and the Content Writer) take
+            # the supervisor's lineup, everyone else the specialists'.
+            role = subscription.supervisor if agent.model == "primary" else subscription.specialist
+            model_ref, model_fallbacks = role.primary, role.fallbacks
+            if agent.is_entry_point and subscription.supervisor.thinking is not None:
+                thinking = subscription.supervisor.thinking
         return AssembledAgentConfig(
             agent_id=agent.id,
             name=agent.name,
             model_tier=_resolve_model_tier(manifest, agent.model),
             model_ref=model_ref,
+            model_fallbacks=model_fallbacks,
             is_entry_point=agent.is_entry_point,
             subagent_ids=list(agent.subagent_ids),
             tools_allow=tools_allow,
@@ -482,7 +582,7 @@ class BundleBuilder:
             tools_md=content.tools_doc,
             identity_md=content.identity,
             heartbeat_md=heartbeat_md,
-            thinking_default=agent.thinking,
+            thinking_default=thinking,
             skills=content.skills_mapping(),
             skill_references=content.skill_references_mapping(),
         )

@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import structlog
@@ -48,6 +49,7 @@ from sellerclaw_agent.server.edge_commands import (
     RemoteCommandWork,
 )
 from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
+from sellerclaw_agent.subscription.monitor import get_ai_subscription_monitor
 
 _log = structlog.get_logger(__name__)
 
@@ -66,16 +68,24 @@ _log = structlog.get_logger(__name__)
 #     ``steerActiveRun``), reported back like any named hook — and ``session_question`` frames: a
 #     read-only side question to a session (``forkSession``), answered to
 #     ``/agent/session-questions/{request_id}``.
+# v9: may run on the owner's own ChatGPT / Claude subscription and reports it in every ping
+#     (``ai_subscription``: provider, connected / limit reached / signed out, usage windows).
 #
 # Every ping carries this constant, not the version saved with the edge session at connect:
 # with a persistent /data (self-hosted, local compose) a session saved by an older agent
 # survives the upgrade, and the cloud would keep gating new commands on the old number.
-AGENT_PROTOCOL_VERSION = 8
+AGENT_PROTOCOL_VERSION = 9
 
 # Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
 # build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the
 # agent-info UI can show which OpenClaw build is running. None on images without it.
 OPENCLAW_VERSION = get_openclaw_version()
+
+
+def _ai_subscription_payload() -> dict[str, Any] | None:
+    """What the owner's own subscription monitor last saw, or ``None`` (credits / not running)."""
+    monitor = get_ai_subscription_monitor()
+    return monitor.latest_payload() if monitor is not None else None
 
 
 def _browser_ping_payload(probe: BrowserStatusProbe) -> dict[str, object]:
@@ -226,6 +236,7 @@ async def run_edge_ping_loop(
                 config_version=read_applied_config_version(),
                 openclaw_version=OPENCLAW_VERSION,
                 whatsapp=get_whatsapp_status_monitor().latest_payload(),
+                ai_subscription=_ai_subscription_payload(),
             )
         except CloudConnectionAlreadyActiveError as exc:
             # Another instance holds the owner's session: this one was replaced (or is a second
@@ -376,6 +387,7 @@ async def _flush_command_ack(
             config_version=read_applied_config_version(),
             openclaw_version=OPENCLAW_VERSION,
             whatsapp=get_whatsapp_status_monitor().latest_payload(),
+            ai_subscription=_ai_subscription_payload(),
         )
     except CloudAgentSuspendedError:
         _log.warning("edge_ping_ack_suspended")

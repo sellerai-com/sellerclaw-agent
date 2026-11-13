@@ -39,6 +39,15 @@
         "groups": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/modelGroup" }
+        },
+        "subscription": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Self-hosted agents only. Model lineups for the owner's own ChatGPT / Claude subscription, keyed by provider and resolved for the owner's effort without plan limits. The agent uses the lineup of the provider it is signed in to on its own machine; absent = the agent always runs on credits.",
+          "properties": {
+            "chatgpt": { "$ref": "#/$defs/subscriptionLineup" },
+            "claude": { "$ref": "#/$defs/subscriptionLineup" }
+          }
         }
       }
     },
@@ -84,6 +93,25 @@
     }
   },
   "$defs": {
+    "subscriptionRole": {
+      "type": "object",
+      "description": "Models one role runs on the owner's own subscription, strongest preference first; the agent takes the first one the signed-in account offers.",
+      "required": ["models"],
+      "properties": {
+        "models": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "reasoning": { "type": "boolean" },
+        "thinking": { "type": "string" }
+      }
+    },
+    "subscriptionLineup": {
+      "type": "object",
+      "required": ["supervisor", "specialist", "utility"],
+      "properties": {
+        "supervisor": { "$ref": "#/$defs/subscriptionRole" },
+        "specialist": { "$ref": "#/$defs/subscriptionRole" },
+        "utility": { "$ref": "#/$defs/subscriptionRole" }
+      }
+    },
     "modelRef": {
       "type": "object",
       "required": ["group", "model"],

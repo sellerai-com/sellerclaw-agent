@@ -29,6 +29,24 @@ class ModelDefaults:
     pdf_model: dict[str, object] | None = field(default=None)
 
 
+@dataclass(frozen=True)
+class SubscriptionConfig:
+    """What the OpenClaw config needs when the owner's own subscription powers the agent.
+
+    ``runtime_pins`` is ``agents.defaults.models`` — the execution runtime pinned per model
+    (``claude-cli`` for Claude, ``openclaw`` for ChatGPT). ``plugin_id`` is the provider plugin
+    that owns that route (our plugin allowlist would otherwise leave it off). ``status_path`` is
+    where the agent server keeps what it last saw of the subscription; the sellerclaw-ui plugin
+    reads it to hold turns while the plan's limit is used up or the sign-in is gone.
+    """
+
+    provider: str
+    plugin_id: str
+    runtime_pins: dict[str, dict[str, object]]
+    utility_model: str
+    status_path: str
+
+
 # OpenClaw gateway logging in generated config (not user/manifest input). Secret redaction
 # is not configurable: since OpenClaw 2026.8 it is always on and `logging.redactSensitive`
 # is rejected as an unknown key.
@@ -210,6 +228,8 @@ def generate_openclaw_config(
     web_fetch_enabled: bool = True,
     memory_enabled: bool = False,
     advisor_review_instructions: str | None = None,
+    subscription: SubscriptionConfig | None = None,
+    sign_in_plugin_id: str | None = None,
 ) -> str:
     """Build OpenClaw JSON config from assembled agents and flat parameters.
 
@@ -401,10 +421,17 @@ def generate_openclaw_config(
     # `agents.entries` mapping, where the key IS the id (no `id` field inside the entry).
     agents_entries: dict[str, dict[str, object]] = {}
     for agent in assembled_agents:
+        model_fallbacks = list(getattr(agent, "model_fallbacks", ()) or ())
         payload: dict[str, object] = {
             "name": agent.name,
             "workspace": f"/home/node/.openclaw/workspace-{agent.agent_id}",
-            "model": agent.model_ref,
+            # A role on the owner's own plan lists further candidates on the same plan; OpenClaw
+            # only falls back for an agent whose own model object names them.
+            "model": (
+                {"primary": agent.model_ref, "fallbacks": model_fallbacks}
+                if model_fallbacks
+                else agent.model_ref
+            ),
             "tools": {
                 "allow": list(agent.tools_allow),
                 # Deny OpenClaw builtin media tools: media generation goes through
@@ -449,6 +476,11 @@ def generate_openclaw_config(
         "internalWebhookSecret": hooks_token,
         "localAgentBaseUrl": OPENCLAW_LOCAL_AGENT_BASE_URL,
     }
+    if subscription is not None:
+        sellerclaw_ui_plugin_config["aiSubscription"] = {
+            "provider": subscription.provider,
+            "statusPath": subscription.status_path,
+        }
 
     # OpenClaw treats `meta` as the marker that the file came from a trusted writer: if
     # `lastKnownGood` carried a `meta` object and our new file doesn't, OpenClaw flags
@@ -549,6 +581,12 @@ def generate_openclaw_config(
     # registered cloud-side and are used by the media endpoints under the user's virtual key.
     if model_defaults.pdf_model is not None:
         agents_defaults["pdfModel"] = model_defaults.pdf_model
+    if subscription is not None:
+        # Runtime pinned per model, never provider-wide: the PDF model and anything else still on
+        # credits keep their own route.
+        agents_defaults["models"] = subscription.runtime_pins
+        # Titles, recaps and other small helper calls: on the plan too, never OpenClaw's own pick.
+        agents_defaults["utilityModel"] = subscription.utility_model
 
     # Agent heartbeat. Cadence is cloud-owned (``heartbeat_every`` from the manifest); the cloud
     # also owns HEARTBEAT.md, so the on/off policy lives there. ``"0m"`` disables the periodic
@@ -682,6 +720,15 @@ def generate_openclaw_config(
                 *([MEM0_PLUGIN_ID] if memory_enabled else []),
                 *([OPENCLAW_WHATSAPP_PLUGIN_ID] if whatsapp_channel is not None else []),
                 *([OPENCLAW_ADVISOR_PLUGIN_ID] if advisor_review_instructions is not None else []),
+                *([subscription.plugin_id] if subscription is not None else []),
+                # A provider plugin held on while the owner signs in to their plan: OpenClaw's
+                # online login only offers what the running gateway has loaded. Models untouched.
+                *(
+                    [sign_in_plugin_id]
+                    if sign_in_plugin_id is not None
+                    and (subscription is None or subscription.plugin_id != sign_in_plugin_id)
+                    else []
+                ),
             ],
             "load": {"paths": plugin_load_paths},
             "entries": {
@@ -712,6 +759,13 @@ def generate_openclaw_config(
                 **(
                     {OPENCLAW_ADVISOR_PLUGIN_ID: _advisor_plugin_entry(advisor_review_instructions)}
                     if advisor_review_instructions is not None
+                    else {}
+                ),
+                **({subscription.plugin_id: {"enabled": True}} if subscription is not None else {}),
+                **(
+                    {sign_in_plugin_id: {"enabled": True}}
+                    if sign_in_plugin_id is not None
+                    and (subscription is None or subscription.plugin_id != sign_in_plugin_id)
                     else {}
                 ),
             },

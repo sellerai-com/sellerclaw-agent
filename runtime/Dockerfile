@@ -427,7 +427,32 @@ ENV OPENCLAW_GATEWAY_HTTP_BASE=http://127.0.0.1:7789
 # control-plane call.
 ENV SELLERCLAW_DATA_DIR=/data
 
+# The owner's own Claude plan (``sellerclaw-agent connect claude``). Claude Code is Anthropic's
+# program and is NOT baked into this public image: ``connect claude`` installs it with Anthropic's
+# official installer under /data/ai-subscription, so `sellerclaw-agent update` keeps it and the
+# owner's sign-in. Its config (the sign-in, session history) lives on the volume as well, and it
+# never updates itself — the version is pinned in sellerclaw_agent/subscription/claude_cli.py.
+ENV CLAUDE_CONFIG_DIR=/data/ai-subscription/claude
+ENV DISABLE_AUTOUPDATER=1
+
 RUN chown -R node:node /app/sellerclaw_agent
+
+# ``claude`` on PATH, as OpenClaw's Claude CLI backend finds it: a shim that runs the real binary
+# from the volume untouched and notes the plan's usage limits it reports
+# (sellerclaw_agent/subscription/claude_wrapper.py).
+#
+# ~/.claude points at CLAUDE_CONFIG_DIR: OpenClaw looks for Claude Code's conversation transcripts
+# under $HOME/.claude/projects only (it ignores CLAUDE_CONFIG_DIR, OpenClaw 2026.11.2). Without the
+# transcript it treats each conversation as living in its one Claude process and refuses to restart
+# it, so a specialist's result could not be handed back to the main agent ("Managed CLI live session
+# is no longer reusable") and the main agent could not read a specialist's history.
+RUN install -d -o node -g node /home/node/.local/bin \
+    && printf '#!/bin/sh\nexec python3 /app/sellerclaw_agent/subscription/claude_wrapper.py "$@"\n' \
+        > /home/node/.local/bin/claude \
+    && chown node:node /home/node/.local/bin/claude \
+    && chmod 755 /home/node/.local/bin/claude \
+    && ln -s /data/ai-subscription/claude /home/node/.claude \
+    && chown -h node:node /home/node/.claude
 
 COPY sellerclaw-agent/runtime/supervisord-staging.conf /etc/supervisor/conf.d/openclaw.conf
 

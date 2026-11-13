@@ -388,6 +388,7 @@ class SellerClawConnectionClient:
         config_version: int | None = None,
         openclaw_version: str | None = None,
         whatsapp: dict[str, Any] | None = None,
+        ai_subscription: dict[str, Any] | None = None,
     ) -> PingResponse:
         body: dict[str, Any] = {
             "agent_instance_id": str(agent_instance_id),
@@ -413,6 +414,10 @@ class SellerClawConnectionClient:
             # Last observed state of the WhatsApp channel (linked / connected / own number).
             # Absent while the channel is not configured or nothing has been observed yet.
             body["whatsapp"] = whatsapp
+        if ai_subscription is not None:
+            # The owner's own ChatGPT / Claude plan powering the agent (provider, whether it can work,
+            # usage windows). Absent = the agent runs on credits. Never carries identity.
+            body["ai_subscription"] = ai_subscription
         status, data = await self._request_json("POST", "/agent/connection/ping", json_body=body)
         if status == 401:
             raise CloudAuthError(self._detail_message(data), status_code=401)

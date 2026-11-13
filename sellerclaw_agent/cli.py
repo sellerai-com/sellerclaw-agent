@@ -21,6 +21,7 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.theme import Theme
 
+from sellerclaw_agent.cli_subscription import ai_panel_row, ai_state, ai_status_lines, choose_ai_source
 from sellerclaw_agent.cli_watch import load_manifest_from_disk, run_status_watch
 from sellerclaw_agent.http_clients import sync_client
 
@@ -626,10 +627,11 @@ def _print_status(console: Console, base_url: str) -> int:
 
     env_line = f"[hint]env: {escape(_active_env_label())}[/hint]"
     if s.get("connected"):
+        ai_lines = "".join(f"\n{line}" for line in ai_status_lines())
         console.print(
             Panel(
                 f"[success]Connected[/success] as [label]{escape(s.get('user_name') or '?')}[/label] "
-                f"({escape(s.get('user_email') or '?')})\n{env_line}",
+                f"({escape(s.get('user_email') or '?')})\n{env_line}{ai_lines}",
                 border_style="green",
                 expand=False,
             ),
@@ -971,12 +973,8 @@ def cmd_setup(console: Console) -> int:
                 f"[label]{escape(status.get('user_email', '?'))}[/label].",
             )
             if not _confirm(console, "Sign in with a different account?", default=False):
-                return run_status_watch(
-                    base,
-                    console,
-                    get_snapshot=_get_health_snapshot,
-                    get_manifest=lambda: load_manifest_from_disk(root / "data"),
-                )
+                choose_ai_source(console)
+                return _watch_status(console, base, root)
             console.print()
 
         console.print("[info]Step 3 of 3[/info]  Connect to SellerClaw")
@@ -1016,12 +1014,8 @@ def cmd_setup(console: Console) -> int:
             _print_ready(console, connected=False)
             return 0
 
-        return run_status_watch(
-            base,
-            console,
-            get_snapshot=_get_health_snapshot,
-            get_manifest=lambda: load_manifest_from_disk(root / "data"),
-        )
+        choose_ai_source(console)
+        return _watch_status(console, base, root)
     except KeyboardInterrupt:
         console.print()
         console.print(
@@ -1029,6 +1023,16 @@ def cmd_setup(console: Console) -> int:
             "`./setup.sh status` — snapshot, `./setup.sh stop` — stop.[/hint]",
         )
         return 0
+
+
+def _watch_status(console: Console, base: str, root: Path) -> int:
+    return run_status_watch(
+        base,
+        console,
+        get_snapshot=_get_health_snapshot,
+        get_manifest=lambda: load_manifest_from_disk(root / "data"),
+        get_ai_row=lambda: ai_panel_row(ai_state()),
+    )
 
 
 def _print_ready(console: Console, *, connected: bool) -> None:
@@ -1135,6 +1139,10 @@ def cmd_help(console: Console) -> int:
         "[hint]--browser: skip the menu, sign in by link[/hint]",
     )
     tbl.add_row("logout", "Disconnect from your account")
+    tbl.add_row("connect", "Choose what powers the agent: SellerClaw credits or your own plan")
+    tbl.add_row("connect chatgpt", "Run the agent on your own ChatGPT plan instead of credits")
+    tbl.add_row("connect claude", "Run the agent on your own Claude plan instead of credits")
+    tbl.add_row("disconnect", "Back to SellerClaw credits")
     tbl.add_row("help", "Show this help")
     console.print(tbl)
 
@@ -1160,6 +1168,14 @@ def main() -> None:
         raise SystemExit(cmd_login(console, browser_only="--browser" in argv))
     if cmd == "logout":
         raise SystemExit(_logout(console, agent_base_url()))
+    if cmd == "connect":
+        from sellerclaw_agent.cli_subscription import cmd_connect
+
+        raise SystemExit(cmd_connect(console, argv[1:]))
+    if cmd == "disconnect":
+        from sellerclaw_agent.cli_subscription import cmd_disconnect
+
+        raise SystemExit(cmd_disconnect(console))
     console.print(
         f"[error]Unknown command: {escape(cmd)}[/error]\n"
         f"[hint]Run: {_cli_hint('help')}[/hint]",

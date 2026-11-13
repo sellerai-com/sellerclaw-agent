@@ -57,3 +57,31 @@ export function ensureRouteScopeGatewayResolver(): boolean {
   scope.resolveGatewayContext = context.resolveGatewayContext ?? ((): unknown => context);
   return true;
 }
+
+/**
+ * Keeps the route's caller authority current for as long as the turn it started is running.
+ *
+ * OpenClaw counts a plugin route's caller authority as current only until the HTTP response ends
+ * (`http-request-authority`: `!res.writableEnded && !res.destroyed`). The inbound route answers 202
+ * at once and runs the turn afterwards, inside the handler. The embedded runner does not mind — its
+ * tools carry the run's own operator authority. A Claude CLI turn (the owner's own Claude plan)
+ * runs OpenClaw's tools through the MCP loopback instead, inside the request scope captured at turn
+ * start, and some of them check that scope: with the 202 already sent, `pdf` failed with "Gateway
+ * caller authority is no longer active." and `sessions_list` with "Gateway requester authority
+ * changed". Measured on 2026.11.2.
+ *
+ * Call before the 202 and the dispatch; call the returned release when the turn has finished. From
+ * then on the scope answers "not current", as it would have without this. Without a scope (a plain
+ * unit-test call) it does nothing.
+ */
+export function holdRouteScopeAuthorityForTurn(): () => void {
+  const scope = getPluginRuntimeGatewayRequestScope() as
+    | { hasCurrentClientAuthority?: () => boolean }
+    | undefined;
+  if (!scope || typeof scope.hasCurrentClientAuthority !== "function") return () => undefined;
+  let turnRunning = true;
+  scope.hasCurrentClientAuthority = () => turnRunning;
+  return () => {
+    turnRunning = false;
+  };
+}

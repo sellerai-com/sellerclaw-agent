@@ -34,7 +34,7 @@ from sellerclaw_agent.cloud.supervisor_manager import (
 from sellerclaw_agent.server.command_history import CommandHistoryStorage
 from sellerclaw_agent.server.deps import require_local_api_key
 from sellerclaw_agent.server.local_api_key import get_local_api_key
-from sellerclaw_agent.server import cron_routes, media_upload
+from sellerclaw_agent.server import ai_subscription_routes, cron_routes, media_upload
 from sellerclaw_agent.server.secrets_store import get_secrets
 from sellerclaw_agent.server.schemas import (
     AuthStatusResponse,
@@ -189,6 +189,23 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
             start_watched_background(
                 lambda: whatsapp_monitor.run(stop),
                 name="whatsapp_status",
+                stop=stop,
+                registry=registry,
+            ),
+        )
+        # The owner's own ChatGPT / Claude plan (when connected on this machine): sign-in and limits
+        # for the ping, and the status file the plugin holds turns on while the plan is used up.
+        from sellerclaw_agent.subscription.monitor import (
+            AiSubscriptionMonitor,
+            install_ai_subscription_monitor,
+        )
+
+        ai_subscription_monitor = AiSubscriptionMonitor(data_dir=data_dir)
+        install_ai_subscription_monitor(ai_subscription_monitor)
+        background_holders.append(
+            start_watched_background(
+                lambda: ai_subscription_monitor.run(stop),
+                name="ai_subscription_status",
                 stop=stop,
                 registry=registry,
             ),
@@ -602,3 +619,5 @@ def download_bundle_archive(
 app.include_router(control_plane)
 app.include_router(media_upload.router)
 app.include_router(cron_routes.router)
+app.include_router(ai_subscription_routes.owner_router)
+app.include_router(ai_subscription_routes.plugin_router)

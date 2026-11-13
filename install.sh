@@ -461,12 +461,34 @@ install_wrapper() {
         printf 'VNC_URL=http://127.0.0.1:%s\n' "$VNC_PORT"
         cat <<'WRAPPER'
 
+host_tz() {
+    # This computer's time zone, so the times the CLI prints (when a plan's limit resets) are on
+    # the owner's clock rather than the container's UTC. Empty when it cannot tell: UTC then.
+    if [ -n "${TZ:-}" ]; then printf '%s' "$TZ"; return 0; fi
+    zone=$(cat /etc/timezone 2>/dev/null) || zone=""
+    if [ -n "$zone" ]; then printf '%s' "$zone"; return 0; fi
+    link=$(readlink /etc/localtime 2>/dev/null) || link=""
+    case "$link" in */zoneinfo/*) printf '%s' "${link##*/zoneinfo/}" ;; esac
+    return 0
+}
+
 agent_cli() {
     # The CLI lives inside the image (/app), so nothing Python-related is needed on the host.
     tty_flag=""
     [ -t 1 ] && tty_flag="-t"
+    tz=$(host_tz)
     # shellcheck disable=SC2086
-    exec docker exec -i $tty_flag -w /app "$CONTAINER_NAME" python -m sellerclaw_agent "$@"
+    exec docker exec -i $tty_flag ${tz:+-e TZ=$tz} -w /app "$CONTAINER_NAME" python -m sellerclaw_agent "$@"
+}
+
+agent_cli_node() {
+    # As the `node` user OpenClaw runs as: what connect installs and signs in must be its own.
+    tty_flag=""
+    [ -t 1 ] && tty_flag="-t"
+    tz=$(host_tz)
+    # shellcheck disable=SC2086
+    exec docker exec -i $tty_flag ${tz:+-e TZ=$tz} -u node -e HOME=/home/node -w /app "$CONTAINER_NAME" \
+        python -m sellerclaw_agent "$@"
 }
 
 reinstall() {
@@ -490,6 +512,8 @@ case "${1:-help}" in
     status)    agent_cli status ;;
     login)     agent_cli login --browser ;;
     logout)    agent_cli logout ;;
+    connect)   shift; agent_cli_node connect "$@" ;;
+    disconnect) agent_cli_node disconnect ;;
     browser)   printf 'Open %s in your browser to watch the agent work.\n' "$VNC_URL" ;;
     version)   exec docker exec "$CONTAINER_NAME" printenv SELLERCLAW_AGENT_VERSION ;;
     update)    shift; reinstall --yes "$@" ;;
@@ -501,6 +525,10 @@ sellerclaw-agent — control the local SellerClaw agent
   status      Show whether the agent is connected to your account
   login       Sign in to your SellerClaw account
   logout      Disconnect from your account
+  connect     Choose what powers the agent: SellerClaw credits or your own plan
+  connect chatgpt Run the agent on your own ChatGPT plan instead of SellerClaw credits
+  connect claude  Run the agent on your own Claude plan instead of SellerClaw credits
+  disconnect  Back to SellerClaw credits
   start       Start the agent container
   stop        Stop the agent container
   restart     Restart the agent container
@@ -568,6 +596,32 @@ sign_in() {
     fi
 }
 
+supported_ai_plans() {
+    # What this image's `connect` can do ("claude chatgpt"); empty on older images.
+    docker exec -u node -w /app "$CONTAINER_NAME" python -m sellerclaw_agent connect --supported \
+        2>/dev/null || true
+}
+
+choose_ai_source() {
+    # Right after sign-in: "What should power your agent?" — SellerClaw credits or the owner's own AI
+    # plan; with a plan already connected: keep it, switch, sign in again or back to credits. The
+    # question is `sellerclaw-agent connect` with no plan named (`./setup.sh` asks the same one).
+    # Only with someone at the terminal to answer and sign in on the provider's page.
+    if [ "$DRY_RUN" -eq 1 ] || [ "$DO_LOGIN" -eq 0 ] || [ "$ASSUME_YES" -eq 1 ] || ! has_terminal; then
+        return 0
+    fi
+    if ! already_connected; then
+        return 0
+    fi
+    if [ -z "$(supported_ai_plans)" ]; then
+        return 0
+    fi
+    log_step "Your agent's AI"
+    # Through the command just installed: as the `node` user, on this computer's clock (a limit's
+    # reset time). It reports what it did itself, so a failed sign-in does not stop the install.
+    "$(wrapper_dir)/sellerclaw-agent" connect </dev/tty || true
+}
+
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
@@ -626,7 +680,8 @@ final_message() {
     printf "\n${C_OK}SellerClaw Agent is installed and running.${C_OFF}\n\n"
     printf "  Web panel:      %s\n" "$WEB_URL"
     printf "  Agent browser:  http://127.0.0.1:%s\n" "$VNC_PORT"
-    printf "  Manage it with: sellerclaw-agent status | logs | stop | update\n\n"
+    printf "  Manage it with: sellerclaw-agent status | logs | stop | update\n"
+    printf "  Your own AI plan: sellerclaw-agent connect chatgpt | claude  (back to credits: sellerclaw-agent disconnect)\n\n"
     printf "In the web panel open Settings → Hosting and switch to self-hosted, so your tasks run on this machine.\n\n"
 }
 
@@ -650,6 +705,7 @@ main() {
     wait_until_ready
     install_wrapper
     sign_in
+    choose_ai_source
     final_message
 }
 

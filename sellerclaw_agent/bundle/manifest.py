@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from uuid import UUID
 
+from sellerclaw_agent.subscription.state import SUBSCRIPTION_PROVIDERS
+
 
 @dataclass(frozen=True)
 class ModelRef:
@@ -47,6 +49,28 @@ class ModelGroup:
 
 
 @dataclass(frozen=True)
+class SubscriptionRole:
+    """Models one role runs on the owner's own subscription, strongest preference first.
+
+    ``thinking`` is the reasoning level the role starts its turns at (only the supervisor sets
+    one); ``reasoning`` whether its models may think at all.
+    """
+
+    models: tuple[str, ...]
+    reasoning: bool = False
+    thinking: str | None = None
+
+
+@dataclass(frozen=True)
+class SubscriptionLineup:
+    """The team's models on one subscription, for the owner's current effort (``llm.subscription``)."""
+
+    supervisor: SubscriptionRole
+    specialist: SubscriptionRole
+    utility: SubscriptionRole
+
+
+@dataclass(frozen=True)
 class LlmManifest:
     """LLM routing block: per-role model refs plus provider groups."""
 
@@ -60,6 +84,10 @@ class LlmManifest:
     compaction_model: ModelRef | None
     memory_flush_model: ModelRef | None
     groups: dict[str, ModelGroup]
+    # Lineups for the owner's own ChatGPT / Claude subscription, keyed by provider. Empty when the
+    # cloud sent none (a cloud-hosted agent, or the feature switched off): the agent then runs on
+    # credits even if this machine is signed in to a subscription.
+    subscription: dict[str, SubscriptionLineup] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -414,9 +442,39 @@ def _parse_llm(value: object) -> LlmManifest:
             data.get("memory_flush_model"), "llm.memory_flush_model"
         ),
         groups=groups,
+        subscription=_parse_subscription(data.get("subscription")),
     )
     _validate_model_refs_resolve(llm)
     return llm
+
+
+def _parse_subscription_role(value: object, label: str) -> SubscriptionRole:
+    data = _require_mapping(value, label)
+    models = tuple(m.strip() for m in _tuple_str(data.get("models")) if m.strip())
+    if not models:
+        raise ValueError(f"{label}.models must list at least one model")
+    thinking_raw = data.get("thinking")
+    thinking = str(thinking_raw).strip() if isinstance(thinking_raw, str) and thinking_raw.strip() else None
+    return SubscriptionRole(models=models, reasoning=data.get("reasoning") is True, thinking=thinking)
+
+
+def _parse_subscription(value: object) -> dict[str, SubscriptionLineup]:
+    """``llm.subscription``: a lineup per known provider; unknown providers are skipped."""
+    if value is None:
+        return {}
+    data = _require_mapping(value, "llm.subscription")
+    lineups: dict[str, SubscriptionLineup] = {}
+    for provider in SUBSCRIPTION_PROVIDERS:
+        if data.get(provider) is None:
+            continue
+        label = f"llm.subscription.{provider}"
+        block = _require_mapping(data[provider], label)
+        lineups[provider] = SubscriptionLineup(
+            supervisor=_parse_subscription_role(block.get("supervisor"), f"{label}.supervisor"),
+            specialist=_parse_subscription_role(block.get("specialist"), f"{label}.specialist"),
+            utility=_parse_subscription_role(block.get("utility"), f"{label}.utility"),
+        )
+    return lineups
 
 
 def _validate_model_refs_resolve(llm: LlmManifest) -> None:
@@ -881,6 +939,21 @@ def _llm_to_mapping(llm: LlmManifest) -> dict[str, object]:
             name: _model_group_to_mapping(group) for name, group in llm.groups.items()
         },
     }
+    if llm.subscription:
+        out["subscription"] = {
+            provider: {
+                role: _subscription_role_to_mapping(getattr(lineup, role))
+                for role in ("supervisor", "specialist", "utility")
+            }
+            for provider, lineup in llm.subscription.items()
+        }
+    return out
+
+
+def _subscription_role_to_mapping(role: SubscriptionRole) -> dict[str, object]:
+    out: dict[str, object] = {"models": list(role.models), "reasoning": role.reasoning}
+    if role.thinking is not None:
+        out["thinking"] = role.thinking
     return out
 
 

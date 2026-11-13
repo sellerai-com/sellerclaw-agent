@@ -105,6 +105,16 @@ while the channel is not configured, OpenClaw is stopped, or nothing has been ob
 servers must read a missing field as "not reported", never as "unlinked". `linked` is `null` while
 the plugin's auth files are being written; `logged_out` means WhatsApp revoked the linked device.
 
+`ai_subscription` (protocol v9) is the owner's own AI plan powering the agent, when one is connected
+on this machine (`sellerclaw-agent connect claude|chatgpt`): `provider` (`claude` / `chatgpt`), `state`
+(`connected`, `limit_reached` — the agent waits until `resumes_at` — or `signed_out`), `plan`, the
+models the lineup resolved to (`main_model`, `specialist_model`) and the usage `windows`
+(`{window: "5h" | "week", used_percent, reset_at}`) with `limits_observed_at`, when the plan last
+reported them. A background monitor refreshes it every minute; Claude's windows come from the
+`rate_limit_event` lines Claude Code itself prints while the agent works, so `limits_observed_at` can
+be hours older than `observed_at` (when the monitor looked). It never carries
+the account's identity or any credential. **Omitted** = the agent runs on credits.
+
 `browser` is **omitted** by agents speaking `protocol_version` 1, or when the probe is skipped; servers must treat it as optional for backward compatibility. Page list is capped (≤20 URLs; URL length truncated server-side as applicable).
 
 The server considers the agent **offline** when it has not pinged for longer than its `stale_after_seconds` threshold (default 30s on SellerClaw cloud). That status is virtual — it is computed on read, not written anywhere.

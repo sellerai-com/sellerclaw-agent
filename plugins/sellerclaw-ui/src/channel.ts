@@ -37,6 +37,11 @@ export function setPluginConfig(cfg: OpenClawConfig): void {
   pluginConfigSlot.value = cfg;
 }
 
+/** The config the plugin was registered with, or ``null`` before registration. */
+export function currentPluginConfig(): OpenClawConfig | null {
+  return pluginConfigSlot.value;
+}
+
 function readSellerclawUiSection(cfg: OpenClawConfig): Record<string, unknown> | undefined {
   const channels = cfg.channels as Record<string, unknown> | undefined;
   const raw = channels?.["sellerclaw-ui"];

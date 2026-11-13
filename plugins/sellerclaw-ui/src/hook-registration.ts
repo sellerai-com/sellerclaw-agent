@@ -9,6 +9,7 @@ import { registerReasoningRelay } from "./reasoning-relay.js";
 import { getSharedState } from "./shared-state.js";
 import { registerRunOutcomeTracker } from "./run-outcome.js";
 import { registerSessionEnv } from "./session-env.js";
+import { registerSubscriptionGate } from "./subscription-gate.js";
 import { registerLiveThinkingStream } from "./thinking-stream.js";
 import { registerYieldGuard } from "./yield-guard.js";
 
@@ -66,6 +67,7 @@ export function registerLifecycleHooks(api: OpenClawPluginApi): void {
   registerBackgroundHandinRelay(api);
   registerCronSyncHooks(api);
   registerGoalBrief(api);
+  registerSubscriptionGate(api);
 }
 
 type RegistrableEntry = { register: (api: OpenClawPluginApi) => void };

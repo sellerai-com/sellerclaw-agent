@@ -20,6 +20,13 @@ mkdir -p "$STATE_DIR/agents" "$STATE_DIR/credentials"
 chown node:node "$STATE_DIR"
 chown -R node:node "$STATE_DIR/agents" "$STATE_DIR/credentials"
 
+# The owner's own AI plan lives on the data volume (Claude Code, its sign-in, the choice and the
+# status the plugin reads), owned by `node` like everything OpenClaw touches, readable by no one else.
+SUBSCRIPTION_DIR="${SELLERCLAW_DATA_DIR:-/data}/ai-subscription"
+mkdir -p "$SUBSCRIPTION_DIR"
+chown node:node "$SUBSCRIPTION_DIR"
+chmod 700 "$SUBSCRIPTION_DIR"
+
 if [ "${RESET_STATE:-}" = "1" ]; then
   rm -rf "$STATE_DIR"/workspace-*/memory
   rm -f "$STATE_DIR"/workspace-*/MEMORY.md

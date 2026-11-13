@@ -418,3 +418,64 @@ def test_uninstall_purge_deletes_the_data_volume(sandbox: Sandbox) -> None:
 
     assert result.returncode == 0, result.stderr
     assert any(c.startswith("volume rm sellerclaw-agent-data") for c in sandbox.docker_calls())
+
+
+def test_control_command_connects_and_disconnects_the_owners_plan_as_node(sandbox: Sandbox) -> None:
+    _install_docker_stub(sandbox)
+
+    result = _run(sandbox, ["--yes"])
+
+    assert result.returncode == 0, result.stderr
+    body = sandbox.wrapper.read_text()
+    assert "connect)   shift; agent_cli_node connect" in body
+    assert "disconnect) agent_cli_node disconnect" in body
+    # What `connect` installs and signs in must belong to the user OpenClaw runs as.
+    assert "-u node -e HOME=/home/node" in body
+    assert "connect     Choose what powers the agent: SellerClaw credits or your own plan" in body
+    assert "connect claude  Run the agent on your own Claude plan" in body
+    assert "connect chatgpt Run the agent on your own ChatGPT plan" in body
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(["status"], id="status"),
+        pytest.param(["connect", "claude"], id="connect-as-node"),
+    ],
+)
+def test_control_command_prints_times_on_this_computers_clock(sandbox: Sandbox, command: list[str]) -> None:
+    """When a plan's limit resets reads on the owner's clock, not the container's UTC."""
+    _install_docker_stub(sandbox)
+    assert _run(sandbox, ["--yes"]).returncode == 0
+    calls_before = len(sandbox.docker_calls())
+
+    result = subprocess.run(
+        ["/bin/sh", str(sandbox.wrapper), *command],
+        env={**sandbox.env, "TZ": "Europe/Moscow"},
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+        start_new_session=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    [call] = sandbox.docker_calls()[calls_before:]
+    assert call.startswith("exec -i -e TZ=Europe/Moscow ")
+    assert call.endswith("python -m sellerclaw_agent " + " ".join(command))
+
+
+def test_an_unattended_install_never_asks_about_the_ai_plan(sandbox: Sandbox) -> None:
+    """`--yes` / no terminal: credits by default, and no one to sign in on Anthropic's page."""
+    _install_docker_stub(sandbox)
+
+    result = _run(sandbox, ["--yes"])
+
+    assert result.returncode == 0, result.stderr
+    calls = sandbox.docker_calls()
+    assert not any("connect --supported" in c for c in calls)
+    assert not any("sellerclaw_agent connect claude" in c for c in calls)
+    assert not any("sellerclaw_agent connect chatgpt" in c for c in calls)
+    assert not any(c.endswith("python -m sellerclaw_agent connect") for c in calls)  # the question itself
+    # The final message says how, for both plans.
+    assert "sellerclaw-agent connect chatgpt | claude" in result.stdout
