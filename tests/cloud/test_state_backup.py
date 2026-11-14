@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import io
+import os
 import tarfile
 from pathlib import Path
 
 import pytest
+from sellerclaw_agent.cloud import state_backup
 from sellerclaw_agent.cloud.state_backup import (
     RestoreOutcome,
     build_state_backup_archive,
@@ -138,6 +140,70 @@ def test_state_dir_has_restoreable_data(tmp_path: Path, rel: str, expected: bool
     path.write_text("x", encoding="utf-8")
 
     assert state_dir_has_restoreable_data(tmp_path) is expected
+
+
+def test_backup_walks_only_the_browser_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stopping OpenClaw clears ``tmp/`` plugin build captures while the backup runs; a directory
+    vanishing mid-walk used to lose the whole archive, so the sign-ins did not move."""
+    _write_tree(tmp_path)
+    churn = tmp_path / "tmp" / "plugin-captures" / "run" / "package-95"
+    churn.mkdir(parents=True)
+    (churn / "index.js").write_bytes(b"x")
+    listed: list[str] = []
+    real_scandir = os.scandir
+
+    def vanishing_scandir(path: str | os.PathLike[str] = ".") -> object:
+        rel = Path(path).relative_to(tmp_path).as_posix()
+        listed.append(rel)
+        if rel.startswith("tmp"):
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", vanishing_scandir)
+
+    archive = build_state_backup_archive(tmp_path)
+
+    assert archive is not None
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        assert sorted(tar.getnames()) == [
+            "browser/openclaw/user-data/Default/Cookies",
+            "browser/openclaw/user-data/Local State",
+            "chrome-profile/Default/Cookies",
+        ]
+    # Neither the rest of the state dir nor the profile cache is even listed.
+    assert sorted(set(listed)) == [
+        "browser/openclaw/user-data",
+        "browser/openclaw/user-data/Default",
+        "chrome-profile",
+        "chrome-profile/Default",
+    ]
+
+
+def test_a_file_gone_since_the_walk_is_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_tree(tmp_path)
+    found = iter_state_backup_files(tmp_path)
+    rotated = tmp_path / "browser/openclaw/user-data/Default/Local Storage/leveldb/000003.log"
+    monkeypatch.setattr(state_backup, "iter_state_backup_files", lambda _sd: [*found, rotated])
+
+    archive = build_state_backup_archive(tmp_path)
+
+    assert archive is not None
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        assert sorted(tar.getnames()) == sorted(p.relative_to(tmp_path).as_posix() for p in found)
+
+
+def test_nothing_left_to_archive_uploads_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every listed file gone: no archive, so the good one in the cloud is not overwritten."""
+    gone = tmp_path / "browser/openclaw/user-data/Default/Cookies"
+    monkeypatch.setattr(state_backup, "iter_state_backup_files", lambda _sd: [gone])
+
+    assert build_state_backup_archive(tmp_path) is None
 
 
 def test_build_archive_returns_none_when_nothing_to_back_up(tmp_path: Path) -> None:

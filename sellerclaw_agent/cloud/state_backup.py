@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import tarfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +52,32 @@ def _is_browser_login_state(path: Path, state_dir: Path) -> bool:
     return False
 
 
+def _browser_profile_files(state_dir: Path) -> Iterator[Path]:
+    """Every file under the browser profile roots that may carry sign-in state.
+
+    Only those roots are walked, never the rest of the state dir: the rest churns while the
+    agent stops (OpenClaw clears its ``tmp/`` plugin build captures on the way down), and a
+    directory vanishing mid-walk raised out of ``rglob`` and lost the whole archive — the
+    browser sign-ins then did not move with the agent. ``os.walk`` skips a directory that is
+    gone by the time it is listed, and the walk is pruned to the directories that can hold
+    sign-in state, so the cache (the bulk of a profile) is not even listed.
+    """
+    for root in _BROWSER_PROFILE_ROOTS:
+        base = state_dir / root
+        if not base.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            depth = len(Path(dirpath).relative_to(base).parts)
+            if depth == 0:
+                dirnames[:] = [d for d in dirnames if d == "Default"]
+            elif depth == 1:
+                dirnames[:] = [d for d in dirnames if d in _BROWSER_PROFILE_DEFAULT_DIRS]
+            for name in filenames:
+                path = Path(dirpath) / name
+                if path.is_file() and _is_browser_login_state(path, state_dir):
+                    yield path
+
+
 def iter_state_backup_files(state_dir: Path) -> list[Path]:
     """List files to include in an edge state backup: browser sign-in state only.
 
@@ -62,13 +89,7 @@ def iter_state_backup_files(state_dir: Path) -> list[Path]:
     """
     if not state_dir.is_dir():
         return []
-    out: list[Path] = []
-    for path in state_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        if _is_browser_login_state(path, state_dir):
-            out.append(path)
-    return sorted(out)
+    return sorted(_browser_profile_files(state_dir))
 
 
 def build_state_backup_archive(state_dir: Path) -> bytes | None:
@@ -83,10 +104,18 @@ def build_state_backup_archive(state_dir: Path) -> bytes | None:
     if not paths:
         return None
     buffer = io.BytesIO()
+    added = 0
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for file_path in paths:
             arcname = file_path.relative_to(state_dir).as_posix()
-            archive.add(file_path, arcname=arcname, recursive=False)
+            try:
+                archive.add(file_path, arcname=arcname, recursive=False)
+            except FileNotFoundError:
+                # Gone since the walk (Chrome rotates its leveldb logs): the rest still travels.
+                continue
+            added += 1
+    if added == 0:
+        return None
     return buffer.getvalue()
 
 
@@ -135,12 +164,7 @@ def state_dir_has_restoreable_data(state_dir: Path) -> bool:
     """
     if not state_dir.is_dir():
         return False
-    for path in state_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        if _is_browser_login_state(path, state_dir):
-            return True
-    return False
+    return next(_browser_profile_files(state_dir), None) is not None
 
 
 def default_openclaw_state_dir() -> Path:
