@@ -92,6 +92,12 @@ def _restart(data_dir: Path, manager: SupervisorContainerManager) -> tuple[bool,
     return outcome == "completed", err
 
 
+def _openclaw_up(manager: SupervisorContainerManager) -> bool:
+    """OpenClaw is running or on its way up (a restart would start a stopped one)."""
+    status, _err = manager.probe_openclaw_status()
+    return status in ("running", "starting")
+
+
 #: How long ``prepare`` waits for the gateway to load the ChatGPT provider after the config change.
 PROVIDER_PLUGIN_WAIT_S = 60.0
 
@@ -262,8 +268,10 @@ def disconnect(
     if choice is not None:
         _sign_out(data_dir, choice.provider)
     # ChatGPT's sign-in lives in OpenClaw's store, which only a stopped gateway lets go of: restart
-    # so the sign-out is real now. Claude Code signed itself out above; a config reload is enough.
-    if choice is not None and choice.provider == "chatgpt":
+    # so the sign-out is real now. A stopped agent stays stopped — its next start settles the
+    # sign-in anyway (the web panel's "Switch to credits" must never start an agent the owner
+    # stopped). Claude Code signed itself out above; a config reload is enough.
+    if choice is not None and choice.provider == "chatgpt" and _openclaw_up(manager):
         applied, err = _restart(data_dir, manager)
     else:
         applied, err = _reapply(data_dir, manager)

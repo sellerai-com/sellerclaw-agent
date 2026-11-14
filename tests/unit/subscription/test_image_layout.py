@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 
 import pytest
-from sellerclaw_agent.subscription import claude_cli
+from sellerclaw_agent.subscription import chatgpt_auth, claude_cli
+from sellerclaw_agent.subscription.overlay import _ROUTES
 
 pytestmark = pytest.mark.unit
 
@@ -27,3 +28,18 @@ def test_claude_code_config_dir_is_on_the_volume_and_where_openclaw_reads_transc
 
     assert env is not None and env.group(1) == config_dir
     assert link is not None and link.group(1) == config_dir
+
+
+def _kept_extensions() -> set[str]:
+    match = re.search(r'keep="([^"]+)"', _DOCKERFILE.read_text(encoding="utf-8"))
+    assert match is not None, "the bundled-extension keep list moved"
+    return set(match.group(1).split())
+
+
+def test_every_plugin_a_plan_switches_on_survives_the_image_prune() -> None:
+    """The image deletes every bundled extension not on its keep list; allowing a deleted plugin in
+    the config loads nothing, and OpenClaw then refuses the plan's sign-in ("No Gateway-compatible
+    login matches this provider") — what the first live ChatGPT run hit."""
+    needed = {route.plugin_id for route in _ROUTES.values()} | {chatgpt_auth.OPENAI_PROVIDER}
+
+    assert needed <= _kept_extensions()

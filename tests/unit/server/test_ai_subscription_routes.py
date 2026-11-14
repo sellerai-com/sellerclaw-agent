@@ -28,12 +28,17 @@ _PROFILE = {"type": "oauth", "provider": "openai", "access": "acc", "refresh": "
 class _FakeManager:
     """Records how the agent applied a change: a config reload, or a gateway restart.
 
-    ``fails`` — the error a reload / restart answers with instead of completing.
+    ``fails`` — the error a reload / restart answers with instead of completing;
+    ``openclaw_status`` — what the supervisor probe reports (running by default).
     """
 
-    def __init__(self, *, fails: str | None = None) -> None:
+    def __init__(self, *, fails: str | None = None, openclaw_status: str = "running") -> None:
         self.calls: list[str] = []
         self.fails = fails
+        self.openclaw_status = openclaw_status
+
+    def probe_openclaw_status(self) -> tuple[str, str | None]:
+        return self.openclaw_status, None
 
     def _outcome(self) -> tuple[str, str | None]:
         return ("failed", self.fails) if self.fails else ("completed", None)
@@ -159,11 +164,16 @@ def test_activate_switches_from_claude_keeps_a_copy_and_restarts(
 
 
 @pytest.mark.parametrize(
-    ("provider", "applied_by"),
+    ("provider", "openclaw_status", "applied_by"),
     [
         # ChatGPT's sign-in leaves OpenClaw's store only while the gateway is stopped.
-        pytest.param("chatgpt", "restart", id="chatgpt-restarts"),
-        pytest.param("claude", "reload", id="claude-reloads"),
+        pytest.param("chatgpt", "running", "restart", id="chatgpt-restarts"),
+        pytest.param("chatgpt", "starting", "restart", id="chatgpt-coming-up-restarts"),
+        # "Switch to credits" from the web panel must not start an agent its owner stopped; its next
+        # start settles the sign-in anyway.
+        pytest.param("chatgpt", "stopped", "reload", id="chatgpt-stopped-stays-stopped"),
+        pytest.param("chatgpt", "error", "reload", id="chatgpt-failed-to-start-stays-down"),
+        pytest.param("claude", "running", "reload", id="claude-reloads"),
     ],
 )
 def test_disconnect_signs_the_plan_out(
@@ -172,8 +182,10 @@ def test_disconnect_signs_the_plan_out(
     tmp_path: Path,
     signed_out_of_claude: list[Path],
     provider: str,
+    openclaw_status: str,
     applied_by: str,
 ) -> None:
+    manager.openclaw_status = openclaw_status
     save_choice(data_dir, provider)
     state_dir = _openclaw_state(tmp_path / "oc", signed_in=True)
     chatgpt_auth.snapshot(data_dir, state_dir)

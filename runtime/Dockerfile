@@ -184,6 +184,11 @@ RUN node --input-type=module -e "await import('grammy')"
 #                                                correction on a clear wrong turn (a loop of
 #                                                failing calls). Enabled by config_generator when
 #                                                the manifest carries `advisor`.
+#   openai                                    -> the owner's own ChatGPT plan: its device-code
+#                                                sign-in and the `openai` provider the agent then
+#                                                thinks on. Allowed in config only while that plan
+#                                                is connected or its sign-in runs, so it stays
+#                                                unloaded on credits.
 # Our own two plugins (sellerclaw-ui, sellerclaw-web-search) are kept defensively only: they are
 # COPYed into this directory further down, i.e. AFTER this prune runs. The entries cost nothing
 # and stop a future reordering from silently deleting the product's own plugins.
@@ -197,7 +202,7 @@ RUN node --input-type=module -e "await import('grammy')"
 # and the breakage only surfaces at runtime as a missing provider/plugin. Our own two plugins are
 # deliberately not checked — they arrive later in the build.
 RUN cd /app/dist/extensions && \
-    keep="browser telegram litellm memory-core anthropic google document-extract web-readability advisor" && \
+    keep="browser telegram litellm memory-core anthropic google document-extract web-readability advisor openai" && \
     ours="sellerclaw-ui sellerclaw-web-search" && \
     for dir in */; do \
         case " $keep $ours " in \
