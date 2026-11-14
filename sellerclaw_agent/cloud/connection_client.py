@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
@@ -11,10 +13,11 @@ import httpx
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.exceptions import (
+    CONNECT_REFUSAL_ERRORS,
     CloudAgentSuspendedError,
     CloudAuthError,
-    CloudConnectionAlreadyActiveError,
     CloudConnectionError,
+    CloudMoveRefusedError,
     CloudSessionInvalidatedError,
     agent_api_error_code,
     is_agent_suspended_api_payload,
@@ -24,6 +27,38 @@ from sellerclaw_agent.http_clients import async_client
 
 _DEFAULT_TIMEOUT = httpx.Timeout(30.0)
 _STATE_BACKUP_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
+
+RunsOn = Literal["cloud", "computer"]
+MoveStatus = Literal["moving", "moved", "already_here"]
+_MOVE_STATUSES: frozenset[str] = frozenset({"moving", "moved", "already_here"})
+
+
+def detect_runs_on(env: Mapping[str, str] | None = None) -> RunsOn:
+    """Where this agent runs, as told to the cloud on ``connect`` (protocol 10).
+
+    ``cloud`` on a Fly machine (Fly sets ``FLY_MACHINE_ID`` itself) or when the image is told so
+    (``SELLERCLAW_RUNS_ON=cloud``); anywhere else it is the owner's own computer. Only a hint: the
+    cloud trusts the token it issued to its own machine more than this field.
+    """
+    source = os.environ if env is None else env
+    if (source.get("FLY_MACHINE_ID") or "").strip():
+        return "cloud"
+    if (source.get("SELLERCLAW_RUNS_ON") or "").strip().lower() == "cloud":
+        return "cloud"
+    return "computer"
+
+
+def openclaw_status_for_connect(probe_status: str | None) -> Literal["running", "stopped"] | None:
+    """The supervisor probe (running / starting / stopped / error) as ``connect`` reports it.
+
+    A gateway still coming up counts as running — the cloud must not send START into it. An error
+    (FATAL, BACKOFF, supervisorctl unreachable) is unknown and left out.
+    """
+    if probe_status in ("running", "starting"):
+        return "running"
+    if probe_status == "stopped":
+        return "stopped"
+    return None
 
 
 @dataclass(frozen=True)
@@ -324,16 +359,28 @@ class SellerClawConnectionClient:
         if response.status_code >= 300 and response.status_code != 404:
             self._raise_for_raw_error(response)
 
-    async def connect(self, *, agent_version: str, protocol_version: int) -> ConnectResponse:
-        status, data = await self._request_json(
-            "POST",
-            "/agent/connection/connect",
-            json_body={"agent_version": agent_version, "protocol_version": protocol_version},
-        )
+    async def connect(
+        self,
+        *,
+        agent_version: str,
+        protocol_version: int,
+        runs_on: RunsOn | None = None,
+        openclaw_status: Literal["running", "stopped"] | None = None,
+    ) -> ConnectResponse:
+        body: dict[str, Any] = {"agent_version": agent_version, "protocol_version": protocol_version}
+        if runs_on is not None:
+            # Protocol 10: the owner's computer or a SellerClaw cloud machine.
+            body["runs_on"] = runs_on
+        if openclaw_status is not None:
+            # Protocol 10: lets the cloud start a stopped agent on its own and not send START to one
+            # that is already up (a reconnect after a network blip).
+            body["openclaw_status"] = openclaw_status
+        status, data = await self._request_json("POST", "/agent/connection/connect", json_body=body)
         if status == 401:
             raise CloudAuthError(self._detail_message(data), status_code=401)
-        if status >= 400 and agent_api_error_code(data) == "agent_connection_already_active":
-            raise CloudConnectionAlreadyActiveError(self._detail_message(data))
+        refusal = CONNECT_REFUSAL_ERRORS.get(agent_api_error_code(data) or "") if status >= 400 else None
+        if refusal is not None:
+            raise refusal(self._detail_message(data))
         if status >= 400:
             raise CloudConnectionError(self._detail_message(data))
         if not isinstance(data, dict):
@@ -346,6 +393,25 @@ class SellerClawConnectionClient:
     def bearer_token(self) -> str:
         """Current ``sca_`` bearer token (for non-HTTP transports, e.g. websockets)."""
         return self._resolve_bearer_token()
+
+    async def move_here(self) -> MoveStatus:
+        """Ask the cloud to move the owner's agent to this computer (``POST /agent/hosting/move-here``).
+
+        ``moving`` — the cloud machine hands over once this one connects; ``moved`` — there was no
+        cloud machine, this computer is the agent's place already; ``already_here``. A refusal
+        (e.g. a cloud machine still starting) raises :class:`CloudMoveRefusedError`.
+        """
+        status, data = await self._request_json("POST", "/agent/hosting/move-here")
+        if status >= 400:
+            raise CloudMoveRefusedError(
+                self._detail_message(data),
+                code=agent_api_error_code(data),
+                status_code=status,
+            )
+        result = data.get("status") if isinstance(data, dict) else None
+        if result not in _MOVE_STATUSES:
+            raise CloudConnectionError("Invalid move-here response")
+        return result  # type: ignore[return-value]
 
     async def fetch_browser_view_session_id(self) -> UUID | None:
         """Active browser-view session for this agent, or None when there is none.

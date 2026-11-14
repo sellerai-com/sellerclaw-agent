@@ -235,8 +235,8 @@ def _warn_if_not_offered(console: Console, result: dict[str, Any]) -> None:
     if result.get("offered") is False:
         console.print(
             "[warning]SellerClaw has not offered your plan to this agent yet.[/warning]\n"
-            "[hint]In the web panel open Settings → Hosting and choose your own computer — an agent "
-            "hosted in the SellerClaw cloud keeps using credits.[/hint]",
+            "[hint]Your agent runs in SellerClaw's cloud, where it keeps using credits. To use your plan, "
+            'open Hosting in SellerClaw and press "Move to your computer".[/hint]',
         )
 
 
@@ -285,7 +285,14 @@ def _connect_chatgpt(console: Console) -> int:
         console.print(f"[error]Could not get the agent ready: {escape(str(prepared['error']))}[/error]")
         return 1
     if not prepared.get("ready"):
-        console.print("[warning]The agent is still loading ChatGPT support; trying the sign-in anyway.[/warning]")
+        # The sign-in goes through the gateway, which offers it only once ChatGPT's provider has
+        # loaded; trying anyway would only end in OpenClaw's own "No Gateway-compatible login".
+        _cancel_chatgpt_sign_in()
+        console.print(
+            "[error]Your agent did not load ChatGPT support in time, so nothing changed.[/error]\n"
+            f"[hint]Try again in a minute: {escape(_hint('connect chatgpt'))}[/hint]",
+        )
+        return 1
     console.print(
         "\n[info]Sign in to ChatGPT[/info] [hint]— a link and a code appear below. Open the link, sign "
         "in with the account that has ChatGPT Plus or Pro, enter the code, then come back here.[/hint]\n",
@@ -416,7 +423,7 @@ def ai_status_lines() -> list[str]:
     status = _status_of(state)
     lines = [f"AI: {escape(_plan_title(provider, status))}"]
     if state.get("offered") is False:
-        lines.append("    [warning]not in use — choose your own computer in Settings → Hosting[/warning]")
+        lines.append("    [warning]not in use — your agent runs in the cloud: move it to your computer in Hosting[/warning]")
     if status.get("state") == "limit_reached":
         until = _when(status.get("resumes_at"))
         lines.append(f"    [warning]usage limit used up — waiting until {until or 'it resets'}[/warning]")
@@ -444,7 +451,7 @@ def ai_panel_row(state: dict[str, Any] | None) -> tuple[str, str] | None:
     status = _status_of(state)
     title = _plan_title(provider, status)
     if state.get("offered") is False:
-        return f"{title} — not in use: choose your own computer in Settings → Hosting", "yellow"
+        return f"{title} — not in use: your agent runs in the cloud; move it to your computer in Hosting", "yellow"
     if status.get("state") == "limit_reached":
         until = _when(status.get("resumes_at"))
         return f"{title} — usage limit used up, waiting until {until or 'it resets'}", "yellow"
@@ -514,8 +521,8 @@ def _where_it_stands(state: dict[str, Any]) -> str:
         )
     if state.get("offered") is False:
         return (
-            f"Your agent is connected to {title}, [warning]but it is not in use: choose your own computer "
-            "in Settings → Hosting.[/warning]"
+            f"Your agent is connected to {title}, [warning]but it is not in use: your agent runs in the "
+            "cloud. Move it to your computer in Hosting.[/warning]"
         )
     return f"Your agent runs on [label]{title}[/label]."
 

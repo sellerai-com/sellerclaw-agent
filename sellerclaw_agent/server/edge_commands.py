@@ -18,6 +18,7 @@ from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
 from sellerclaw_agent.cloud.browser_tunnel import get_browser_tunnel_manager
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.restore_after_connect import get_post_connect_restore
 from sellerclaw_agent.cloud.state_backup import default_openclaw_state_dir
 from sellerclaw_agent.cloud.supervisor_manager import SupervisorContainerManager, create_supervisor_manager
 from sellerclaw_agent.cloud.whatsapp_channel import (
@@ -139,6 +140,11 @@ async def _execute_remote_command(
             manifest = bundle_manifest_from_mapping(mapping)
         except (TypeError, ValueError) as exc:
             return "failed", str(exc)[:500]
+        restore = get_post_connect_restore()
+        if restore is not None:
+            # Sign-ins restored after the first connect must be on disk before OpenClaw and the
+            # browser read them — but the cloud expects this answer within a minute.
+            await restore.wait()
         if cmd == "start":
             fn = functools.partial(container_mgr.start, manifest)
         else:
@@ -177,7 +183,43 @@ async def _execute_remote_command(
         return await _start_whatsapp_link(client=client)
     if cmd == "whatsapp_logout":
         return await _logout_whatsapp(client=client)
+    if cmd == "ai_subscription_disconnect":
+        return _start_ai_subscription_disconnect(
+            loop=loop,
+            executor=executor,
+            data_dir=data_dir,
+            container_mgr=container_mgr,
+        )
     return "failed", f"unknown command_type {cmd_type!r}"
+
+
+def _switch_to_credits(data_dir: Path, container_mgr: SupervisorContainerManager) -> None:
+    """What ``sellerclaw-agent disconnect`` does, for the web panel's "Switch to credits"."""
+    from sellerclaw_agent.server import ai_subscription_routes
+
+    try:
+        state = ai_subscription_routes.disconnect(data_dir, container_mgr)
+    except Exception as exc:  # noqa: BLE001 - runs after the ack; nobody else would see it
+        _log.warning("ai_subscription_disconnect_failed", error=str(exc)[:500])
+        return
+    _log.info("ai_subscription_disconnected", applied=state.applied, error=state.error)
+
+
+def _start_ai_subscription_disconnect(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    executor: ThreadPoolExecutor,
+    data_dir: Path,
+    container_mgr: SupervisorContainerManager,
+) -> tuple[str, str | None]:
+    """Back to SellerClaw credits (protocol 10): ack at once, do it right after.
+
+    Signing a plan out and rebuilding the config can take a gateway restart (ChatGPT), longer than
+    the cloud waits for an answer. It goes on the supervisor executor, the queue every START /
+    STOP / RESTART runs on, so it never races one of them.
+    """
+    loop.run_in_executor(executor, _switch_to_credits, data_dir, container_mgr)
+    return "completed", None
 
 
 async def _start_whatsapp_link(*, client: SellerClawConnectionClient) -> tuple[str, str | None]:

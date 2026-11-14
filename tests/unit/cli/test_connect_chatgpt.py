@@ -248,3 +248,25 @@ def test_disconnect_says_whether_the_agent_really_moved_back(
 
     assert cli_subscription.cmd_disconnect(console) == exit_code
     assert message in " ".join(console.export_text().split())
+
+
+def test_a_provider_that_never_loaded_stops_before_the_sign_in(
+    monkeypatch: pytest.MonkeyPatch, console: Console
+) -> None:
+    """OpenClaw offers the sign-in only once ChatGPT's provider is loaded; without it the owner
+    would read OpenClaw's own "No Gateway-compatible login matches this provider"."""
+    agent = _Agent()
+    logins = _wire(monkeypatch, agent)
+    real_call = cli_subscription._call
+    assert real_call is agent
+
+    def not_ready(method: str, path: str, *, timeout: float = 120.0) -> dict[str, Any]:
+        answer = agent(method, path, timeout=timeout)
+        return {"ready": False, "error": None} if path.endswith("/prepare") else answer
+
+    monkeypatch.setattr(cli_subscription, "_call", not_ready)
+
+    assert cli_subscription.cmd_connect(console, ["chatgpt"]) == 1
+    assert logins == []
+    assert agent.calls == ["/ai-subscription/chatgpt/prepare", "/ai-subscription/chatgpt/cancel"]
+    assert "Your agent did not load ChatGPT support in time, so nothing changed." in console.export_text()

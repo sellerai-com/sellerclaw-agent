@@ -63,6 +63,13 @@ class DisconnectResponse(BaseModel):
     status: str
 
 
+class MoveHereResponse(BaseModel):
+    """``moving`` — the cloud machine hands over once this computer connects; ``moved`` — there was
+    no cloud machine to wait for; ``already_here``."""
+
+    status: Literal["moving", "moved", "already_here"]
+
+
 class CommandHistoryEntry(BaseModel):
     """One command received by the agent from SellerClaw."""
 

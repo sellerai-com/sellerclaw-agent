@@ -41,6 +41,7 @@ async def _run_loop(
     openclaw_status: str,
     standby: CronStandby,
     iterations: int = 1,
+    container_mgr: MagicMock | None = None,
 ) -> MagicMock:
     monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
     stop = asyncio.Event()
@@ -50,8 +51,9 @@ async def _run_loop(
     session_storage.load = MagicMock(return_value=session)
     creds_storage = MagicMock()
     creds_storage.load = MagicMock(return_value=MagicMock(agent_token="test_agent_token"))
-    fake_mgr = MagicMock()
+    fake_mgr = container_mgr or MagicMock()
     fake_mgr.probe_openclaw_status = MagicMock(return_value=(openclaw_status, None))
+    fake_mgr.stop = MagicMock(return_value=("completed", None))
     fake_mgr.probe_browser_status = MagicMock(
         return_value=MagicMock(status="stopped", kasmvnc_running=False, chrome_running=False, error=None, pages=())
     )
@@ -178,7 +180,7 @@ async def test_an_accepted_ping_releases_standby(monkeypatch: pytest.MonkeyPatch
 
     assert standby.is_standby() is False
     assert plugin.requested == [False]
-    assert client.ping.await_args.kwargs["protocol_version"] == 9
+    assert client.ping.await_args.kwargs["protocol_version"] == 10
 
 
 async def test_an_invalidated_session_alone_is_not_standby(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

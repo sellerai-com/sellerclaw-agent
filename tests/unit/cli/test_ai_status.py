@@ -98,7 +98,10 @@ _RESUMES = _in(3)
         ),
         pytest.param(
             {"provider": "chatgpt", "offered": False, "status": {"state": "connected", "plan": "plus"}},
-            ("your ChatGPT plan (Plus) — not in use: choose your own computer in Settings → Hosting", "yellow"),
+            (
+                "your ChatGPT plan (Plus) — not in use: your agent runs in the cloud; move it to your computer in Hosting",
+                "yellow",
+            ),
             id="hosted-in-the-cloud",
         ),
         pytest.param(

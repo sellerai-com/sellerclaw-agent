@@ -35,7 +35,7 @@ In other words, SellerClaw Agent moves only the runtime to your hardware. The pr
 curl -fsSL https://get.sellerclaw.ai/agent.sh | sh
 ```
 
-That is the whole installation. The script checks the machine, installs Docker if it is missing, downloads the prebuilt runtime image, starts it, and prints a code to confirm in your browser — after which the agent is paired with your SellerClaw account. There is nothing to clone and nothing to build; the CLI, OpenClaw, the browser and `sellerclaw-cli` all live inside the image.
+That is the whole installation. The script checks the machine, installs Docker if it is missing, downloads the prebuilt runtime image, starts it, and prints a code to confirm in your browser — after which the agent is paired with your SellerClaw account. If your agent runs in SellerClaw's cloud right now, it asks whether to move it to this computer: the cloud machine keeps working until this one takes over, then switches off, and your chats, memory and tasks come along. There is nothing to clone and nothing to build; the CLI, OpenClaw, the browser and `sellerclaw-cli` all live inside the image.
 
 You need Docker-capable hardware with more than 2 GB of RAM, on Linux or macOS (x86_64 or Apple Silicon).
 
@@ -50,7 +50,7 @@ sellerclaw-agent uninstall  # remove it from this machine
 
 Prefer to read before you run? `curl -fsSL https://get.sellerclaw.ai/agent.sh -o agent.sh`, read it, then `sh agent.sh`. Building the image from source is the contributor path — see [CLI reference](docs/cli.md).
 
-Finally, open **Settings → Hosting** in the web panel and switch to self-hosted, so your tasks run on this machine.
+The installer ends by saying where your agent runs: on this computer, or — if you chose to keep it there — still in SellerClaw's cloud. To move it later, open **Hosting** in the web panel and press **Move to your computer**; this computer takes over on its own.
 
 > **Status:** SellerClaw Agent is already working and open for experimentation. The CLI and public wire contracts are stable; the internal structure continues to evolve.
 

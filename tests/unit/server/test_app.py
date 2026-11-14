@@ -698,3 +698,141 @@ async def test_notify_cloud_going_offline_swallows_errors(
     )
 
     await srv_app._notify_cloud_going_offline(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Protocol 10: why the cloud refused this agent, and moving the agent here
+# ---------------------------------------------------------------------------
+
+
+def test_get_health_reports_why_the_cloud_refused_this_agent(
+    tmp_path,
+    monkeypatch,
+    openclaw_manager_mock: MagicMock,
+) -> None:
+    """`login` reads the code to tell "your agent runs in the cloud" from a network error."""
+    from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
+
+    monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SELLERCLAW_EDGE_PING", "0")
+    app.dependency_overrides[get_storage] = lambda: ManifestStorage(tmp_path)
+    app.dependency_overrides[get_openclaw_manager] = lambda: openclaw_manager_mock
+    reg = EdgeRuntimeRegistry()
+    reg.mark_ping_error("Your agent runs in SellerClaw's cloud.", code="agent_runs_in_cloud")
+    monkeypatch.setattr("sellerclaw_agent.server.runtime_registry.get_runtime_registry", lambda: reg)
+    try:
+        with TestClient(app) as client:
+            ping = client.get("/health").json()["tasks"]["ping_loop"]
+    finally:
+        app.dependency_overrides.clear()
+
+    assert ping["last_error_code"] == "agent_runs_in_cloud"
+    assert ping["last_error"] == "Your agent runs in SellerClaw's cloud."
+
+
+class _FakeMoveClient:
+    def __init__(self, *, answer: str | None = None, error: Exception | None = None) -> None:
+        self.answer = answer
+        self.error = error
+        self.calls = 0
+
+    async def move_here(self) -> str:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        assert self.answer is not None
+        return self.answer
+
+
+@pytest.mark.parametrize("answer", ["moving", "moved", "already_here"])
+def test_move_here_relays_the_clouds_answer(client: TestClient, answer: str) -> None:
+    fake = _FakeMoveClient(answer=answer)
+    app.dependency_overrides[srv_app.get_connection_client] = lambda: fake
+
+    response = client.post("/hosting/move-here", headers=_CONTROL_PLANE_AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": answer}
+    assert fake.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "detail"),
+    [
+        pytest.param(
+            "refused-409",
+            409,
+            {"code": "hosting_transition_in_flight", "message": "The cloud machine is starting."},
+            id="refused-by-the-cloud",
+        ),
+        pytest.param(
+            "refused-404",
+            502,
+            {"code": "move_refused", "message": "Not Found"},
+            id="older-cloud",
+        ),
+        pytest.param(
+            "auth",
+            401,
+            {"code": "not_signed_in", "message": "Invalid agent token."},
+            id="token-revoked",
+        ),
+        pytest.param(
+            "network",
+            502,
+            {"code": "cloud_error", "message": "connection refused"},
+            id="cloud-unreachable",
+        ),
+    ],
+)
+def test_move_here_failures_keep_the_clouds_reason(
+    client: TestClient, error: str, status: int, detail: dict[str, str]
+) -> None:
+    from sellerclaw_agent.cloud.exceptions import CloudAuthError, CloudConnectionError, CloudMoveRefusedError
+
+    errors: dict[str, Exception] = {
+        "refused-409": CloudMoveRefusedError(
+            "The cloud machine is starting.", code="hosting_transition_in_flight", status_code=409
+        ),
+        "refused-404": CloudMoveRefusedError("Not Found", code=None, status_code=404),
+        "auth": CloudAuthError("Invalid agent token.", status_code=401),
+        "network": CloudConnectionError("connection refused"),
+    }
+    app.dependency_overrides[srv_app.get_connection_client] = lambda: _FakeMoveClient(error=errors[error])
+
+    response = client.post("/hosting/move-here", headers=_CONTROL_PLANE_AUTH)
+
+    assert response.status_code == status
+    assert response.json()["detail"] == detail
+
+
+def test_move_here_requires_the_local_api_key(client: TestClient) -> None:
+    fake = _FakeMoveClient(answer="moving")
+    app.dependency_overrides[srv_app.get_connection_client] = lambda: fake
+
+    response = client.post("/hosting/move-here")
+
+    assert response.status_code == 401
+    assert fake.calls == 0
+
+
+def test_signing_out_forgets_the_previous_ping_errors(client: TestClient, monkeypatch) -> None:
+    """A refusal the old account got must not greet the next sign-in."""
+    from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
+
+    reg = EdgeRuntimeRegistry()
+    reg.mark_ping_error("Your agent runs in SellerClaw's cloud.", code="agent_runs_in_cloud")
+    monkeypatch.setattr("sellerclaw_agent.server.runtime_registry.get_runtime_registry", lambda: reg)
+    service = MagicMock()
+
+    async def _disconnect() -> None:
+        return None
+
+    service.disconnect = _disconnect
+    app.dependency_overrides[srv_app.get_cloud_auth_service] = lambda: service
+
+    response = client.post("/auth/disconnect", headers=_CONTROL_PLANE_AUTH)
+
+    assert response.status_code == 200
+    ping = reg.snapshot_tasks()["ping_loop"]
+    assert (ping["last_error"], ping["last_error_code"]) == (None, None)

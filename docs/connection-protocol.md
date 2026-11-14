@@ -7,7 +7,7 @@ This document describes the protocol from the **agent's perspective**: what it s
 ## Principles
 
 - The agent initiates the connection — no public IP or open ports are required on the host.
-- Each user has **at most one active edge session** at a time. Reconnecting supersedes the previous session.
+- Each user has **at most one active edge session** at a time. While one is live, `connect` from another instance is refused with 409 (see [Refusals](#refusals-protocol-10)); the same instance reconnecting after a restart is let in once its old session has gone or turned stale.
 - Commands arrive via **pull**: the agent fetches them as part of the next ping.
 - Session state (online/offline) is ephemeral on the server side. The agent treats its own session ID as the source of truth for "am I still the active instance".
 
@@ -19,7 +19,8 @@ The agent stores these files in `SELLERCLAW_DATA_DIR` (default `/data`):
 SELLERCLAW_DATA_DIR/
 ├── agent_token.json    — long-lived agent token (`sca_…`) and user metadata
 ├── edge_session.json   — agent_instance_id for the current session
-└── cron_standby.json   — present only while another instance holds the session (cron standby)
+├── cron_standby.json   — present only while another instance holds the session (cron standby)
+└── state_restored_after_connect.json — which sign-in (a hash of the token) the post-connect restore ran for
 ```
 
 `agent_token.json` is written atomically (temp file + rename) and holds `agent_token`, `user_id`, `user_email`, `user_name`, and `connected_at`. There is **no** user JWT and **no** refresh token on the agent. `edge_session.json` is cleared whenever the server rejects the session (HTTP 401 `agent_session_invalidated`) so the next iteration reconnects from scratch.
@@ -28,9 +29,9 @@ SELLERCLAW_DATA_DIR/
 
 Sign-in (CLI password prompt or device flow) exchanges user proof for an **agent-scoped** token via cloud routes under `POST /agent/auth/*`. The agent persists that token in `agent_token.json` (or uses `AGENT_API_KEY` from the environment as an override for the same value).
 
-The agent sends `Authorization: Bearer <agent_token>` on every cloud request. There is **no** token refresh path: on **401** the client treats auth as invalid, clears local `agent_token.json` (and related session state where applicable), and waits until the user signs in again.
+The agent sends `Authorization: Bearer <agent_token>` on every cloud request. There is **no** token refresh path: on **401** the client treats auth as invalid, clears local `agent_token.json` (and related session state where applicable), and waits until the user signs in again. A revoked token means the owner's agent runs somewhere else now (moved to another machine, replaced on a redeploy, signed out), so the agent also **stops OpenClaw** (protocol 10) — its Telegram and WhatsApp must never answer from two machines — and goes on cron standby.
 
-**Server-side invalidation:** calling `POST /agent/connection/disconnect` (or admin suspend) revokes active agent tokens for that user in the cloud, so a copied `agent_token.json` stops working even if the file still exists locally.
+**Server-side invalidation:** calling `POST /agent/connection/disconnect` with `revoke_tokens: true` revokes the agent token it is called with (older SellerClaw clouds revoked every agent token of the account), so a copied `agent_token.json` stops working even if the file still exists locally. Provisioning a SellerClaw cloud machine revokes the account's other agent tokens.
 
 ## Session lifecycle
 
@@ -40,7 +41,8 @@ The agent sends `Authorization: Bearer <agent_token>` on every cloud request. Th
 Agent                                   Server
   |                                       |
   |  POST /agent/connection/connect       |
-  |  { agent_version, protocol_version }  |
+  |  { agent_version, protocol_version,   |
+  |    runs_on, openclaw_status }         |
   |-------------------------------------->|
   |                                       |  — cancels in-flight commands of the
   |                                       |    previous session (PENDING → CANCELLED,
@@ -55,6 +57,28 @@ Agent                                   Server
 
 Reconnecting after a restart is automatic: the server invalidates the previous session and cleans up its unfinished commands.
 
+Protocol 10 adds two optional fields (older agents send neither; servers must accept a body without them):
+
+- `runs_on` — `"cloud"` on a SellerClaw cloud machine (Fly sets `FLY_MACHINE_ID` itself; `SELLERCLAW_RUNS_ON=cloud` says the same), `"computer"` anywhere else. A hint only: the cloud trusts the token it issued to its own machine more.
+- `openclaw_status` — `"running"` (a gateway already up or coming up) or `"stopped"`, from the supervisor probe; left out when it cannot be told (FATAL / BACKOFF / supervisorctl unreachable). The cloud starts a stopped agent on its own and does not send START to one already running (a reconnect after a network blip).
+
+On the **first** accepted `connect` after a sign-in, while OpenClaw is stopped, the agent brings back the browser sign-in backup and the WhatsApp session copy (`GET /agent/connection/state-backup`, `GET /agent/connection/whatsapp/session`) in the background when this machine lacks either — the entrypoint restore at container start had no token yet on a fresh install. Once per sign-in (`state_restored_after_connect.json` keeps a hash of the token). A `start` / `restart` waits for it at most 40 s, then starts without it.
+
+### Refusals (protocol 10)
+
+`connect` may answer **409** with `{"detail": {"code", "message"}}`. The agent treats all four the same way — no session, cron standby, retry after 10 / 20 / 30 s (capped at 30 s) — and keeps the code of the last refusal in the ping loop's state (`GET /health` → `tasks.ping_loop.last_error_code`; `null` after an accepted ping), so `sellerclaw-agent login` / `status` can tell the owner what is going on:
+
+| `detail.code` | Meaning |
+|---|---|
+| `agent_connection_already_active` | Another instance holds the owner's session. |
+| `agent_runs_in_cloud` | The owner's agent runs on a SellerClaw cloud machine and no move to this computer was asked for. `sellerclaw-agent login` offers the move. |
+| `agent_move_in_progress` | A move to this computer is under way; the cloud machine is still handing over (it got `disconnect`). The next `connect` after it has gone is accepted. |
+| `agent_runs_on_computer` | This is a cloud machine, but the owner's agent runs on their computer now: an old machine must not take the session back. |
+
+### Moving the agent to this computer
+
+`POST /agent/hosting/move-here` (agent token, no body) asks the cloud to move the owner's agent to the machine making the call → `200 {"status": "moving" | "moved" | "already_here"}`. `moving`: the cloud machine keeps working until this one connects, then gets `disconnect` (it stops, uploads its backups, says goodbye) and is switched off; meanwhile `connect` answers `agent_move_in_progress`. `moved`: there was no cloud machine to wait for. The agent calls it from `sellerclaw-agent login` after the owner said yes (local `POST /hosting/move-here` on the control plane relays it).
+
 ### 2. Ping loop
 
 `run_edge_ping_loop` runs in the agent's FastAPI lifespan. Every ~10 seconds it:
@@ -62,7 +86,7 @@ Reconnecting after a restart is automatic: the server invalidates the previous s
 1. Ensures an agent token is available (`agent_token.json` or `AGENT_API_KEY`) — otherwise sleeps.
 2. Probes the local OpenClaw program via `supervisorctl status` (→ `running` / `stopped` / `starting` / `error`).
 3. Probes the **edge browser** stack (KasmVNC supervisord program + Chrome DevTools `GET http://127.0.0.1:<debug-port>/json/list`) and attaches an optional `browser` object to each ping when `protocol_version >= 2`.
-4. Creates a session with `POST /connect` if `edge_session.json` is missing.
+4. Creates a session with `POST /connect` (with `runs_on` / `openclaw_status`) if `edge_session.json` is missing; the first one after a sign-in starts the post-connect restore.
 5. Sends `POST /agent/connection/ping` with the current status, optional `browser`, and `command_result: null`.
 6. If the response contains `pending_command`, executes it (see [Commands](#commands)).
 7. Sends a second ping with the `command_result` (and the latest `browser` probe) so the server can move the command to COMPLETED or FAILED.
@@ -72,7 +96,7 @@ POST /agent/connection/ping
 {
   "agent_instance_id": "...",
   "agent_version": "0.1.0",
-  "protocol_version": 2,
+  "protocol_version": 10,
   "openclaw_status": "running",
   "openclaw_error": null,
   "browser": {
@@ -117,14 +141,15 @@ the account's identity or any credential. **Omitted** = the agent runs on credit
 
 `browser` is **omitted** by agents speaking `protocol_version` 1, or when the probe is skipped; servers must treat it as optional for backward compatibility. Page list is capped (≤20 URLs; URL length truncated server-side as applicable).
 
-The server considers the agent **offline** when it has not pinged for longer than its `stale_after_seconds` threshold (default 30s on SellerClaw cloud). That status is virtual — it is computed on read, not written anywhere.
+The server considers the agent **offline** when it has not pinged for longer than its `stale_after_seconds` threshold (60 s on SellerClaw cloud). That status is virtual — it is computed on read, not written anywhere.
 
 ### 3. Disconnect
 
-- **Graceful.** Agent calls `POST /agent/connection/disconnect`. The server marks the session as `disconnected` with reason `graceful`.
+- **Graceful.** Agent calls `POST /agent/connection/disconnect`. The server marks the session as `disconnected` with reason `graceful`. On a normal shutdown (container stop, `sellerclaw-agent update`) the agent sends it with `revoke_tokens: false`, keeping its token for the next start.
 - **Timeout.** Agent simply stops pinging. The server virtually marks it `disconnected` with reason `timeout` on the next status read.
-- **Replaced.** A fresh `connect` from another instance supersedes the current one with reason `replaced`.
-- **Suspended by user.** The user can pause the agent through the cloud (`POST /user/agent/connection/disconnect`). The next `connect` / `ping` returns **403 `agent_suspended`** until the user resumes. The agent does **not** clear `agent_token.json` — it logs the state and retries on a long interval (~3 minutes).
+- **Replaced.** Provisioning a new SellerClaw cloud machine closes the current session with reason `replaced` and revokes the old machine's token.
+- **After a `disconnect` command.** The agent stops OpenClaw, uploads the browser sign-in backup and the WhatsApp session, calls `POST /agent/connection/disconnect` (`revoke_tokens: true`), clears `edge_session.json` and **exits the ping loop for good**: the agent server keeps running, but this instance does not reconnect — not even after a new sign-in — until the container restarts (`sellerclaw-agent restart`) or the machine is recreated.
+- **Suspended by user.** The user can pause the agent through the cloud (`POST /user/agent/connection/disconnect`). The next `connect` / `ping` returns **403 `agent_suspended`** until the user resumes. The agent does **not** clear `agent_token.json` — it logs the state and retries on a long interval (~30 seconds).
 
 ## Commands
 
@@ -135,12 +160,13 @@ The server considers the agent **offline** when it has not pinged for longer tha
 | `start` | Pulls the current manifest (`GET /edge-manifest`), stores it locally, renders the OpenClaw bundle, starts the `openclaw` program via supervisord. Rejected if the process is already running (`openclaw_already_running`). |
 | `stop` | Stops and releases the OpenClaw program. Idempotent if it is already stopped. |
 | `restart` | `stop` + `start`. If nothing was running, behaves like `start`. |
-| `disconnect` | `stop` + `POST /disconnect` + exits the ping loop. The local FastAPI server keeps running so the user can re-authenticate. |
+| `disconnect` | `stop` + backups (browser sign-ins, WhatsApp session) + `POST /disconnect` (`revoke_tokens: true`) + exits the ping loop for good (see [Disconnect](#3-disconnect)). The local FastAPI server keeps running; the instance reconnects only after a container restart. |
 | `open_browser` | Starts KasmVNC + `gost` via supervisord, waits for the configured X11 socket, launches Chrome via `OPENCLAW_CHROME_LAUNCHER` (default `/usr/local/bin/openclaw_chrome`). **Rejected** while OpenClaw gateway is `running` (`openclaw_running_browser_command_rejected`). |
 | `close_browser` | Best-effort `pkill` of Chrome/Chromium, then `supervisorctl stop` for KasmVNC and `gost`. Also cancels a running browser-view tunnel. Idempotent. |
 | `update_manifest` | Pulls the current manifest, stores it, rebuilds the bundle and applies it in place (`openclaw_start apply-bundle`; OpenClaw hot-reloads). Skipped when the bundle on disk already matches. A proxy change is refused — it needs `restart`. |
 | `whatsapp_link` | (protocol v5) Fetches the open link attempt (`GET /agent/connection/whatsapp/link` → `{login_id, force}`; 404 → **rejected**), starts the link runner in the background and acks `completed` at once. The runner waits (up to 5 min) for the WhatsApp plugin to load, calls the gateway's `web.login.start` / `web.login.wait`, and reports every step to `POST /agent/connection/whatsapp/link/{login_id}` (`preparing` → `qr` with a PNG data URL, as often as WhatsApp rotates it → `connected` with `self_e164`, or `failed` with a `reason` / `expired`). A 404 from that endpoint stops it. |
 | `whatsapp_logout` | (protocol v5) Calls `channels.logout` while the plugin is loaded (stops the channel and deletes its credentials; WhatsApp itself is not told, so the phone lists the device under Linked devices until the owner removes it — without the keys it can no longer be used), deletes `~/.openclaw/credentials/whatsapp/`, and `DELETE /agent/connection/whatsapp/session`. Any gateway error other than "plugin not loaded" / "OpenClaw down" fails the command. Independently, the session backup loop deletes the local session once the applied manifest carries no WhatsApp numbers, so Disconnect holds even when this command was never delivered. |
+| `ai_subscription_disconnect` | (protocol v10) Back to SellerClaw credits — what `sellerclaw-agent disconnect` does, for the web panel's **Switch to credits**. No payload. Acks `completed` at once, then on the supervisor executor (the queue START / STOP / RESTART run on, so it never races one) forgets the plan choice, signs the plan out on this machine and rebuilds the config: a reload for Claude; for ChatGPT a gateway restart **only while OpenClaw is running** (a stopped agent stays stopped; its next start drops the sign-in). The next pings carry no `ai_subscription`. |
 | `browser_stream` | (protocol v3) Fetches the active browser-view session (`GET /agent/browser-view/session`), ensures the KasmVNC stack is up (standalone `open_browser` path when OpenClaw is stopped; **rejected** when OpenClaw runs without an open browser), then keeps an outbound websocket tunnel dialed to `wss://…/agent/browser-view/tunnel?session_id=…`. After the cloud sends the text frame `attach`, the agent opens `ws://127.0.0.1:6080/websockify` (Basic auth `user`/`VNC_PASSWORD`, `Origin` header, `binary` subprotocol, client pings disabled) and pipes bytes both ways. Redials while the session exists; stops on close code `4001` or denial 401/404/410. |
 
 ### WhatsApp session copy
@@ -278,7 +304,7 @@ After executing a command, the agent sends a second ping with:
 {
   "command_result": {
     "command_id": "...",
-    "outcome": "success" | "failed" | "rejected",
+    "outcome": "completed" | "failed" | "rejected",
     "error": "optional human-readable message"
   }
 }
@@ -287,6 +313,14 @@ After executing a command, the agent sends a second ping with:
 `rejected` is used when the agent refuses to run the command (e.g. `openclaw_already_running`). `failed` covers runtime errors (Docker unreachable, bundle render error, etc.).
 
 ## Error handling
+
+### 401 (agent token revoked)
+
+Any other 401: the token is dead. The agent clears `agent_token.json` and `edge_session.json`, goes on cron standby and stops OpenClaw (protocol 10), then waits for a new sign-in. With the token coming from `AGENT_API_KEY` (a cloud machine) it cannot recover on its own and logs an error.
+
+### 409 refusals
+
+See [Refusals (protocol 10)](#refusals-protocol-10): wait, retry, never clear the token.
 
 ### 401 `agent_session_invalidated`
 
@@ -300,10 +334,10 @@ The server dropped the session (replaced by another instance or expired). The ag
 The user paused the agent from the cloud. Behaviour:
 
 1. The agent does **not** clear `agent_token.json` or the session file.
-2. It logs a warning and backs off to a long interval (`ping_interval_when_suspended`, ~3–3.5 minutes).
+2. It logs a warning and backs off to a long interval (`ping_interval_when_suspended`, ~28–30 seconds).
 3. When the user resumes, the next `connect` succeeds.
 
-Older agents that don't special-case this code fall into the generic error backoff (up to 5 minutes). Behaviour degrades gracefully — no tight retry loop.
+Older agents that don't special-case this code fall into the generic error backoff (10 / 20 / 30 s, capped at 30 s). Behaviour degrades gracefully — no tight retry loop.
 
 ### Docker / bundle errors
 
@@ -315,7 +349,10 @@ Any transport error (timeout, 5xx, DNS) is treated as transient: the agent logs 
 
 ## Protocol version
 
-Every ping carries `protocol_version` — the agent's own constant, not the value saved with the edge session at connect (a session saved by an older agent survives an upgrade on a persistent `/data`). The current agent version is **8**:
+Every ping carries `protocol_version` — the agent's own constant, not the value saved with the edge session at connect (a session saved by an older agent survives an upgrade on a persistent `/data`). The current agent version is **10**:
+
+- **10** — `connect` carries `runs_on` and `openclaw_status`; the agent waits out the 409 refusals `agent_runs_in_cloud` / `agent_runs_on_computer` / `agent_move_in_progress` like `agent_connection_already_active` and reports the code in `/health`; understands `ai_subscription_disconnect` (the cloud offers **Switch to credits** only to agents at `>= 10`); stops OpenClaw when its token is revoked; restores browser sign-ins and WhatsApp on the first connect after a sign-in.
+- **9** — may run on the owner's own ChatGPT / Claude plan and reports it in every ping (`ai_subscription`).
 
 - **8** — understands a `steer` hook envelope: `{"endpoint": "steer", "hookId", "body": {sessionKey, text, idempotencyKey}}` hands the text to the session's active run at its next step (OpenClaw `steerActiveRun`) instead of starting a turn; it is reported back like any named hook, with `delivered: false` (and the reason) when no run took it — the session is never woken. Also answers `session_question` frames (see [Staff side questions](#staff-side-questions-protocol-v8)). The cloud sends both only to agents at `>= 8`.
 - **7** — OpenClaw's native cron is the only scheduler: the agent reports its cron store (`/agent/cron/state`, `/agent/cron/runs`), restores the jobs the cloud hands back, executes `cron_command` frames and answers them on `/agent/cron/commands/{request_id}`, and goes on cron standby when another instance holds the session (see [Recurring tasks](#recurring-tasks-openclaw-cron-protocol-v7)). It no longer understands `scheduled_run` / `feasibility_check` and no longer sends `/agent/cron/snapshot`. The cloud offers its scheduled-task actions only to agents at `>= 7`.

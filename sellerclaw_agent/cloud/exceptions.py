@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 
 def agent_api_error_code(payload: Any) -> str | None:
@@ -55,7 +55,55 @@ class CloudConnectionAlreadyActiveError(CloudConnectionError):
     The one signal that this agent was replaced (or is a second copy): the cloud only lets a new
     session in once the previous one is gone or stale, so a refusal means somebody else is the
     owner's agent right now. The cron sync goes on standby on it (see ``cron_standby``).
+
+    ``code`` is the cloud's ``detail.code``; the subclasses below are the refusals of protocol 10,
+    all handled the same way (wait, retry), and the code reaches ``/health`` so the CLI can tell
+    the owner what is going on.
     """
+
+    code: ClassVar[str] = "agent_connection_already_active"
+
+
+class CloudAgentMoveInProgressError(CloudConnectionAlreadyActiveError):
+    """409 ``agent_move_in_progress``: the owner is moving the agent here; the cloud machine is
+    still handing over. The next ``connect`` after it has gone is accepted."""
+
+    code = "agent_move_in_progress"
+
+
+class CloudAgentRunsInCloudError(CloudConnectionAlreadyActiveError):
+    """409 ``agent_runs_in_cloud``: the owner's agent runs on a SellerClaw cloud machine and no
+    move to this computer was asked for (``sellerclaw-agent login`` offers it)."""
+
+    code = "agent_runs_in_cloud"
+
+
+class CloudAgentRunsOnComputerError(CloudConnectionAlreadyActiveError):
+    """409 ``agent_runs_on_computer``: this is a cloud machine, but the owner's agent now runs on
+    their own computer — an old machine must not take the session back."""
+
+    code = "agent_runs_on_computer"
+
+
+#: ``detail.code`` of a refused ``connect`` → the exception raised for it.
+CONNECT_REFUSAL_ERRORS: dict[str, type[CloudConnectionAlreadyActiveError]] = {
+    cls.code: cls
+    for cls in (
+        CloudConnectionAlreadyActiveError,
+        CloudAgentMoveInProgressError,
+        CloudAgentRunsInCloudError,
+        CloudAgentRunsOnComputerError,
+    )
+}
+
+
+class CloudMoveRefusedError(CloudConnectionError):
+    """``POST /agent/hosting/move-here`` refused (4xx); ``code`` / ``message`` come from the cloud."""
+
+    def __init__(self, message: str, *, code: str | None, status_code: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
 
 
 class CloudDevicePollTerminalError(CloudConnectionError):

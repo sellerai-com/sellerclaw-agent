@@ -24,9 +24,14 @@ from sellerclaw_agent.cloud.agent_activity import (
     create_agent_activity_reader,
 )
 from sellerclaw_agent.cloud.agent_bearer import resolve_agent_bearer_token
-from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
+from sellerclaw_agent.cloud.connection_client import (
+    SellerClawConnectionClient,
+    detect_runs_on,
+    openclaw_status_for_connect,
+)
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.cron_standby import CronStandby, get_cron_standby
+from sellerclaw_agent.cloud.restore_after_connect import PostConnectRestore, get_post_connect_restore
 from sellerclaw_agent.cloud.state_backup import read_applied_config_version
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.settings import get_openclaw_version
@@ -70,11 +75,16 @@ _log = structlog.get_logger(__name__)
 #     ``/agent/session-questions/{request_id}``.
 # v9: may run on the owner's own ChatGPT / Claude subscription and reports it in every ping
 #     (``ai_subscription``: provider, connected / limit reached / signed out, usage windows).
+# v10: says on ``connect`` where it runs (``runs_on``: cloud machine / the owner's computer) and
+#     whether OpenClaw is already up (``openclaw_status``); waits instead of competing when the
+#     owner's agent runs elsewhere (409 ``agent_runs_in_cloud`` / ``agent_runs_on_computer`` /
+#     ``agent_move_in_progress``); understands the ``ai_subscription_disconnect`` command (back to
+#     credits from the web panel); stops OpenClaw when its token is revoked.
 #
 # Every ping carries this constant, not the version saved with the edge session at connect:
 # with a persistent /data (self-hosted, local compose) a session saved by an older agent
 # survives the upgrade, and the cloud would keep gating new commands on the old number.
-AGENT_PROTOCOL_VERSION = 9
+AGENT_PROTOCOL_VERSION = 10
 
 # Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
 # build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the
@@ -112,6 +122,25 @@ async def _reconcile_cron_standby(standby: CronStandby, openclaw_status: str) ->
         _log.warning("cron_standby_reconcile_failed", error=str(exc)[:300])
 
 
+async def _stop_openclaw_token_revoked(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    supervisor_executor: ThreadPoolExecutor,
+    container_mgr: SupervisorContainerManager,
+    openclaw_status: str,
+) -> None:
+    """The cloud revoked this agent's token: the owner's agent runs somewhere else now (moved to
+    another machine, replaced on a redeploy, signed out). OpenClaw stops here, so its Telegram and
+    WhatsApp never answer the owner from two machines at once."""
+    if openclaw_status == "stopped":
+        return
+    outcome, err = await loop.run_in_executor(supervisor_executor, container_mgr.stop)
+    if outcome == "completed":
+        _log.warning("edge_token_revoked_openclaw_stopped")
+    else:
+        _log.warning("edge_token_revoked_openclaw_stop_failed", outcome=outcome, error=(err or "")[:300])
+
+
 async def run_edge_ping_loop(
     stop: asyncio.Event,
     *,
@@ -120,10 +149,14 @@ async def run_edge_ping_loop(
     supervisor_executor: ThreadPoolExecutor,
     registry: EdgeRuntimeRegistry,
     cron_standby: CronStandby | None = None,
+    post_connect_restore: PostConnectRestore | None = None,
 ) -> None:
     """Background task: maintain SellerClaw edge session; commands run in executor task."""
     data_dir = Path(os.environ.get("SELLERCLAW_DATA_DIR", "/data"))
     standby = cron_standby or get_cron_standby(data_dir)
+    # Installed by the app lifespan; absent (no restore) when the loop runs on its own, as in tests.
+    restore = post_connect_restore or get_post_connect_restore()
+    runs_on = detect_runs_on()
     creds_storage = CredentialsStorage(data_dir)
     session_storage = EdgeSessionStorage(data_dir)
     client = SellerClawConnectionClient(credentials_storage=creds_storage)
@@ -211,12 +244,21 @@ async def run_edge_ping_loop(
                 conn = await client.connect(
                     agent_version=__version__,
                     protocol_version=AGENT_PROTOCOL_VERSION,
+                    runs_on=runs_on,
+                    openclaw_status=openclaw_status_for_connect(openclaw_status),
                 )
                 session_storage.save(
                     agent_instance_id=conn.agent_instance_id,
                     protocol_version=AGENT_PROTOCOL_VERSION,
                 )
                 sess = session_storage.load()
+                # A fresh install signs in after the container started, so the entrypoint had no
+                # token to restore with: browser sign-ins and WhatsApp come back now, before START.
+                if restore is not None:
+                    restore.maybe_start(
+                        token=resolve_agent_bearer_token(creds_storage),
+                        openclaw_status=openclaw_status,
+                    )
             if sess is None:
                 consecutive_errors += 1
                 sleep_seconds = ping_interval_after_error(consecutive_errors)
@@ -239,13 +281,14 @@ async def run_edge_ping_loop(
                 ai_subscription=_ai_subscription_payload(),
             )
         except CloudConnectionAlreadyActiveError as exc:
-            # Another instance holds the owner's session: this one was replaced (or is a second
-            # copy). Its cron jobs must stop before both machines run the same task.
-            _log.warning("edge_connect_refused_another_instance_active", error=str(exc))
+            # Another instance holds the owner's session: this one was replaced, is a second copy,
+            # or waits for a cloud machine to hand over (protocol 10 names which in ``exc.code``).
+            # Its cron jobs must stop before both machines run the same task.
+            _log.warning("edge_connect_refused_another_instance_active", code=exc.code, error=str(exc))
             standby.request_standby()
             await _reconcile_cron_standby(standby, openclaw_status)
             consecutive_errors += 1
-            registry.mark_ping_error(str(exc))
+            registry.mark_ping_error(str(exc), code=exc.code)
             await sleep_until(stop, ping_interval_after_error(consecutive_errors))
             continue
         except CloudAgentSuspendedError:
@@ -262,10 +305,17 @@ async def run_edge_ping_loop(
             if getattr(exc, "status_code", None) == 401:
                 session_storage.clear()
                 creds_storage.clear()
-                # A revoked token (this machine was replaced on a redeploy): its cron jobs stop
-                # here, before they run beside the new machine's until this one is destroyed.
+                # A revoked token (this machine was replaced on a redeploy, the agent moved to
+                # another machine): its cron jobs stop here, before they run beside the new
+                # machine's until this one is destroyed — and so does OpenClaw itself.
                 standby.request_standby()
                 await _reconcile_cron_standby(standby, openclaw_status)
+                await _stop_openclaw_token_revoked(
+                    loop=loop,
+                    supervisor_executor=supervisor_executor,
+                    container_mgr=container_mgr,
+                    openclaw_status=openclaw_status,
+                )
                 if resolve_agent_bearer_token(creds_storage) is not None:
                     # File cleared but AGENT_API_KEY env still resolves a token; we
                     # can't self-recover. Operator must rotate the env value.
@@ -404,6 +454,12 @@ async def _flush_command_ack(
             session_storage.clear()
             creds_storage.clear()
             await result_store.clear_pending_ack()
+            await _stop_openclaw_token_revoked(
+                loop=loop,
+                supervisor_executor=supervisor_executor,
+                container_mgr=container_mgr,
+                openclaw_status=openclaw_status,
+            )
         _log.warning("edge_ping_ack_auth_error", error=str(exc))
         registry.mark_ping_error(str(exc))
         return False

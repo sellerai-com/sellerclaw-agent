@@ -131,10 +131,18 @@ def _install_docker_stub(
     existing_container: str = "",
     connected: bool = False,
     old_image: bool = False,
+    login_exit: int = 0,
+    where_exit: int = 0,
+    supports_where: bool = True,
 ) -> None:
-    """Stub `docker` that records every call and answers the handful of queries used."""
+    """Stub `docker` that records every call and answers the handful of queries used.
+
+    ``login_exit`` / ``where_exit``: what the in-container `login` / `where` answer — 0 the agent
+    runs here, 3 it keeps running in SellerClaw's cloud, anything else a failure.
+    """
     status_line = "Connected as Tester" if connected else "Not connected"
     entry_point_branch = "exit 1" if old_image else "exit 0"
+    where_branch = "exit 0" if supports_where and not old_image else "exit 1"
     body = textwrap.dedent(f"""
         printf '%s\\n' "$*" >> "$DOCKER_LOG"
         case "${{1:-}}" in
@@ -148,7 +156,10 @@ def _install_docker_stub(
                 ;;
             exec)
                 if [[ "$*" == *"import sellerclaw_agent.__main__"* ]]; then {entry_point_branch}; fi
+                if [[ "$*" == *"import cmd_where"* ]]; then {where_branch}; fi
                 if [[ "$*" == *"sellerclaw_agent status"* ]]; then echo "{status_line}"; fi
+                if [[ "$*" == *"sellerclaw_agent login"* ]]; then exit {login_exit}; fi
+                if [[ "$*" == *"sellerclaw_agent where"* ]]; then exit {where_exit}; fi
                 exit 0
                 ;;
             volume)
@@ -376,6 +387,102 @@ def test_reinstall_replaces_container_but_keeps_the_data_volume(sandbox: Sandbox
     assert "already signed in" in result.stdout
 
 
+def test_reinstall_lets_the_old_agent_say_goodbye_before_removing_it(sandbox: Sandbox) -> None:
+    """A graceful stop tells the cloud the agent went offline: the new container is let in at once."""
+    _install_docker_stub(sandbox, existing_container="sellerclaw-agent", connected=True)
+
+    result = _run(sandbox, ["--yes"])
+
+    assert result.returncode == 0, result.stderr
+    calls = sandbox.docker_calls()
+    stop_at = calls.index("stop -t 30 sellerclaw-agent")
+    remove_at = calls.index("rm -f sellerclaw-agent")
+    run_at = next(i for i, c in enumerate(calls) if c.startswith("run -d --name sellerclaw-agent"))
+    assert stop_at < remove_at < run_at
+
+
+@pytest.mark.parametrize(
+    ("login_exit", "expected", "unexpected"),
+    [
+        pytest.param(0, "Your agent runs on this computer.", "still runs in SellerClaw's cloud", id="runs-here"),
+        pytest.param(
+            3,
+            'Your agent still runs in SellerClaw\'s cloud.',
+            "Your agent runs on this computer",
+            id="stays-in-the-cloud",
+        ),
+        pytest.param(1, "Connecting did not finish", "Your agent runs on this computer", id="sign-in-failed"),
+    ],
+)
+def test_final_message_says_where_the_agent_runs(
+    sandbox: Sandbox, login_exit: int, expected: str, unexpected: str
+) -> None:
+    _install_docker_stub(sandbox, login_exit=login_exit)
+
+    result = _run(sandbox, ["--yes"])
+
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout
+    assert unexpected not in result.stdout
+    # The owner is never sent to the web panel to flip a switch the installer already handled.
+    assert "switch to self-hosted" not in result.stdout
+
+
+def test_an_agent_left_in_the_cloud_is_told_how_to_move_it_later(sandbox: Sandbox) -> None:
+    _install_docker_stub(sandbox, login_exit=3)
+
+    result = _run(sandbox, ["--yes"])
+
+    assert result.returncode == 0, result.stderr
+    assert 'open Hosting in SellerClaw and press "Move to your computer"' in result.stdout
+    # A plan only powers an agent that runs on this computer: not offered while it stays in the cloud.
+    assert "sellerclaw-agent connect chatgpt" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("where_exit", "expected"),
+    [
+        pytest.param(0, "Your agent runs on this computer.", id="runs-here"),
+        pytest.param(3, "Your agent still runs in SellerClaw's cloud.", id="stays-in-the-cloud"),
+        pytest.param(1, "SellerClaw Agent is installed and running.", id="unknown"),
+    ],
+)
+def test_an_already_signed_in_agent_is_asked_where_it_runs(
+    sandbox: Sandbox, where_exit: int, expected: str
+) -> None:
+    """Re-running the installer on a signed-in computer: no new sign-in, but the place still counts."""
+    _install_docker_stub(sandbox, existing_container="sellerclaw-agent", connected=True, where_exit=where_exit)
+
+    result = _run(sandbox, ["--yes"])
+
+    assert result.returncode == 0, result.stderr
+    calls = sandbox.docker_calls()
+    assert any(c.endswith("python -m sellerclaw_agent where") for c in calls)
+    assert not any("login --browser" in c for c in calls)
+    assert expected in result.stdout
+
+
+def test_an_image_without_where_keeps_the_plain_final_message(sandbox: Sandbox) -> None:
+    _install_docker_stub(sandbox, existing_container="sellerclaw-agent", connected=True, supports_where=False)
+
+    result = _run(sandbox, ["--yes", "--version", "0.60.0"])
+
+    assert result.returncode == 0, result.stderr
+    assert not any(c.endswith("python -m sellerclaw_agent where") for c in sandbox.docker_calls())
+    assert "SellerClaw Agent is installed and running." in result.stdout
+
+
+def test_sign_in_and_the_move_question_are_asked_on_the_terminal() -> None:
+    """`curl | sh` hands the script its own bytes on stdin; the question about moving the agent from
+    SellerClaw's cloud must reach the terminal — like the AI-plan question does. (The unattended
+    runs above cannot open /dev/tty, so this one reads the script.)"""
+    script = INSTALL_SH.read_text()
+
+    assert 'python -m sellerclaw_agent "$@" </dev/tty' in script
+    assert "agent_cli_in_container login --browser" in script
+    assert "agent_cli_in_container where" in script
+
+
 def test_old_image_says_so_instead_of_failing_at_sign_in(sandbox: Sandbox) -> None:
     """`--version <old>` pulls an image with no in-container CLI: say it in one sentence."""
     _install_docker_stub(sandbox, old_image=True)
@@ -397,7 +504,7 @@ def test_no_login_flag_only_starts_the_agent(sandbox: Sandbox) -> None:
 
 
 def test_uninstall_removes_container_and_command_but_keeps_data(sandbox: Sandbox) -> None:
-    """Losing the sign-in must never be a side effect of a scripted uninstall."""
+    """Deleting stored data must never be a side effect of a scripted uninstall."""
     _install_docker_stub(sandbox, existing_container="sellerclaw-agent")
     assert _run(sandbox, ["--yes"]).returncode == 0
     assert sandbox.wrapper.is_file()
@@ -409,6 +516,33 @@ def test_uninstall_removes_container_and_command_but_keeps_data(sandbox: Sandbox
     assert any(c.startswith("rm -f sellerclaw-agent") for c in sandbox.docker_calls())
     assert not any(c.startswith("volume rm") for c in sandbox.docker_calls())
     assert "docker volume rm sellerclaw-agent-data" in result.stdout
+    assert 'press "Move to the cloud"' in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("connected", "signs_out"),
+    [
+        pytest.param(True, True, id="signed-in-signs-out-first"),
+        pytest.param(False, False, id="not-signed-in-nothing-to-revoke"),
+    ],
+)
+def test_uninstall_signs_out_then_stops_gracefully(sandbox: Sandbox, connected: bool, signs_out: bool) -> None:
+    """The cloud revokes this computer's token before the agent goes; then it says goodbye."""
+    _install_docker_stub(sandbox, existing_container="sellerclaw-agent", connected=connected)
+
+    result = _run(sandbox, ["--uninstall", "--yes"])
+
+    assert result.returncode == 0, result.stderr
+    calls = sandbox.docker_calls()
+    logout = "exec -w /app sellerclaw-agent python -m sellerclaw_agent logout"
+    stop_at = calls.index("stop -t 30 sellerclaw-agent")
+    remove_at = calls.index("rm -f sellerclaw-agent")
+    assert stop_at < remove_at
+    if signs_out:
+        assert calls.index(logout) < stop_at
+        assert "signed out of your SellerClaw account" in result.stdout
+    else:
+        assert logout not in calls
 
 
 def test_uninstall_purge_deletes_the_data_volume(sandbox: Sandbox) -> None:

@@ -863,3 +863,163 @@ async def test_ping_sends_the_whatsapp_state_only_when_known(tmp_path: Path) -> 
     await client.ping(**common, whatsapp=whatsapp)
     assert "whatsapp" not in bodies[0]
     assert bodies[1]["whatsapp"] == whatsapp
+
+
+# ---------------------------------------------------------------------------
+# Protocol 10: where the agent runs, refusals that name the owner's agent, moving it here
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_extra"),
+    [
+        pytest.param(
+            {"runs_on": "computer", "openclaw_status": "stopped"},
+            {"runs_on": "computer", "openclaw_status": "stopped"},
+            id="computer-stopped",
+        ),
+        pytest.param(
+            {"runs_on": "cloud", "openclaw_status": "running"},
+            {"runs_on": "cloud", "openclaw_status": "running"},
+            id="cloud-running",
+        ),
+        pytest.param({"runs_on": "computer"}, {"runs_on": "computer"}, id="openclaw-status-unknown-is-left-out"),
+        pytest.param({}, {}, id="older-callers-send-the-old-body"),
+    ],
+)
+async def test_connect_says_where_it_runs(tmp_path: Path, kwargs: dict, expected_extra: dict) -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json_body(request))
+        return httpx.Response(200, json={"agent_instance_id": "22222222-2222-4222-8222-222222222222"})
+
+    client = SellerClawConnectionClient(
+        credentials_storage=_write_creds(tmp_path),
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+    await client.connect(agent_version="1.0.0", protocol_version=10, **kwargs)
+
+    assert seen == {"agent_version": "1.0.0", "protocol_version": 10, **expected_extra}
+
+
+@pytest.mark.parametrize(
+    ("code", "exc_name"),
+    [
+        pytest.param("agent_connection_already_active", "CloudConnectionAlreadyActiveError", id="another-session"),
+        pytest.param("agent_move_in_progress", "CloudAgentMoveInProgressError", id="move-in-progress"),
+        pytest.param("agent_runs_in_cloud", "CloudAgentRunsInCloudError", id="runs-in-cloud"),
+        pytest.param("agent_runs_on_computer", "CloudAgentRunsOnComputerError", id="runs-on-computer"),
+    ],
+)
+async def test_connect_refusals_name_why_and_are_all_waited_out(tmp_path: Path, code: str, exc_name: str) -> None:
+    from sellerclaw_agent.cloud import exceptions
+
+    body = {"detail": {"code": code, "message": f"refused: {code}"}}
+    client = SellerClawConnectionClient(
+        credentials_storage=_write_creds(tmp_path),
+        base_url="http://example",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(409, json=body)),
+    )
+    with pytest.raises(exceptions.CloudConnectionAlreadyActiveError, match=f"refused: {code}") as excinfo:
+        await client.connect(agent_version="1", protocol_version=10)
+
+    assert type(excinfo.value).__name__ == exc_name
+    assert excinfo.value.code == code
+
+
+@pytest.mark.parametrize("status", ["moving", "moved", "already_here"])
+async def test_move_here_posts_with_the_agent_token(tmp_path: Path, status: str) -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"status": status})
+
+    client = SellerClawConnectionClient(
+        credentials_storage=_write_creds(tmp_path),
+        base_url="http://example",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await client.move_here() == status
+    assert seen == {"method": "POST", "path": "/agent/hosting/move-here", "auth": "Bearer access-1"}
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        pytest.param(
+            httpx.Response(
+                409,
+                json={"detail": {"code": "hosting_transition_in_flight", "message": "The cloud machine is starting."}},
+            ),
+            ("CloudMoveRefusedError", "hosting_transition_in_flight", "The cloud machine is starting."),
+            id="refused-names-the-reason",
+        ),
+        pytest.param(
+            httpx.Response(404, json={"detail": "Not Found"}),
+            ("CloudMoveRefusedError", None, "Not Found"),
+            id="older-cloud-without-the-endpoint",
+        ),
+        pytest.param(
+            httpx.Response(200, json={"status": "teleported"}),
+            ("CloudConnectionError", None, "Invalid move-here response"),
+            id="unknown-answer",
+        ),
+        pytest.param(
+            httpx.Response(401, json={"detail": {"code": "invalid_token", "message": "Invalid agent token."}}),
+            ("CloudAuthError", None, "Invalid agent token."),
+            id="token-revoked",
+        ),
+    ],
+)
+async def test_move_here_failures(tmp_path: Path, response: httpx.Response, expected: tuple) -> None:
+    exc_name, code, message = expected
+    client = SellerClawConnectionClient(
+        credentials_storage=_write_creds(tmp_path),
+        base_url="http://example",
+        transport=httpx.MockTransport(lambda _r: response),
+    )
+
+    with pytest.raises(Exception, match=message) as excinfo:
+        await client.move_here()
+
+    assert type(excinfo.value).__name__ == exc_name
+    assert getattr(excinfo.value, "code", None) == code
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        pytest.param({}, "computer", id="owners-computer"),
+        pytest.param({"FLY_MACHINE_ID": "e2865013a12345"}, "cloud", id="fly-machine"),
+        pytest.param({"FLY_MACHINE_ID": "  "}, "computer", id="blank-fly-id"),
+        pytest.param({"SELLERCLAW_RUNS_ON": "cloud"}, "cloud", id="told-so"),
+        pytest.param({"SELLERCLAW_RUNS_ON": "Cloud "}, "cloud", id="told-so-loosely"),
+        pytest.param({"SELLERCLAW_RUNS_ON": "computer"}, "computer", id="told-computer"),
+    ],
+)
+def test_detect_runs_on(env: dict[str, str], expected: str) -> None:
+    from sellerclaw_agent.cloud.connection_client import detect_runs_on
+
+    assert detect_runs_on(env) == expected
+
+
+@pytest.mark.parametrize(
+    ("probe", "expected"),
+    [
+        pytest.param("running", "running", id="running"),
+        pytest.param("starting", "running", id="coming-up-counts-as-running"),
+        pytest.param("stopped", "stopped", id="stopped"),
+        pytest.param("error", None, id="error-is-unknown"),
+        pytest.param(None, None, id="no-probe"),
+    ],
+)
+def test_openclaw_status_for_connect(probe: str | None, expected: str | None) -> None:
+    from sellerclaw_agent.cloud.connection_client import openclaw_status_for_connect
+
+    assert openclaw_status_for_connect(probe) == expected

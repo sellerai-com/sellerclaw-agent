@@ -18,10 +18,12 @@ from sellerclaw_agent.bundle.manifest import GenericManifest, bundle_manifest_fr
 from sellerclaw_agent.cloud.auth_client import SellerClawAuthClient
 from sellerclaw_agent.cloud.connection_state import EdgeSessionStorage
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.exceptions import (
     CloudAuthError,
     CloudConnectionError,
     CloudDevicePollTerminalError,
+    CloudMoveRefusedError,
 )
 from sellerclaw_agent.cloud.service import AuthStatus, CloudAuthService
 from sellerclaw_agent.cloud.settings import get_sellerclaw_web_url
@@ -45,6 +47,7 @@ from sellerclaw_agent.server.schemas import (
     DeviceStartResponse,
     DisconnectResponse,
     GetManifestResponse,
+    MoveHereResponse,
     OpenClawCommandResponse,
     OpenClawStatusResponse,
     SaveManifestRequest,
@@ -115,6 +118,14 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
         registry = EdgeRuntimeRegistry()
         install_runtime_registry(registry)
+        from sellerclaw_agent.cloud.restore_after_connect import (
+            PostConnectRestore,
+            install_post_connect_restore,
+        )
+
+        # Browser sign-ins and WhatsApp for an agent that signed in after the container started
+        # (a fresh install taking over from the cloud): the ping loop starts it on its first connect.
+        install_post_connect_restore(PostConnectRestore(data_dir=data_dir))
         command_queue: asyncio.Queue[RemoteCommandWork] = asyncio.Queue(maxsize=8)
         result_store = CommandResultStore()
         supervisor_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sellerclaw_supervisor")
@@ -247,9 +258,11 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await _notify_cloud_going_offline(data_dir)
 
         stop.set()
+        from sellerclaw_agent.cloud.restore_after_connect import install_post_connect_restore
         from sellerclaw_agent.server.runtime_registry import install_runtime_registry
 
         install_runtime_registry(None)
+        install_post_connect_restore(None)
         for holder in background_holders:
             task = holder.get("task")
             if isinstance(task, asyncio.Task) and not task.done():
@@ -409,6 +422,19 @@ async def health() -> dict[str, Any]:
     }
 
 
+def _forget_previous_ping_errors() -> None:
+    """A new sign-in (or a sign-out) starts over: the last ping error belonged to the old token.
+
+    Without this ``login`` could read a refusal the previous account got (``agent_runs_in_cloud``)
+    before the ping loop has tried the new token once.
+    """
+    from sellerclaw_agent.server.runtime_registry import get_runtime_registry
+
+    registry = get_runtime_registry()
+    if registry is not None:
+        registry.reset_ping_errors()
+
+
 def _to_response(s: AuthStatus) -> AuthStatusResponse:
     return AuthStatusResponse(
         connected=s.connected,
@@ -469,6 +495,7 @@ async def auth_device_poll(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if status is None:
         return DevicePollResponse(status="pending", auth=None)
+    _forget_previous_ping_errors()
     return DevicePollResponse(status="completed", auth=_to_response(status))
 
 
@@ -483,6 +510,7 @@ async def auth_connect(
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except CloudConnectionError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    _forget_previous_ping_errors()
     return _to_response(status)
 
 
@@ -498,7 +526,41 @@ async def auth_disconnect(
     service: Annotated[CloudAuthService, Depends(get_cloud_auth_service)],
 ) -> DisconnectResponse:
     await service.disconnect()
+    _forget_previous_ping_errors()
     return DisconnectResponse(status="ok")
+
+
+def get_connection_client() -> SellerClawConnectionClient:
+    return SellerClawConnectionClient(credentials_storage=CredentialsStorage(_get_data_dir()))
+
+
+@control_plane.post("/hosting/move-here", response_model=MoveHereResponse)
+async def hosting_move_here(
+    client: Annotated[SellerClawConnectionClient, Depends(get_connection_client)],
+) -> MoveHereResponse:
+    """Ask the cloud to move the owner's agent to this computer (``sellerclaw-agent login`` asks first).
+
+    The cloud machine keeps working until this one connects, then switches off; the ping loop's
+    next ``connect`` is what completes the move.
+    """
+    try:
+        status = await client.move_here()
+    except CloudMoveRefusedError as exc:
+        raise HTTPException(
+            status_code=409 if exc.status_code == 409 else 502,
+            detail={"code": exc.code or "move_refused", "message": str(exc)},
+        ) from exc
+    except CloudAuthError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "not_signed_in", "message": str(exc)},
+        ) from exc
+    except CloudConnectionError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "cloud_error", "message": str(exc)},
+        ) from exc
+    return MoveHereResponse(status=status)
 
 
 @control_plane.get("/commands/history", response_model=CommandHistoryResponse)

@@ -40,6 +40,9 @@ VNC_PORT=6080
 
 MIN_RAM_MB=2048
 HEALTH_TIMEOUT_S=240
+# Time the agent gets to say goodbye to the cloud before the container is removed. Without it the
+# cloud keeps the old session for about a minute and refuses the new container meanwhile.
+STOP_TIMEOUT_S=30
 
 IMAGE_TAG="latest"
 PROFILE="production"
@@ -50,6 +53,11 @@ PURGE=0
 ACTION="install"
 # Flags worth replaying on `sellerclaw-agent update`.
 SAVED_FLAGS=""
+# Where the owner's agent runs after the sign-in step: "here", "cloud" (SellerClaw's cloud machine
+# keeps it — the owner said no to moving it, or nobody was at the terminal to ask), or "" (unknown).
+AGENT_PLACE=""
+# Exit code of `login` / `where` when the agent keeps running in SellerClaw's cloud.
+EXIT_RUNS_IN_CLOUD=3
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -86,6 +94,7 @@ Options:
   --beta            Install the current pre-release build instead of the stable one.
   --env <profile>   SellerClaw cloud to connect to: production (default), staging, local.
   --yes             Answer yes to every question (needed when there is no terminal).
+                    It never moves an agent that runs in SellerClaw's cloud to this computer.
   --no-login        Start the agent but skip the sign-in step.
   --dry-run         Print what would be done without touching the system.
   --uninstall       Remove the agent container and the sellerclaw-agent command.
@@ -359,10 +368,17 @@ container_running() {
     [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo false)" = "true" ]
 }
 
+stop_and_remove_container() {
+    # A graceful stop first: the agent tells the cloud it is going offline, so the next container
+    # (or the cloud machine, after an uninstall) is let in at once instead of a minute later.
+    docker stop -t "$STOP_TIMEOUT_S" "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker rm -f "$CONTAINER_NAME" >/dev/null
+}
+
 start_container() {
     if [ "$DRY_RUN" -eq 0 ] && container_exists; then
         log_step "Replacing the previous container (your data volume is kept)"
-        docker rm -f "$CONTAINER_NAME" >/dev/null
+        stop_and_remove_container
     fi
 
     log_step "Starting SellerClaw Agent"
@@ -573,6 +589,39 @@ already_connected() {
         | grep -q "Connected"
 }
 
+supports_where() {
+    # `where` (is the agent running here, or still in SellerClaw's cloud?) came with the move to this
+    # computer; an older image (`--version <old>`) answers it with "Unknown command".
+    docker exec -w /app "$CONTAINER_NAME" python -c "from sellerclaw_agent.cli import cmd_where" \
+        >/dev/null 2>&1
+}
+
+agent_cli_in_container() {
+    # The in-container CLI, on this terminal when there is one: `login` and `where` may ask whether to
+    # move the agent here from SellerClaw's cloud, and `curl | sh` gives the script no stdin to ask on.
+    # `--yes` never answers that question: `update` runs with it, and an update must not take the
+    # agent away from the cloud machine. Prints nothing itself; the exit code lands in AGENT_CLI_RC.
+    AGENT_CLI_RC=0
+    if [ "$ASSUME_YES" -eq 0 ] && has_terminal; then
+        tty_flag=""
+        [ -t 1 ] && tty_flag="-t"
+        # shellcheck disable=SC2086
+        docker exec -i $tty_flag -w /app "$CONTAINER_NAME" python -m sellerclaw_agent "$@" </dev/tty \
+            || AGENT_CLI_RC=$?
+    else
+        docker exec -i -w /app "$CONTAINER_NAME" python -m sellerclaw_agent "$@" </dev/null \
+            || AGENT_CLI_RC=$?
+    fi
+}
+
+note_agent_place() {
+    case "$1" in
+        0) AGENT_PLACE="here" ;;
+        "$EXIT_RUNS_IN_CLOUD") AGENT_PLACE="cloud" ;;
+        *) AGENT_PLACE="" ;;
+    esac
+}
+
 sign_in() {
     if [ "$DRY_RUN" -eq 1 ] || [ "$DO_LOGIN" -eq 0 ]; then
         return 0
@@ -585,14 +634,17 @@ sign_in() {
     if already_connected; then
         log_step "Your account"
         log_ok "already signed in — keeping the existing connection"
+        if supports_where; then
+            agent_cli_in_container where
+            note_agent_place "$AGENT_CLI_RC"
+        fi
         return 0
     fi
     log_step "Connecting the agent to your SellerClaw account"
-    tty_flag=""
-    [ -t 1 ] && tty_flag="-t"
-    # shellcheck disable=SC2086
-    if ! docker exec -i $tty_flag -w /app "$CONTAINER_NAME" python -m sellerclaw_agent login --browser; then
-        log_warn "Sign-in did not finish. The agent is installed and running — finish it any time with: sellerclaw-agent login"
+    agent_cli_in_container login --browser
+    note_agent_place "$AGENT_CLI_RC"
+    if [ -z "$AGENT_PLACE" ]; then
+        log_warn "Connecting did not finish. The agent is installed and running — check it with: sellerclaw-agent status, or sign in again with: sellerclaw-agent login"
     fi
 }
 
@@ -608,6 +660,10 @@ choose_ai_source() {
     # question is `sellerclaw-agent connect` with no plan named (`./setup.sh` asks the same one).
     # Only with someone at the terminal to answer and sign in on the provider's page.
     if [ "$DRY_RUN" -eq 1 ] || [ "$DO_LOGIN" -eq 0 ] || [ "$ASSUME_YES" -eq 1 ] || ! has_terminal; then
+        return 0
+    fi
+    # A plan only powers an agent that runs on this computer.
+    if [ "$AGENT_PLACE" = "cloud" ]; then
         return 0
     fi
     if ! already_connected; then
@@ -629,12 +685,21 @@ choose_ai_source() {
 uninstall() {
     log_step "Removing SellerClaw Agent"
     if [ "$DRY_RUN" -eq 1 ]; then
+        printf '+ docker exec -w /app %s python -m sellerclaw_agent logout\n' "$CONTAINER_NAME"
+        printf '+ docker stop -t %s %s\n' "$STOP_TIMEOUT_S" "$CONTAINER_NAME"
         printf '+ docker rm -f %s\n' "$CONTAINER_NAME"
         printf '+ rm %s/sellerclaw-agent\n' "$(wrapper_dir)"
         return 0
     fi
     if have_cmd docker && container_exists; then
-        docker rm -f "$CONTAINER_NAME" >/dev/null
+        if container_running && already_connected; then
+            # Sign out first: the cloud revokes this computer's agent token, so nothing can use it
+            # once the agent is gone. Best effort — an agent that cannot reach the cloud is still removed.
+            if docker exec -w /app "$CONTAINER_NAME" python -m sellerclaw_agent logout >/dev/null 2>&1; then
+                log_ok "signed out of your SellerClaw account"
+            fi
+        fi
+        stop_and_remove_container
         log_ok "container removed"
     else
         log_ok "no container to remove"
@@ -648,7 +713,7 @@ uninstall() {
         if [ "$PURGE" -eq 1 ]; then
             delete_data=1
         elif [ "$ASSUME_YES" -eq 0 ] && has_terminal; then
-            if confirm "Also delete stored data (you would have to sign in again)?"; then
+            if confirm "Also delete the agent's stored data on this computer (local settings, your own AI plan sign-in)?"; then
                 delete_data=1
             fi
         fi
@@ -669,7 +734,7 @@ uninstall() {
         rm -rf "$HOME_DIR"
     fi
     printf "\n${C_OK}SellerClaw Agent has been removed.${C_OFF}\n"
-    printf "Your account and your data in the SellerClaw cloud are untouched — you can switch back to the hosted agent in the web panel.\n\n"
+    printf "Your account and your data in the SellerClaw cloud are untouched. To run your agent in SellerClaw's cloud, open Hosting in SellerClaw and press \"Move to the cloud\".\n\n"
 }
 
 # ---------------------------------------------------------------------------
@@ -677,12 +742,26 @@ uninstall() {
 # ---------------------------------------------------------------------------
 
 final_message() {
-    printf "\n${C_OK}SellerClaw Agent is installed and running.${C_OFF}\n\n"
+    case "$AGENT_PLACE" in
+        here)
+            printf "\n${C_OK}SellerClaw Agent is installed. Your agent runs on this computer.${C_OFF}\n\n"
+            ;;
+        cloud)
+            printf "\n${C_OK}SellerClaw Agent is installed.${C_OFF} ${C_WARN}Your agent still runs in SellerClaw's cloud.${C_OFF}\n"
+            printf "To move it here: open Hosting in SellerClaw and press \"Move to your computer\" — this computer takes over on its own.\n\n"
+            ;;
+        *)
+            printf "\n${C_OK}SellerClaw Agent is installed and running.${C_OFF}\n\n"
+            ;;
+    esac
     printf "  Web panel:      %s\n" "$WEB_URL"
     printf "  Agent browser:  http://127.0.0.1:%s\n" "$VNC_PORT"
     printf "  Manage it with: sellerclaw-agent status | logs | stop | update\n"
-    printf "  Your own AI plan: sellerclaw-agent connect chatgpt | claude  (back to credits: sellerclaw-agent disconnect)\n\n"
-    printf "In the web panel open Settings → Hosting and switch to self-hosted, so your tasks run on this machine.\n\n"
+    if [ "$AGENT_PLACE" != "cloud" ]; then
+        # A plan only powers an agent that runs on this computer.
+        printf "  Your own AI plan: sellerclaw-agent connect chatgpt | claude  (back to credits: sellerclaw-agent disconnect)\n"
+    fi
+    printf "\n"
 }
 
 main() {

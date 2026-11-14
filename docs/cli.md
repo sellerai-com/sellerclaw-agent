@@ -24,6 +24,8 @@ curl -fsSL https://get.sellerclaw.ai/agent.sh | sh
 
 The script checks the machine (Linux or macOS, x86_64 or arm64, more than 2 GB of RAM), installs Docker if it is missing, downloads `ghcr.io/sellerai-com/sellerclaw-agent:latest`, starts the container, writes the `sellerclaw-agent` command, and runs the browser sign-in.
 
+If the owner's agent runs on a SellerClaw cloud machine at that moment, the sign-in asks *"Move it to this computer?"* (see [Moving the agent here](#moving-the-agent-here)). The last message says where the agent runs: *"Your agent runs on this computer"*, or *"Your agent still runs in SellerClaw's cloud"* with how to move it later. Re-running the installer on a computer that is already signed in skips the sign-in but asks the same question (`where`, below).
+
 To read it before running it: `curl -fsSL https://get.sellerclaw.ai/agent.sh -o agent.sh`, read, then `sh agent.sh`. The same file lives in this repository as [`install.sh`](../install.sh).
 
 Options:
@@ -33,7 +35,7 @@ Options:
 | `--version X.Y.Z` | Install a specific version instead of the latest release. |
 | `--beta` | Install the current pre-release build (the `:beta` tag). |
 | `--env staging` \| `local` | Point the agent at a non-production SellerClaw cloud. |
-| `--yes` | Answer yes to every question — required when there is no terminal. |
+| `--yes` | Answer yes to every question — required when there is no terminal. It never moves an agent that runs in SellerClaw's cloud to this computer (`update` runs with it). |
 | `--no-login` | Start the agent but skip sign-in (do it later with `sellerclaw-agent login`). |
 | `--dry-run` | Print the exact docker commands without running anything. |
 | `--uninstall` | Remove the container and the `sellerclaw-agent` command. |
@@ -58,13 +60,23 @@ sellerclaw-agent stop|start|restart
 sellerclaw-agent browser     # where to watch the agent's browser
 sellerclaw-agent version     # installed agent version
 sellerclaw-agent update      # pull the newest image and recreate the container
-sellerclaw-agent uninstall   # remove it (add --purge to delete stored data too)
+sellerclaw-agent uninstall   # sign out and remove it (add --purge to delete stored data too)
 sellerclaw-agent connect chatgpt # run the agent on your own ChatGPT plan instead of credits
 sellerclaw-agent connect claude  # run the agent on your own Claude plan instead of credits
 sellerclaw-agent disconnect      # back to SellerClaw credits
 ```
 
 `status`, `login` and `logout` run the very CLI documented below — inside the container, through `docker exec`, so the host needs no Python.
+
+`update` and `uninstall` stop the container gracefully (`docker stop -t 30`) before removing it, so the agent tells the cloud it went offline and the new container (or the cloud machine) is let in at once instead of a minute later. `uninstall` first signs out (`logout`): the cloud revokes this computer's agent token, so nothing can use it once the agent is gone.
+
+### Moving the agent here
+
+A SellerClaw account has one agent at a time: on a SellerClaw cloud machine or on the owner's computer. While it runs in the cloud, the cloud refuses this computer (409 `agent_runs_in_cloud`, see the [connection protocol](./connection-protocol.md#refusals-protocol-10)) and the agent here stands by, trying again every 30 s.
+
+After signing in, `login` waits for the connection. When the answer is "runs in the cloud" and someone is at the terminal it says *"Your agent runs in SellerClaw's cloud right now."* — *"The cloud machine switches off once this one takes over — your chats, memory and tasks come along."* — and asks *"Move it to this computer?"*. Yes: the CLI asks the cloud to move it (`POST /hosting/move-here` on the local agent → `POST /agent/hosting/move-here`) and waits up to three minutes, *"Taking over from the cloud machine…"*, while the cloud machine stops, saves its state and hands over. No, or no terminal: *"Your agent keeps running in the cloud. To move it here later: open Hosting in SellerClaw and press "Move to your computer"."* — this computer then takes over on its own when the owner presses it. A move started from the web panel (`agent_move_in_progress`) is simply waited out.
+
+On the first connection after a sign-in the agent brings back the browser sign-ins and the WhatsApp session the cloud keeps (when this computer has none), before the agent first starts here.
 
 ### Your own AI plan
 
@@ -79,9 +91,10 @@ the plan and how much of each limit is used. `sellerclaw-agent connect` with no 
 "What should power your agent?" — on credits: credits or a plan; on a plan: keep it, switch to the
 other one, sign in again (`connect <plan> --sign-in-again`: another account, or a sign-in that
 ended) or back to credits. The installer and `./setup.sh` ask it right after you sign in to your
-account. It only takes effect for an agent running on your own computer (Settings →
-Hosting in the web panel); the cloud sends the models for each plan in the manifest
-(`llm.subscription`).
+account. It only takes effect for an agent running on your own computer (Hosting in the web
+panel); the cloud sends the models for each plan in the manifest (`llm.subscription`). The web
+panel's **Switch to credits** does what `disconnect` does, through the `ai_subscription_disconnect`
+command.
 
 `sellerclaw-agent connect chatgpt` does the same on a ChatGPT Plus or Pro plan. The sign-in is
 OpenClaw's own device-code login: a link and a code appear in your terminal, you confirm them on
@@ -205,9 +218,10 @@ See the [cloud connection protocol](./connection-protocol.md) for how the ping l
 | `setup` | **Default** when no argument is given: `docker compose up -d --build`, wait for `GET /health`, interactive cloud sign-in; "What should power your agent?" (the question `connect` asks with no plan named); then the live status panel (its **AI** row says what powers the agent). |
 | `start` | Start the stack only: `docker compose up -d --build` in the agent directory. |
 | `stop` | Stop the stack: `docker compose down`. |
-| `status` | Show whether the agent is connected to the cloud (`GET /auth/status`). |
-| `login` | Sign in to the cloud (server must be running): up to 15 s wait for the agent, then the same interactive flow as `setup`. `login --browser` skips the menu and signs in by link. |
-| `logout` | Clear stored cloud credentials on the agent (`POST /auth/disconnect`). |
+| `status` | Show whether the agent is connected to the cloud (`GET /auth/status`), and when the agent runs in SellerClaw's cloud instead of here. |
+| `login` | Sign in to the cloud (server must be running): up to 15 s wait for the agent, then the same interactive flow as `setup`, then wait for the connection and offer to move the agent here when it runs in the cloud ([Moving the agent here](#moving-the-agent-here)). `login --browser` skips the menu and signs in by link. Exit code `0` — the agent runs here; `3` — signed in, the agent keeps running in SellerClaw's cloud; `1` — failed. |
+| `logout` | Sign out: the cloud revokes this agent's token, and the stored credentials are cleared (`POST /auth/disconnect`). |
+| `where` | For the installer (not in `help`): `login` without the sign-in — wait for the connection, offer the move, same exit codes. |
 | `connect [chatgpt\|claude]` | Without a plan: "What should power your agent?". With one: run the agent on your own plan ([Your own AI plan](#your-own-ai-plan)). In a checkout it runs inside the container (`docker compose exec`), where OpenClaw and Claude Code live. |
 | `disconnect` | Back to SellerClaw credits. |
 | `help` | Short help. Same idea: `-h`, `--help`, `help`. |
@@ -289,6 +303,7 @@ How it works:
 - **Device flow never confirms** — check the browser tab actually signed in to the same cloud (`https://app.staging.sellerclaw.ai` for staging, etc.). The CLI polls for up to ~10 minutes; after that, rerun `sellerclaw-agent login`.
 - **`401 invalid credentials` on email/password** — the cloud rejected the login; try again through the web, or use the device flow instead.
 - **`502` during sign-in** — the agent could reach the cloud but the cloud returned a bad upstream response. Usually transient; retry after a minute.
+- **"Your agent runs in SellerClaw's cloud right now"** — the account's agent runs on a cloud machine; this computer stands by and never competes with it. Move it here from `sellerclaw-agent login` (it asks) or with **Move to your computer** under Hosting in the web panel.
 - **Repeated `agent_session_invalidated`** — another agent instance is signed in with the same account. Either log out from the other device or accept that only the newest session survives (this is by design — see the [connection protocol](./connection-protocol.md#session-lifecycle)).
 
 ### One-command install specifics
@@ -296,7 +311,7 @@ How it works:
 - **`no matching manifest for linux/arm64`** — that version predates the arm64 builds. Install a newer one (`--version X.Y.Z`) or the latest release.
 - **`sellerclaw-agent: command not found` right after installing** — `~/.local/bin` is not on your `PATH` (the installer warns about this). Add it, or call the full path `~/.local/bin/sellerclaw-agent`.
 - **Nothing to ask on: `--yes` required** — the script was piped into `sh` with no terminal available (a provisioning script, CI). Re-run it with `--yes`: `curl -fsSL https://get.sellerclaw.ai/agent.sh | sh -s -- --yes`.
-- **Upgrading** — `sellerclaw-agent update` re-runs the installer with the flags of the original install. The data volume is kept, so no second sign-in.
+- **Upgrading** — `sellerclaw-agent update` re-runs the installer with the flags of the original install. The data volume is kept, so no second sign-in, and the old container is stopped gracefully first, so the new one connects at once.
 
 ### Wiping local state
 

@@ -24,6 +24,8 @@ class TaskRuntimeState:
     last_success_at: datetime | None = None
     consecutive_errors: int = 0
     last_error: str | None = None
+    #: The cloud's ``detail.code`` of the last error, when it named one (``agent_runs_in_cloud``…).
+    last_error_code: str | None = None
     restart_count: int = 0
     current_command_id: str | None = None
     sse_connected: bool = False
@@ -63,14 +65,26 @@ class EdgeRuntimeRegistry:
             s.last_success_at = datetime.now(tz=UTC)
             s.consecutive_errors = 0
             s.last_error = None
+            s.last_error_code = None
             s.alive = True
 
-    def mark_ping_error(self, message: str) -> None:
+    def mark_ping_error(self, message: str, *, code: str | None = None) -> None:
+        """Record a failed ping / connect; ``code`` is the cloud's ``detail.code`` when it gave one
+        (the CLI reads it from ``/health`` to tell "runs in the cloud" from a network error)."""
         with self._lock:
             s = self._tasks["ping_loop"]
             s.consecutive_errors += 1
             s.last_error = message[:500]
+            s.last_error_code = code
             s.alive = True
+
+    def reset_ping_errors(self) -> None:
+        """Forget the ping errors of a previous sign-in: they described another token (account)."""
+        with self._lock:
+            s = self._tasks["ping_loop"]
+            s.consecutive_errors = 0
+            s.last_error = None
+            s.last_error_code = None
 
     def mark_executor_command(self, *, command_id: UUID | None) -> None:
         with self._lock:
@@ -138,6 +152,7 @@ class EdgeRuntimeRegistry:
                     "last_success_at": st.last_success_at.isoformat() if st.last_success_at else None,
                     "consecutive_errors": st.consecutive_errors,
                     "last_error": st.last_error,
+                    "last_error_code": st.last_error_code,
                     "restart_count": st.restart_count,
                     "current_command_id": st.current_command_id,
                     "connected": st.sse_connected

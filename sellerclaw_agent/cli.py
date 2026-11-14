@@ -9,8 +9,9 @@ import subprocess
 import sys
 import time
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from rich.console import Console
@@ -384,6 +385,11 @@ def _print_generic_failure(
     )
 
 
+def _logs_hint() -> str:
+    """How to read the agent's log, phrased for the way it was installed."""
+    return "docker compose logs server" if _installed_from_repo() else "sellerclaw-agent logs"
+
+
 def _print_cloud_verification_failure(console: Console, reason: str) -> None:
     _print_generic_failure(
         console,
@@ -391,9 +397,9 @@ def _print_cloud_verification_failure(console: Console, reason: str) -> None:
         reason=reason,
         hints=[
             "Check your internet connection.",
-            "Container logs: docker compose logs server",
-            "Check status: ./setup.sh status",
-            "Retry: ./setup.sh",
+            f"Agent log: {_logs_hint()}",
+            f"Check status: {_cli_hint('status')}",
+            f"Retry: {_cli_hint('login')}",
         ],
     )
 
@@ -555,29 +561,69 @@ def _get_health_snapshot(base_url: str) -> dict[str, Any]:
         return body
 
 
-def _wait_for_cloud_live(
+# Refusals of ``connect`` the ping loop reports in ``/health`` (``tasks.ping_loop.last_error_code``).
+RUNS_IN_CLOUD = "agent_runs_in_cloud"
+MOVE_IN_PROGRESS = "agent_move_in_progress"
+RUNS_ON_COMPUTER = "agent_runs_on_computer"
+
+_VERIFYING_TEXT = "Verifying connection to SellerClaw cloud…"
+_TAKING_OVER_TEXT = "Taking over from the cloud machine…"
+#: How long to wait for the cloud machine to hand the agent over to this computer.
+MOVE_WAIT_S = 180.0
+
+_MOVE_INTRO = "Your agent runs in SellerClaw's cloud right now."
+_MOVE_DETAIL = (
+    "The cloud machine switches off once this one takes over — your chats, memory and tasks come along."
+)
+_MOVE_QUESTION = "Move it to this computer?"
+_STAYS_IN_CLOUD = (
+    "Your agent keeps running in the cloud. To move it here later: open Hosting in SellerClaw "
+    'and press "Move to your computer".'
+)
+
+#: ``login`` / ``where`` exit code: signed in, but the owner's agent keeps running in the cloud.
+EXIT_RUNS_IN_CLOUD = 3
+
+Place = Literal["here", "cloud", "failed"]
+
+
+@dataclass(frozen=True)
+class _CloudWait:
+    ok: bool
+    reason: str | None
+    chat_ok: bool
+    #: ``tasks.ping_loop.last_error_code`` when the wait ended: why the cloud refused this agent.
+    error_code: str | None
+
+
+def _wait_for_cloud(
     base_url: str,
     console: Console,
     *,
     timeout_s: float = 45.0,
-) -> tuple[bool, str | None, bool]:
-    """Verify the edge agent completed a real cloud round-trip after sign-in.
+    stop_on: frozenset[str] = frozenset(),
+    taking_over: bool = False,
+) -> _CloudWait:
+    """Poll ``/health`` until this agent holds a live session with the cloud.
 
-    Polls ``/health`` until ``session.connected`` is true AND ``ping_loop.last_success_at``
-    is set — meaning the background loop registered an edge session and successfully
-    heartbeated. Returns ``(ok, error_message, chat_sse_connected)``.
+    Live = ``session.connected`` AND ``ping_loop.last_success_at`` set. Ends early when the ping
+    loop reports a refusal in ``stop_on``. While the cloud says a move to this computer is under way
+    (``agent_move_in_progress`` — started from the web panel, or by :func:`_connect_here`) it waits
+    up to :data:`MOVE_WAIT_S` for the cloud machine to hand over.
     """
-    deadline = time.monotonic() + timeout_s
+    deadline = time.monotonic() + (max(timeout_s, MOVE_WAIT_S) if taking_over else timeout_s)
     last_error: str | None = None
+    error_code: str | None = None
     session_ok = False
     ping_ok = False
     chat_ok = False
     with Progress(
         SpinnerColumn(),
-        TextColumn("[hint]Verifying connection to SellerClaw cloud…[/hint]"),
+        TextColumn("[hint]{task.description}[/hint]"),
         console=console,
         transient=True,
-    ):
+    ) as progress:
+        task_id = progress.add_task(_TAKING_OVER_TEXT if taking_over else _VERIFYING_TEXT, total=None)
         while time.monotonic() < deadline:
             try:
                 snap = _get_health_snapshot(base_url)
@@ -597,19 +643,131 @@ def _wait_for_cloud_live(
             ping_error = ping.get("last_error")
             if isinstance(ping_error, str) and ping_error.strip():
                 last_error = ping_error
+            raw_code = ping.get("last_error_code")
+            error_code = raw_code if isinstance(raw_code, str) and raw_code else None
 
             if session_ok and ping_ok:
-                return True, None, chat_ok
+                return _CloudWait(ok=True, reason=None, chat_ok=chat_ok, error_code=None)
+            if error_code in stop_on:
+                return _CloudWait(ok=False, reason=last_error, chat_ok=chat_ok, error_code=error_code)
+            if error_code == MOVE_IN_PROGRESS and not taking_over:
+                taking_over = True
+                deadline = max(deadline, time.monotonic() + MOVE_WAIT_S)
+                progress.update(task_id, description=_TAKING_OVER_TEXT)
 
             time.sleep(1.0)
 
-    if not session_ok:
+    if error_code == MOVE_IN_PROGRESS:
+        reason = "the cloud machine has not handed your agent over yet."
+    elif not session_ok:
         reason = last_error or "edge session was not registered with the cloud in time."
     elif not ping_ok:
         reason = last_error or "no successful heartbeat with the cloud yet."
     else:
         reason = last_error or "unknown error."
-    return False, reason, chat_ok
+    return _CloudWait(ok=False, reason=reason, chat_ok=chat_ok, error_code=error_code)
+
+
+def _wait_for_cloud_live(
+    base_url: str,
+    console: Console,
+    *,
+    timeout_s: float = 45.0,
+) -> tuple[bool, str | None, bool]:
+    """Verify the edge agent completed a real cloud round-trip after sign-in.
+
+    Polls ``/health`` until ``session.connected`` is true AND ``ping_loop.last_success_at``
+    is set — meaning the background loop registered an edge session and successfully
+    heartbeated. Returns ``(ok, error_message, chat_sse_connected)``.
+    """
+    result = _wait_for_cloud(base_url, console, timeout_s=timeout_s)
+    return result.ok, result.reason, result.chat_ok
+
+
+def _request_move_here(base_url: str) -> str:
+    """``POST /hosting/move-here`` on the local agent → the cloud's answer (``moving`` / ``moved`` /
+    ``already_here``). Raises ``RuntimeError`` with the cloud's message when it refuses."""
+    headers = _local_control_plane_auth_headers(base_url)
+    try:
+        with sync_client(timeout=60.0) as client:
+            r = client.post(f"{base_url}/hosting/move-here", headers=headers)
+    except httpx.RequestError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if r.status_code >= 400:
+        raise RuntimeError(_extract_error_message(r))
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    status = body.get("status") if isinstance(body, dict) else None
+    if not isinstance(status, str):
+        raise RuntimeError("Invalid answer from the agent.")
+    return status
+
+
+def _connect_here(console: Console, base_url: str) -> tuple[Place, bool]:
+    """Wait until this computer is the owner's agent; offer the move when it runs in the cloud.
+
+    Returns ``(place, chat_ok)``: ``here`` — connected; ``cloud`` — the agent keeps running in
+    SellerClaw's cloud (the owner said no, nobody was at the terminal to ask, or the move was
+    refused); ``failed`` — the connection did not come up (a failure panel was printed).
+    """
+    waited = _wait_for_cloud(base_url, console, stop_on=frozenset({RUNS_IN_CLOUD, RUNS_ON_COMPUTER}))
+    if waited.ok:
+        return "here", waited.chat_ok
+    if waited.error_code != RUNS_IN_CLOUD:
+        _print_connection_failure(console, waited)
+        return "failed", waited.chat_ok
+
+    console.print()
+    console.print(f"[label]{escape(_MOVE_INTRO)}[/label]")
+    console.print(f"[hint]{escape(_MOVE_DETAIL)}[/hint]")
+    if not sys.stdin.isatty() or not _confirm(console, _MOVE_QUESTION, default=True):
+        console.print(f"[warning]{escape(_STAYS_IN_CLOUD)}[/warning]")
+        return "cloud", False
+
+    try:
+        moved = _request_move_here(base_url)
+    except RuntimeError as exc:
+        console.print(
+            f"[error]Could not move your agent here: {escape(str(exc))}[/error]\n"
+            "[hint]Try again from Hosting in SellerClaw: press \"Move to your computer\".[/hint]",
+        )
+        return "cloud", False
+
+    waited = _wait_for_cloud(base_url, console, timeout_s=MOVE_WAIT_S, taking_over=moved == "moving")
+    if not waited.ok:
+        _print_connection_failure(console, waited)
+        return "failed", waited.chat_ok
+    console.print("[success]Your agent runs on this computer now.[/success]")
+    return "here", waited.chat_ok
+
+
+def _print_connection_failure(console: Console, waited: _CloudWait) -> None:
+    if waited.error_code == MOVE_IN_PROGRESS:
+        _print_generic_failure(
+            console,
+            stage="Moving your agent to this computer",
+            reason=waited.reason or "the cloud machine has not handed your agent over yet.",
+            hints=[
+                "It finishes on its own — this computer keeps trying.",
+                f"Check in a minute: {_cli_hint('status')}",
+                f"Agent log: {_logs_hint()}",
+            ],
+        )
+        return
+    _print_cloud_verification_failure(console, waited.reason or "unknown error")
+
+
+def _health_error_code(base_url: str) -> str | None:
+    """Why the cloud last refused this agent (``tasks.ping_loop.last_error_code``), if it did."""
+    try:
+        snap = _get_health_snapshot(base_url)
+    except (httpx.RequestError, httpx.HTTPStatusError, RuntimeError, ValueError):
+        return None
+    ping = (snap.get("tasks") or {}).get("ping_loop") or {}
+    code = ping.get("last_error_code")
+    return code if isinstance(code, str) and code else None
 
 
 def _print_status(console: Console, base_url: str) -> int:
@@ -628,10 +786,11 @@ def _print_status(console: Console, base_url: str) -> int:
     env_line = f"[hint]env: {escape(_active_env_label())}[/hint]"
     if s.get("connected"):
         ai_lines = "".join(f"\n{line}" for line in ai_status_lines())
+        place_line = _place_status_line(_health_error_code(base_url))
         console.print(
             Panel(
                 f"[success]Connected[/success] as [label]{escape(s.get('user_name') or '?')}[/label] "
-                f"({escape(s.get('user_email') or '?')})\n{env_line}{ai_lines}",
+                f"({escape(s.get('user_email') or '?')})\n{env_line}{place_line}{ai_lines}",
                 border_style="green",
                 expand=False,
             ),
@@ -647,6 +806,18 @@ def _print_status(console: Console, base_url: str) -> int:
             ),
         )
     return 0
+
+
+def _place_status_line(error_code: str | None) -> str:
+    """A line for ``status`` when this computer is not the owner's agent right now."""
+    if error_code == RUNS_IN_CLOUD:
+        return (
+            "\n[warning]Your agent runs in SellerClaw's cloud right now — this computer stands by.[/warning]"
+            '\n[hint]To move it here: open Hosting in SellerClaw and press "Move to your computer".[/hint]'
+        )
+    if error_code == MOVE_IN_PROGRESS:
+        return f"\n[warning]{escape(_TAKING_OVER_TEXT)}[/warning]"
+    return ""
 
 
 def _logout(console: Console, base_url: str) -> int:
@@ -1002,10 +1173,12 @@ def cmd_setup(console: Console) -> int:
             )
 
         if connected:
-            ok, reason, _chat_ok = _wait_for_cloud_live(base, console)
-            if not ok:
-                _print_cloud_verification_failure(console, reason or "unknown error")
+            place, _chat_ok = _connect_here(console, base)
+            if place == "failed":
                 return 1
+            if place == "cloud":
+                # Signed in, standing by: nothing on this computer to choose or watch yet.
+                return 0
             # Chat SSE readiness is reported by the live watch panel itself,
             # so we don't print a duplicate warning here.
 
@@ -1103,6 +1276,12 @@ def cmd_stop(console: Console) -> int:
 
 
 def cmd_login(console: Console, *, browser_only: bool = False) -> int:
+    """Sign in, then make sure this computer is where the agent runs.
+
+    Exit code: ``0`` — connected, the agent runs here; :data:`EXIT_RUNS_IN_CLOUD` — signed in, but
+    the agent keeps running in SellerClaw's cloud (the installer words its last message on it);
+    ``1`` — something failed.
+    """
     base = agent_base_url()
     if not wait_for_agent(base, console, timeout_s=15):
         console.print(
@@ -1111,10 +1290,33 @@ def cmd_login(console: Console, *, browser_only: bool = False) -> int:
         )
         return 1
     _interactive_auth(console, base, browser_only=browser_only)
-    ok, reason, chat_ok = _wait_for_cloud_live(base, console)
-    if not ok:
-        _print_cloud_verification_failure(console, reason or "unknown error")
+    return _settle_place(console, base)
+
+
+def cmd_where(console: Console) -> int:
+    """For the installer, when the agent was already signed in: is this computer where it runs?
+
+    Waits for the connection like ``login`` (offering the move when the agent runs in the cloud and
+    someone is at the terminal), without signing in again. Same exit codes as :func:`cmd_login`.
+    """
+    base = agent_base_url()
+    if not wait_for_agent(base, console, timeout_s=15):
+        console.print(
+            f"[error]Agent is not reachable at {escape(base)}[/error]\n"
+            f"[hint]Start it first: {_cli_hint('start')}[/hint]",
+        )
         return 1
+    return _settle_place(console, base)
+
+
+def _settle_place(console: Console, base: str) -> int:
+    place, chat_ok = _connect_here(console, base)
+    if place == "failed":
+        return 1
+    if place == "cloud":
+        # `_connect_here` has said where the agent runs and how to move it; a "Connected" panel
+        # would only blur that.
+        return EXIT_RUNS_IN_CLOUD
     if not chat_ok:
         console.print(
             "[warning]Live chat stream is not connected yet — it should come up shortly.[/warning]",
@@ -1166,6 +1368,9 @@ def main() -> None:
         raise SystemExit(_print_status(console, agent_base_url()))
     if cmd == "login":
         raise SystemExit(cmd_login(console, browser_only="--browser" in argv))
+    if cmd == "where":
+        # Not in `help`: the installer's question for an agent that was already signed in.
+        raise SystemExit(cmd_where(console))
     if cmd == "logout":
         raise SystemExit(_logout(console, agent_base_url()))
     if cmd == "connect":
