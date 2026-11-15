@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 
 import { registerBackgroundHandinRelay } from "./background-handin.js";
 import { registerCompletionDeliveryGuard } from "./completion-delivery.js";
+import { registerCompletionTurnHandinReport } from "./completion-turn-handin.js";
 import { registerCronSyncHooks } from "./cron-sync.js";
 import { registerGoalBrief } from "./goal-brief.js";
 import { logWarn } from "./log.js";
@@ -65,6 +66,7 @@ export function registerLifecycleHooks(api: OpenClawPluginApi): void {
   registerSessionEnv(api);
   registerYieldGuard(api);
   registerBackgroundHandinRelay(api);
+  registerCompletionTurnHandinReport(api);
   registerCronSyncHooks(api);
   registerGoalBrief(api);
   registerSubscriptionGate(api);

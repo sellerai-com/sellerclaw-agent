@@ -169,16 +169,25 @@ export async function uploadLocalMedia(
 }
 
 /**
- * Tell the cloud that a specialist spawned from a background supervisor run has ended.
+ * Tell the cloud that a specialist's hand-in may be waiting on nobody.
+ *
+ * Two reports use it: a specialist spawned from a background supervisor run has ended
+ * (`background-handin.ts`), and — with `trigger: "completion_turn"` — the supervisor's own turn
+ * about a specialist's result has ended (`completion-turn-handin.ts`).
  *
  * Posted to the AGENT-authenticated webhook ``/agent/goals/subagent-runs/ended``; the cloud finds
- * the task that run handed in and wakes the supervisor about it at once. A report it cannot place
- * is a 204 no-op there, so a duplicate is harmless. Field names are camelCase to match the cloud
- * webhook schema.
+ * the task that run handed in and wakes the supervisor about it at once if it is still unreviewed.
+ * A report it cannot place is a 204 no-op there, so a duplicate is harmless. Field names are
+ * camelCase to match the cloud webhook schema.
  */
 export async function postSubagentRunEnded(
   account: ScwUiAccount,
-  run: { childSessionKey: string; requesterSessionKey: string; runId?: string },
+  run: {
+    childSessionKey: string;
+    requesterSessionKey: string;
+    runId?: string;
+    trigger?: "completion_turn";
+  },
 ): Promise<void> {
   const url = `${account.apiBaseUrl.replace(/\/$/, "")}/agent/goals/subagent-runs/ended`;
   await postOpenclawWebhook(url, {
@@ -191,6 +200,7 @@ export async function postSubagentRunEnded(
       childSessionKey: run.childSessionKey,
       requesterSessionKey: run.requesterSessionKey,
       ...(run.runId ? { runId: run.runId } : {}),
+      ...(run.trigger ? { trigger: run.trigger } : {}),
     }),
   });
 }

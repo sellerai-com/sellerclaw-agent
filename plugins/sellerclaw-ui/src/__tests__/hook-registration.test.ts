@@ -44,10 +44,10 @@ describe("registerLifecycleHooks", () => {
     // Never ``before_agent_finalize``: registering it makes the runtime defer the whole visible
     // reply stream to the end of the run, which is the live-streaming regression it caused once.
     expect(names).not.toContain("before_agent_finalize");
-    // The guard's decision point, the run-outcome tracker, the reasoning relay and the
-    // subscription gate's limit nudge all listen on agent_end — it is the only hook carrying a
-    // non-dispatched run's transcript.
-    expect(on.mock.calls.filter((call) => call[0] === "agent_end").length).toBe(4);
+    // The guard's decision point, the run-outcome tracker, the reasoning relay, the subscription
+    // gate's limit nudge and the completion-turn report all listen on agent_end — it is the only
+    // hook carrying a non-dispatched run's transcript.
+    expect(on.mock.calls.filter((call) => call[0] === "agent_end").length).toBe(5);
     // While the owner's own AI plan is used up or signed out, turns are claimed before any model call.
     expect(on.mock.calls.filter((call) => call[0] === "before_agent_reply").length).toBe(1);
     // The guard reads each run's visible text off llm_output.
