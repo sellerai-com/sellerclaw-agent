@@ -71,6 +71,89 @@ def test_a_fresh_login_moves_to_the_store_every_agent_reads(
     assert saved["profiles"] == {"openai:default": make_chatgpt_profile()}
 
 
+@pytest.mark.parametrize(
+    ("where", "outcome"),
+    [
+        pytest.param("fresh-login", "moved-to-shared", id="fresh-login"),
+        # What 4.3.0 left behind: the sign-in moved to a store OpenClaw did not read.
+        pytest.param("shared-already", "in-place", id="left-by-4.3.0"),
+        pytest.param("copy-on-data-volume", "restored", id="after-an-update"),
+    ],
+)
+@pytest.mark.parametrize(
+    "ownership",
+    [
+        pytest.param(None, id="fresh-install-no-fact"),
+        pytest.param({"location": "state-db"}, id="fact-already-recorded"),
+    ],
+)
+def test_openclaw_is_told_to_read_the_shared_store_from_the_state_database(
+    tmp_path: Path,
+    make_openclaw_state: Factory,
+    make_chatgpt_profile: Factory,
+    make_auth_store: Factory,
+    our_keys: dict[str, Any],
+    where: str,
+    outcome: str,
+    ownership: dict[str, Any] | None,
+) -> None:
+    """Without ``auth.sharedStore = state-db`` OpenClaw reads the shared store from the implicit
+    ``main`` agent — on a fresh container every turn on the plan failed: "No route-compatible
+    authentication source is configured for openai"."""
+    sign_in = {"openai:default": make_chatgpt_profile()}
+    if where == "copy-on-data-volume":
+        chatgpt_auth.snapshot(tmp_path, make_openclaw_state(name="before", shared=make_auth_store(sign_in)).root)
+    state = make_openclaw_state(
+        shared=make_auth_store({**our_keys, **(sign_in if where == "shared-already" else {})}),
+        agent=make_auth_store(sign_in) if where == "fresh-login" else None,
+        ownership=ownership,
+    )
+
+    assert chatgpt_auth.settle(tmp_path, state.root, connected=True, pending=False) == outcome
+
+    assert state.ownership() == {"location": "state-db"}
+    assert state.shared() == make_auth_store({**our_keys, **sign_in})
+
+
+@pytest.mark.parametrize(
+    ("ownership", "legacy_main"),
+    [
+        pytest.param({"location": "legacy-main"}, False, id="fact-says-legacy-main"),
+        pytest.param(None, True, id="legacy-main-store-exists"),
+    ],
+)
+def test_a_shared_store_kept_elsewhere_leaves_the_sign_in_with_the_main_agent(
+    tmp_path: Path,
+    make_openclaw_state: Factory,
+    make_chatgpt_profile: Factory,
+    make_auth_store: Factory,
+    our_keys: dict[str, Any],
+    ownership: dict[str, Any] | None,
+    legacy_main: bool,
+) -> None:
+    """OpenClaw's own condition for relocating the shared store is not met: nothing is relocated,
+    and the sign-in goes where the main agent reads it — never into a store nobody reads."""
+    sign_in = {"openai:default": make_chatgpt_profile()}
+    fresh = make_openclaw_state(
+        shared=make_auth_store(our_keys), agent=make_auth_store(sign_in), ownership=ownership, legacy_main=legacy_main
+    )
+    leftover = make_openclaw_state(
+        name="leftover",
+        shared=make_auth_store({**our_keys, **sign_in}),
+        agent=make_auth_store({}),
+        ownership=ownership,
+        legacy_main=legacy_main,
+    )
+
+    assert chatgpt_auth.settle(tmp_path, fresh.root, connected=True, pending=False) == "kept-in-agent-store"
+    assert chatgpt_auth.settle(tmp_path, leftover.root, connected=True, pending=False) == "moved-to-agent-store"
+
+    for state in (fresh, leftover):
+        assert state.ownership() == ownership
+        assert state.agent() == make_auth_store(sign_in)
+        assert state.shared() == make_auth_store(our_keys)
+
+
 def test_the_copy_on_the_data_volume_is_the_owners_alone(
     tmp_path: Path,
     make_openclaw_state: Factory,

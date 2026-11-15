@@ -12,6 +12,12 @@ rewritten in one place. The device-code login is run for the main agent (OpenCla
 one) and lands in that agent's own store; :func:`settle`, run while the gateway is stopped, moves it
 to the shared store.
 
+**Which store is "shared".** The state database only once the fact ``auth.sharedStore`` says
+``{"location": "state-db"}``; without it OpenClaw reads the implicit ``main`` agent's database, which
+our installs never have. OpenClaw records the fact on the first shared write of a fresh install — a
+sign-in for one agent is not one — so :func:`settle` records it under the same condition before it
+relies on the state database (:func:`_state_db_shared`).
+
 **Across ``sellerclaw-agent update``.** OpenClaw's state lives inside the container and an update
 replaces it; only the data volume survives. :func:`snapshot` keeps a copy of the ChatGPT profiles —
 those alone — in ``<data dir>/ai-subscription/chatgpt-auth.json`` (owner-only file; the cloud state
@@ -56,6 +62,11 @@ PENDING_FILE_NAME: Final = "chatgpt-login.json"
 PENDING_TTL: Final = timedelta(minutes=20)
 
 _SHARED_STORE_KEY: Final = "authProfiles.store"
+#: OpenClaw's fact naming where the shared auth store lives (see the module notes).
+_SHARED_OWNERSHIP_KEY: Final = "auth.sharedStore"
+_STATE_DB_LOCATION: Final = "state-db"
+#: The implicit agent whose database is the shared store until the fact above relocates it.
+_LEGACY_MAIN_AGENT_ID: Final = "main"
 _AGENT_STORE_KEY: Final = "primary"
 _SQLITE_TIMEOUT_S: Final = 15.0
 #: An offline OpenClaw command that creates the state database on a fresh container (see
@@ -74,6 +85,10 @@ def _shared_db(state_dir: Path) -> Path:
 
 def _agent_db(state_dir: Path) -> Path:
     return state_dir / "agents" / AUTH_AGENT_ID / "agent" / "openclaw-agent.sqlite"
+
+
+def _legacy_main_db(state_dir: Path) -> Path:
+    return state_dir / "agents" / _LEGACY_MAIN_AGENT_ID / "agent" / "openclaw-agent.sqlite"
 
 
 def snapshot_path(data_dir: Path) -> Path:
@@ -359,6 +374,42 @@ def _ensure_shared_db(state_dir: Path) -> bool:
     return _shared_db(state_dir).is_file()
 
 
+def _state_db_shared(state_dir: Path) -> bool:
+    """Whether OpenClaw reads — or, told so, will read — the shared auth store from the state database.
+
+    Yes when ``auth.sharedStore`` says ``state-db``, or when the fact is missing and there is no legacy
+    ``main`` store to keep reading from: OpenClaw's own condition for recording it on a fresh install's
+    first shared write (:func:`_record_state_db_shared`). No when the shared store stays in that legacy
+    store: the sign-in then belongs in the main agent's own store.
+    """
+    fact = _read_store(_shared_db(state_dir), _SHARED_SELECT, _SHARED_OWNERSHIP_KEY)
+    if fact is not None:
+        return fact.get("location") == _STATE_DB_LOCATION
+    return not _legacy_main_db(state_dir).exists()
+
+
+def _record_state_db_shared(state_dir: Path) -> None:
+    """Record ``auth.sharedStore = {"location": "state-db"}`` unless a fact is there already. Called
+    after the sign-in is written, so a store that could not take it never gets the fact alone."""
+    _update_store(
+        _shared_db(state_dir),
+        _SHARED_SELECT,
+        _SHARED_UPSERT,
+        _SHARED_OWNERSHIP_KEY,
+        lambda current: {"location": _STATE_DB_LOCATION} if current is None else None,
+    )
+
+
+def _keep_in_agent_store(state_dir: Path, profiles: ChatgptProfiles) -> bool:
+    """The sign-in in the main agent's own store, out of the state database nobody reads it from."""
+    if not _agent_db(state_dir).is_file():
+        return False
+    _update_agent(state_dir, lambda agent: _with_chatgpt(agent, profiles))
+    if _shared_db(state_dir).is_file():
+        _update_shared(state_dir, _drop_chatgpt)
+    return True
+
+
 def settle(data_dir: Path, state_dir: Path, *, connected: bool, pending: bool) -> str:
     """Put the ChatGPT sign-in where the agents read it — or take it away. The gateway must be stopped.
 
@@ -378,12 +429,22 @@ def settle(data_dir: Path, state_dir: Path, *, connected: bool, pending: bool) -
         if fresh:
             if not _ensure_shared_db(state_dir):
                 return "shared-store-missing"
+            if not _state_db_shared(state_dir):
+                # OpenClaw shares another store: the main agent keeps the sign-in it got.
+                snapshot(data_dir, state_dir)
+                return "kept-in-agent-store"
             _update_shared(state_dir, lambda shared: _with_chatgpt(shared, fresh))
+            _record_state_db_shared(state_dir)
             # Shared first: a failure in between leaves the sign-in twice, never nowhere.
             _update_agent(state_dir, _drop_chatgpt)
             snapshot(data_dir, state_dir)
             return "moved-to-shared"
-        if chatgpt_profiles(_read_store(shared_db, _SHARED_SELECT, _SHARED_STORE_KEY)):
+        shared_now = chatgpt_profiles(_read_store(shared_db, _SHARED_SELECT, _SHARED_STORE_KEY))
+        if shared_now:
+            # Also a sign-in agent 4.3.0 moved here without the fact: OpenClaw reads it from now on.
+            if not _state_db_shared(state_dir):
+                return "moved-to-agent-store" if _keep_in_agent_store(state_dir, shared_now) else "unreadable-here"
+            _record_state_db_shared(state_dir)
             snapshot(data_dir, state_dir)
             return "in-place"
         saved = load_snapshot(data_dir)
@@ -391,7 +452,10 @@ def settle(data_dir: Path, state_dir: Path, *, connected: bool, pending: bool) -
             return "no-sign-in"
         if not _ensure_shared_db(state_dir):
             return "shared-store-missing"
+        if not _state_db_shared(state_dir):
+            return "restored-to-agent-store" if _keep_in_agent_store(state_dir, saved) else "unreadable-here"
         _update_shared(state_dir, lambda shared: _with_chatgpt(shared, saved))
+        _record_state_db_shared(state_dir)
         return "restored"
     removed = shared_db.is_file() and _update_shared(state_dir, _drop_chatgpt)
     if not pending and agent_db.is_file():

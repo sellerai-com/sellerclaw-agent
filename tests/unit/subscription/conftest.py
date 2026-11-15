@@ -48,23 +48,37 @@ def store(profiles: dict[str, Any], lifetimes: dict[str, Any] | None = None) -> 
 
 
 class OpenclawState:
-    """``~/.openclaw`` with the shared store and the main agent's own store."""
+    """``~/.openclaw`` with the shared store and the main agent's own store.
+
+    ``ownership`` is OpenClaw's ``auth.sharedStore`` fact (absent on a fresh install);
+    ``legacy_main`` adds the implicit ``main`` agent's database — the shared store while the fact is absent.
+    """
 
     def __init__(self, root: Path) -> None:
         self.root = root
         self.shared_db = root / "state" / "openclaw.sqlite"
         self.agent_db = root / "agents" / "supervisor" / "agent" / "openclaw-agent.sqlite"
+        self.legacy_main_db = root / "agents" / "main" / "agent" / "openclaw-agent.sqlite"
 
-    def create(self, *, shared: dict[str, Any] | None, agent: dict[str, Any] | None) -> OpenclawState:
-        self.create_shared(shared)
-        self.agent_db.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.agent_db) as conn:
-            conn.execute(_AGENT_SCHEMA)
-            if agent is not None:
+    def create(
+        self,
+        *,
+        shared: dict[str, Any] | None,
+        agent: dict[str, Any] | None,
+        ownership: dict[str, Any] | None = None,
+        legacy_main: bool = False,
+    ) -> OpenclawState:
+        self.create_shared(shared, ownership=ownership)
+        for path in (self.agent_db, *((self.legacy_main_db,) if legacy_main else ())):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(path) as conn:
+                conn.execute(_AGENT_SCHEMA)
+        if agent is not None:
+            with sqlite3.connect(self.agent_db) as conn:
                 conn.execute("INSERT INTO auth_profile_store VALUES ('primary', ?, 1)", (json.dumps(agent),))
         return self
 
-    def create_shared(self, shared: dict[str, Any] | None) -> None:
+    def create_shared(self, shared: dict[str, Any] | None, *, ownership: dict[str, Any] | None = None) -> None:
         self.shared_db.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.shared_db) as conn:
             conn.execute(_SHARED_SCHEMA)
@@ -72,6 +86,18 @@ class OpenclawState:
                 conn.execute(
                     "INSERT INTO config_machine_state VALUES ('authProfiles.store', ?, 1)", (json.dumps(shared),)
                 )
+            if ownership is not None:
+                conn.execute(
+                    "INSERT INTO config_machine_state VALUES ('auth.sharedStore', ?, 1)", (json.dumps(ownership),)
+                )
+
+    def ownership(self) -> dict[str, Any] | None:
+        """OpenClaw's ``auth.sharedStore`` fact: where it reads the shared auth store from."""
+        with sqlite3.connect(self.shared_db) as conn:
+            row = conn.execute(
+                "SELECT value_json FROM config_machine_state WHERE state_key = 'auth.sharedStore'"
+            ).fetchone()
+        return json.loads(row[0]) if row else None
 
     def shared(self) -> dict[str, Any] | None:
         with sqlite3.connect(self.shared_db) as conn:
@@ -97,9 +123,13 @@ def make_openclaw_state(tmp_path: Path) -> Callable[..., OpenclawState]:
         agent: dict[str, Any] | None = None,
         name: str = "openclaw",
         empty: bool = False,
+        ownership: dict[str, Any] | None = None,
+        legacy_main: bool = False,
     ) -> OpenclawState:
         state = OpenclawState(tmp_path / name)
-        return state if empty else state.create(shared=shared, agent=agent)
+        if empty:
+            return state
+        return state.create(shared=shared, agent=agent, ownership=ownership, legacy_main=legacy_main)
 
     return _make
 
