@@ -59,7 +59,7 @@ _LABEL_ERROR = "Last error"
 # Manifest enum → human label. Order matters: it's the rendering order.
 _MODULE_NAMES: dict[str, str] = {
     "product_scout": "Product Scout",
-    "dropshipping_supplier": "Dropshipping Supplier",
+    "dropshipping_supplier": "Supplier Manager",
     "shopify_store_manager": "Shopify Store",
     "ebay_store_manager": "eBay Store",
     "marketing_manager": "Marketing Manager",

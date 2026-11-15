@@ -97,14 +97,14 @@
       },
       {
         "id": "supplier",
-        "name": "Dropshipping Supplier",
+        "name": "Supplier Manager",
         "model": "secondary",
         "thinking": "off",
         "browser_enabled": false,
         "image_generation": false,
         "video_generation": false,
         "content": {
-          "instructions": "# Dropshipping Supplier\n\nSource products and manage purchases.\n",
+          "instructions": "# Supplier Manager\n\nSource products and manage purchases.\n",
           "skills": [
             { "name": "product-search", "content": "---\nname: product-search\ndescription: Search supplier catalogs\n---\n\nSearch CJ Dropshipping.\n" }
           ]
