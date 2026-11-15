@@ -915,12 +915,12 @@ def _device_flow(console: Console, base_url: str, *, open_browser: bool = True) 
         try:
             headers = _local_control_plane_auth_headers(base_url)
             with sync_client(timeout=60.0) as client:
-                for attempt in range(DEVICE_START_ATTEMPTS):
-                    if attempt:
-                        time.sleep(DEVICE_START_RETRY_S)
-                    start = client.post(f"{base_url}/auth/device/start", headers=headers)
+                start = client.post(f"{base_url}/auth/device/start", headers=headers)
+                for _retry in range(DEVICE_START_ATTEMPTS - 1):
                     if not _cloud_unreachable(start):
                         break
+                    time.sleep(DEVICE_START_RETRY_S)
+                    start = client.post(f"{base_url}/auth/device/start", headers=headers)
         except httpx.ConnectError:
             console.print(
                 "[error]SellerClaw is not running.[/error]\n"
