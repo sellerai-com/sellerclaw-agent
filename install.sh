@@ -54,10 +54,13 @@ ACTION="install"
 # Flags worth replaying on `sellerclaw-agent update`.
 SAVED_FLAGS=""
 # Where the owner's agent runs after the sign-in step: "here", "cloud" (SellerClaw's cloud machine
-# keeps it — the owner said no to moving it, or nobody was at the terminal to ask), or "" (unknown).
+# keeps it — the owner said no to moving it, or nobody was at the terminal to ask), "moving" (the
+# move here is under way and finishes on its own), or "" (unknown).
 AGENT_PLACE=""
 # Exit code of `login` / `where` when the agent keeps running in SellerClaw's cloud.
 EXIT_RUNS_IN_CLOUD=3
+# Exit code of `login` / `where` when the cloud machine is still handing the agent over to this one.
+EXIT_MOVE_CONTINUES=4
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -618,6 +621,7 @@ note_agent_place() {
     case "$1" in
         0) AGENT_PLACE="here" ;;
         "$EXIT_RUNS_IN_CLOUD") AGENT_PLACE="cloud" ;;
+        "$EXIT_MOVE_CONTINUES") AGENT_PLACE="moving" ;;
         *) AGENT_PLACE="" ;;
     esac
 }
@@ -749,6 +753,10 @@ final_message() {
         cloud)
             printf "\n${C_OK}SellerClaw Agent is installed.${C_OFF} ${C_WARN}Your agent still runs in SellerClaw's cloud.${C_OFF}\n"
             printf "To move it here: open Hosting in SellerClaw and press \"Move to your computer\" — this computer takes over on its own.\n\n"
+            ;;
+        moving)
+            printf "\n${C_OK}SellerClaw Agent is installed.${C_OFF} ${C_WARN}Your agent is still moving to this computer.${C_OFF}\n"
+            printf "The cloud machine hands it over on its own — check in a minute with: sellerclaw-agent status\n\n"
             ;;
         *)
             printf "\n${C_OK}SellerClaw Agent is installed and running.${C_OFF}\n\n"

@@ -21,7 +21,7 @@ from sellerclaw_agent.cloud.exceptions import (
     CloudConnectionError,
 )
 from sellerclaw_agent.server.edge_commands import CommandResultStore, CompletedRemoteCommand, RemoteCommandWork
-from sellerclaw_agent.server.ping_loop import AGENT_PROTOCOL_VERSION, run_edge_ping_loop
+from sellerclaw_agent.server.ping_loop import AGENT_PROTOCOL_VERSION, HAND_OVER_RETRY_S, run_edge_ping_loop
 from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 
 pytestmark = pytest.mark.unit
@@ -62,6 +62,7 @@ async def _run_loop(
     session: Any = None,
     restore: _FakeRestore | None = None,
     result_store: CommandResultStore | None = None,
+    sleeps: list[float] | None = None,
 ) -> _Loop:
     monkeypatch.setenv("SELLERCLAW_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("AGENT_API_KEY", raising=False)
@@ -93,7 +94,9 @@ async def _run_loop(
     )
     monkeypatch.setattr("sellerclaw_agent.server.ping_loop.agent_activity_ping_payload", MagicMock(return_value=None))
 
-    async def _one_round(_stop: asyncio.Event, _seconds: float) -> None:
+    async def _one_round(_stop: asyncio.Event, seconds: float) -> None:
+        if sleeps is not None:
+            sleeps.append(seconds)
         stop.set()
         await asyncio.sleep(0)
 
@@ -192,6 +195,31 @@ async def test_a_refused_connect_reports_its_code_in_the_registry(
     client.ping.assert_not_awaited()
     # Waiting, never giving up the sign-in: the token stays for the next attempt.
     loop.creds_storage.clear.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("error", "next_knock_in"),
+    [
+        # The cloud machine lets go within seconds of its DISCONNECT: knock again soon.
+        pytest.param(CloudAgentMoveInProgressError("handing over"), (HAND_OVER_RETRY_S, HAND_OVER_RETRY_S), id="hand-over"),
+        # Standing by while the agent runs elsewhere: the usual backoff (10 s after a first refusal).
+        pytest.param(CloudAgentRunsInCloudError("runs in cloud"), (10.0, 10.5), id="runs-in-cloud"),
+        pytest.param(CloudConnectionError("network down"), (10.0, 10.5), id="network-error"),
+    ],
+)
+async def test_a_hand_over_is_knocked_on_again_soon(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, error: Exception, next_knock_in: tuple[float, float]
+) -> None:
+    client = MagicMock()
+    client.connect = AsyncMock(side_effect=error)
+    client.ping = AsyncMock()
+    sleeps: list[float] = []
+
+    await _run_loop(monkeypatch=monkeypatch, tmp_path=tmp_path, client=client, sleeps=sleeps)
+
+    [slept] = sleeps
+    low, high = next_knock_in
+    assert low <= slept <= high
 
 
 @pytest.mark.parametrize(

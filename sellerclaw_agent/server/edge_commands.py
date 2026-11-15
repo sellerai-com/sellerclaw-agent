@@ -8,8 +8,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
+import httpx
 import structlog
 from openclaw_diagnostics.gateway import GatewayError, GatewayUnreachableError
 
@@ -18,6 +20,7 @@ from sellerclaw_agent.bundle.manifest import bundle_manifest_from_mapping
 from sellerclaw_agent.cloud.browser_tunnel import get_browser_tunnel_manager
 from sellerclaw_agent.cloud.connection_client import SellerClawConnectionClient
 from sellerclaw_agent.cloud.credentials import CredentialsStorage
+from sellerclaw_agent.cloud.exceptions import CloudAuthError, CloudConnectionError
 from sellerclaw_agent.cloud.restore_after_connect import get_post_connect_restore
 from sellerclaw_agent.cloud.state_backup import default_openclaw_state_dir
 from sellerclaw_agent.cloud.supervisor_manager import SupervisorContainerManager, create_supervisor_manager
@@ -38,6 +41,34 @@ from sellerclaw_agent.server.runtime_registry import EdgeRuntimeRegistry
 from sellerclaw_agent.server.storage import ManifestStorage
 
 _log = structlog.get_logger(__name__)
+
+#: Tries at fetching the manifest a START / RESTART / UPDATE_MANIFEST needs. The cloud sends the
+#: START after a connect once: a single blip between this computer and the cloud must not leave
+#: the agent stopped. Each try is short, so all of them and the start fit the cloud's minute.
+MANIFEST_FETCH_ATTEMPTS = 3
+MANIFEST_FETCH_RETRY_S = 1.0
+_MANIFEST_FETCH_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_MANIFEST_UNREACHABLE = "Could not reach SellerClaw to load the agent's settings."
+
+
+async def _fetch_manifest(client: SellerClawConnectionClient) -> dict[str, Any]:
+    """The edge manifest, retrying network failures; a refused token (401) is not retried."""
+    for attempt in range(1, MANIFEST_FETCH_ATTEMPTS + 1):
+        try:
+            return await client.fetch_edge_manifest(timeout=_MANIFEST_FETCH_TIMEOUT)
+        except CloudAuthError:
+            raise
+        except CloudConnectionError as exc:
+            if attempt == MANIFEST_FETCH_ATTEMPTS:
+                raise
+            _log.info("fetch_edge_manifest_retry", attempt=attempt, error=str(exc)[:200])
+            await asyncio.sleep(MANIFEST_FETCH_RETRY_S)
+    raise AssertionError("unreachable")
+
+
+def _manifest_failure(exc: Exception) -> str:
+    # A timeout carries no message: the cloud (and the owner) would see an empty reason.
+    return str(exc)[:500] or _MANIFEST_UNREACHABLE
 
 WHATSAPP_LOGOUT_TIMEOUT_S = 20.0
 
@@ -127,10 +158,10 @@ async def _execute_remote_command(
         return outcome, err
     if cmd in {"start", "restart"}:
         try:
-            mapping = await client.fetch_edge_manifest()
+            mapping = await _fetch_manifest(client)
         except Exception as exc:  # noqa: BLE001 - surface as command failure
-            _log.warning("fetch_edge_manifest_failed", error=str(exc)[:500])
-            return "failed", str(exc)[:500]
+            _log.warning("fetch_edge_manifest_failed", error=_manifest_failure(exc))
+            return "failed", _manifest_failure(exc)
         storage = ManifestStorage(data_dir)
         try:
             storage.save(mapping)
@@ -152,10 +183,10 @@ async def _execute_remote_command(
         return await loop.run_in_executor(executor, fn)
     if cmd == "update_manifest":
         try:
-            mapping = await client.fetch_edge_manifest()
+            mapping = await _fetch_manifest(client)
         except Exception as exc:  # noqa: BLE001 - surface as command failure
-            _log.warning("fetch_edge_manifest_failed", error=str(exc)[:500])
-            return "failed", str(exc)[:500]
+            _log.warning("fetch_edge_manifest_failed", error=_manifest_failure(exc))
+            return "failed", _manifest_failure(exc)
         storage = ManifestStorage(data_dir)
         try:
             storage.save(mapping)

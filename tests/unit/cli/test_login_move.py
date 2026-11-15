@@ -221,11 +221,49 @@ def test_a_hand_over_that_never_comes_says_so(
 
     place, _chat = cli._connect_here(console, "http://agent")
 
-    assert place == "failed"
+    assert place == "moving", "a hand-over that outlasts the wait goes on by itself — not a failure"
     out = console.export_text()
-    assert "Moving your agent to this computer" in out
-    assert "the cloud machine has not handed your agent over yet." in out
-    assert "sellerclaw-agent status" in out
+    assert "Your agent is still moving to this computer." in out
+    assert "Check in a minute: sellerclaw-agent status" in out
+    assert "Step failed" not in out
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        pytest.param("asked-here", id="the-owner-said-yes-here"),
+        pytest.param("started-on-the-web", id="started-on-the-web"),
+    ],
+)
+def test_a_move_whose_last_knock_failed_on_the_network_is_still_moving(
+    monkeypatch: pytest.MonkeyPatch, make_health_snapshot, owner, move_requests, first: str
+) -> None:
+    """The cloud hands over on its own; a knock lost on the way says nothing about the move."""
+    owner(tty=True, answer=True)
+    move_requests()
+    clock = {"now": 0.0}
+
+    def _monotonic() -> float:
+        clock["now"] += 30.0
+        return clock["now"]
+
+    monkeypatch.setattr(cli.time, "monotonic", _monotonic)
+    opening = cli.RUNS_IN_CLOUD if first == "asked-here" else cli.MOVE_IN_PROGRESS
+    health = _Health(
+        make_health_snapshot(error_code=opening),
+        make_health_snapshot(error_code=cli.MOVE_IN_PROGRESS),
+        # From here on the knocks time out: the last error has no code.
+        make_health_snapshot(error="timed out"),
+    )
+    monkeypatch.setattr(cli, "_get_health_snapshot", health)
+    console = _console()
+
+    place, _chat = cli._connect_here(console, "http://agent")
+
+    assert place == "moving"
+    out = console.export_text()
+    assert "Your agent is still moving to this computer." in out
+    assert "Check your internet connection" not in out
 
 
 @pytest.mark.parametrize(
@@ -270,6 +308,7 @@ def test_a_connection_that_never_comes_up_gives_hints_for_this_install(
     [
         pytest.param(("here", True), 0, True, id="runs-here"),
         pytest.param(("cloud", False), cli.EXIT_RUNS_IN_CLOUD, False, id="stays-in-the-cloud"),
+        pytest.param(("moving", False), cli.EXIT_MOVE_CONTINUES, False, id="still-moving"),
         pytest.param(("failed", False), 1, False, id="failed"),
     ],
 )

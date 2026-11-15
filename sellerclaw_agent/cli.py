@@ -583,8 +583,16 @@ _STAYS_IN_CLOUD = (
 
 #: ``login`` / ``where`` exit code: signed in, but the owner's agent keeps running in the cloud.
 EXIT_RUNS_IN_CLOUD = 3
+#: ``login`` / ``where`` exit code: the move to this computer is under way and finishes on its own —
+#: the cloud machine has not handed over within :data:`MOVE_WAIT_S`, and this computer keeps knocking.
+EXIT_MOVE_CONTINUES = 4
 
-Place = Literal["here", "cloud", "failed"]
+_MOVE_CONTINUES = (
+    "Your agent is still moving to this computer. The cloud machine hands it over on its own "
+    "and this computer keeps trying — nothing to do on your side."
+)
+
+Place = Literal["here", "cloud", "moving", "failed"]
 
 
 @dataclass(frozen=True)
@@ -612,6 +620,8 @@ def _wait_for_cloud(
     up to :data:`MOVE_WAIT_S` for the cloud machine to hand over.
     """
     deadline = time.monotonic() + (max(timeout_s, MOVE_WAIT_S) if taking_over else timeout_s)
+    #: A move here was under way during this wait — asked for, or reported by the cloud.
+    move_under_way = taking_over
     last_error: str | None = None
     error_code: str | None = None
     session_ok = False
@@ -650,13 +660,19 @@ def _wait_for_cloud(
                 return _CloudWait(ok=True, reason=None, chat_ok=chat_ok, error_code=None)
             if error_code in stop_on:
                 return _CloudWait(ok=False, reason=last_error, chat_ok=chat_ok, error_code=error_code)
-            if error_code == MOVE_IN_PROGRESS and not taking_over:
-                taking_over = True
-                deadline = max(deadline, time.monotonic() + MOVE_WAIT_S)
-                progress.update(task_id, description=_TAKING_OVER_TEXT)
+            if error_code == MOVE_IN_PROGRESS:
+                move_under_way = True
+                if not taking_over:
+                    taking_over = True
+                    deadline = max(deadline, time.monotonic() + MOVE_WAIT_S)
+                    progress.update(task_id, description=_TAKING_OVER_TEXT)
 
             time.sleep(1.0)
 
+    if move_under_way and error_code is None:
+        # The last knock failed on the network, not on a refusal: the hand-over itself goes on in the
+        # cloud, and the agent keeps knocking — the move is still under way, not failed.
+        error_code = MOVE_IN_PROGRESS
     if error_code == MOVE_IN_PROGRESS:
         reason = "the cloud machine has not handed your agent over yet."
     elif not session_ok:
@@ -710,13 +726,17 @@ def _connect_here(console: Console, base_url: str) -> tuple[Place, bool]:
 
     Returns ``(place, chat_ok)``: ``here`` — connected; ``cloud`` — the agent keeps running in
     SellerClaw's cloud (the owner said no, nobody was at the terminal to ask, or the move was
-    refused); ``failed`` — the connection did not come up (a failure panel was printed).
+    refused); ``moving`` — the move here is under way but the cloud machine has not handed over yet
+    (it finishes on its own); ``failed`` — the connection did not come up (a failure panel was printed).
     """
     waited = _wait_for_cloud(base_url, console, stop_on=frozenset({RUNS_IN_CLOUD, RUNS_ON_COMPUTER}))
     if waited.ok:
         return "here", waited.chat_ok
+    if waited.error_code == MOVE_IN_PROGRESS:
+        _print_move_continues(console)
+        return "moving", waited.chat_ok
     if waited.error_code != RUNS_IN_CLOUD:
-        _print_connection_failure(console, waited)
+        _print_cloud_verification_failure(console, waited.reason or "unknown error")
         return "failed", waited.chat_ok
 
     console.print()
@@ -736,27 +756,20 @@ def _connect_here(console: Console, base_url: str) -> tuple[Place, bool]:
         return "cloud", False
 
     waited = _wait_for_cloud(base_url, console, timeout_s=MOVE_WAIT_S, taking_over=moved == "moving")
-    if not waited.ok:
-        _print_connection_failure(console, waited)
-        return "failed", waited.chat_ok
-    console.print("[success]Your agent runs on this computer now.[/success]")
-    return "here", waited.chat_ok
-
-
-def _print_connection_failure(console: Console, waited: _CloudWait) -> None:
+    if waited.ok:
+        console.print("[success]Your agent runs on this computer now.[/success]")
+        return "here", waited.chat_ok
     if waited.error_code == MOVE_IN_PROGRESS:
-        _print_generic_failure(
-            console,
-            stage="Moving your agent to this computer",
-            reason=waited.reason or "the cloud machine has not handed your agent over yet.",
-            hints=[
-                "It finishes on its own — this computer keeps trying.",
-                f"Check in a minute: {_cli_hint('status')}",
-                f"Agent log: {_logs_hint()}",
-            ],
-        )
-        return
+        _print_move_continues(console)
+        return "moving", waited.chat_ok
     _print_cloud_verification_failure(console, waited.reason or "unknown error")
+    return "failed", waited.chat_ok
+
+
+def _print_move_continues(console: Console) -> None:
+    """The hand-over outlasted the wait: not a failure — say it goes on, and how to see it land."""
+    console.print(f"[warning]{escape(_MOVE_CONTINUES)}[/warning]")
+    console.print(f"[hint]Check in a minute: {escape(_cli_hint('status'))}[/hint]")
 
 
 def _health_error_code(base_url: str) -> str | None:
@@ -876,6 +889,22 @@ def _connect_password(console: Console, base_url: str, email: str, password: str
     return True
 
 
+#: Tries at getting a sign-in code while the cloud is unreachable (the local agent answers 502).
+DEVICE_START_ATTEMPTS = 3
+#: Pause between those tries.
+DEVICE_START_RETRY_S = 3.0
+#: Failed polls in a row before the waiting line says the cloud cannot be reached right now.
+DEVICE_POLL_FAILURES_BEFORE_NOTICE = 3
+
+_WAITING_FOR_CONFIRMATION = "Waiting for you to confirm in the browser…"
+_WAITING_CLOUD_UNREACHABLE = "Can't reach SellerClaw right now — still waiting for you to confirm…"
+
+
+def _cloud_unreachable(response: httpx.Response) -> bool:
+    """The local agent's answer when its own request to the cloud failed: a blip, worth retrying."""
+    return response.status_code in (502, 503, 504)
+
+
 def _device_flow(console: Console, base_url: str, *, open_browser: bool = True) -> None:
     with Progress(
         SpinnerColumn(),
@@ -886,7 +915,12 @@ def _device_flow(console: Console, base_url: str, *, open_browser: bool = True) 
         try:
             headers = _local_control_plane_auth_headers(base_url)
             with sync_client(timeout=60.0) as client:
-                start = client.post(f"{base_url}/auth/device/start", headers=headers)
+                for attempt in range(DEVICE_START_ATTEMPTS):
+                    if attempt:
+                        time.sleep(DEVICE_START_RETRY_S)
+                    start = client.post(f"{base_url}/auth/device/start", headers=headers)
+                    if not _cloud_unreachable(start):
+                        break
         except httpx.ConnectError:
             console.print(
                 "[error]SellerClaw is not running.[/error]\n"
@@ -900,7 +934,7 @@ def _device_flow(console: Console, base_url: str, *, open_browser: bool = True) 
             "[hint]Please sign in with email and password instead.[/hint]",
         )
         raise SystemExit(1)
-    if start.status_code == 502:
+    if _cloud_unreachable(start):
         console.print(
             "[error]We can't reach the SellerClaw cloud right now.[/error]\n"
             "[hint]Check your internet connection and try again.[/hint]",
@@ -947,13 +981,16 @@ def _device_flow(console: Console, base_url: str, *, open_browser: bool = True) 
     deadline = time.monotonic() + float(data.get("expires_in") or 900)
     with Progress(
         SpinnerColumn(),
-        TextColumn("[hint]Waiting for you to confirm in the browser…[/hint]"),
+        TextColumn("[hint]{task.description}[/hint]"),
         console=console,
         transient=True,
-    ):
+    ) as progress:
+        task_id = progress.add_task(_WAITING_FOR_CONFIRMATION, total=None)
         poll_headers = _local_control_plane_auth_headers(base_url)
+        failures = 0
         with sync_client(timeout=30.0) as client:
             while time.monotonic() < deadline:
+                pr: httpx.Response | None
                 try:
                     pr = client.get(
                         f"{base_url}/auth/device/poll",
@@ -963,10 +1000,24 @@ def _device_flow(console: Console, base_url: str, *, open_browser: bool = True) 
                 except httpx.ConnectError:
                     console.print("[error]Lost connection to SellerClaw while waiting.[/error]")
                     raise SystemExit(1) from None
+                except httpx.TimeoutException:
+                    pr = None
+
+                if pr is None or _cloud_unreachable(pr):
+                    # A blip between this computer and the cloud. The code stays valid there until it
+                    # expires, so a confirmation made meanwhile is picked up by the next poll.
+                    failures += 1
+                    if failures == DEVICE_POLL_FAILURES_BEFORE_NOTICE:
+                        progress.update(task_id, description=_WAITING_CLOUD_UNREACHABLE)
+                    time.sleep(max(1, interval))
+                    continue
+                if failures >= DEVICE_POLL_FAILURES_BEFORE_NOTICE:
+                    progress.update(task_id, description=_WAITING_FOR_CONFIRMATION)
+                failures = 0
 
                 if pr.status_code >= 400:
-                    msg = _extract_error_message(pr)
-                    console.print(f"[error]Something went wrong: {escape(msg)}[/error]")
+                    msg = _extract_error_message(pr) or f"HTTP {pr.status_code}"
+                    console.print(f"[error]Sign-in failed: {escape(msg)}[/error]")
                     raise SystemExit(1)
 
                 payload = pr.json()
@@ -1280,7 +1331,8 @@ def cmd_login(console: Console, *, browser_only: bool = False) -> int:
 
     Exit code: ``0`` — connected, the agent runs here; :data:`EXIT_RUNS_IN_CLOUD` — signed in, but
     the agent keeps running in SellerClaw's cloud (the installer words its last message on it);
-    ``1`` — something failed.
+    :data:`EXIT_MOVE_CONTINUES` — the move here is under way and finishes on its own; ``1`` —
+    something failed.
     """
     base = agent_base_url()
     if not wait_for_agent(base, console, timeout_s=15):
@@ -1317,6 +1369,8 @@ def _settle_place(console: Console, base: str) -> int:
         # `_connect_here` has said where the agent runs and how to move it; a "Connected" panel
         # would only blur that.
         return EXIT_RUNS_IN_CLOUD
+    if place == "moving":
+        return EXIT_MOVE_CONTINUES
     if not chat_ok:
         console.print(
             "[warning]Live chat stream is not connected yet — it should come up shortly.[/warning]",

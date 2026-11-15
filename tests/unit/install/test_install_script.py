@@ -411,6 +411,12 @@ def test_reinstall_lets_the_old_agent_say_goodbye_before_removing_it(sandbox: Sa
             "Your agent runs on this computer",
             id="stays-in-the-cloud",
         ),
+        pytest.param(
+            4,
+            "Your agent is still moving to this computer.",
+            "Connecting did not finish",
+            id="hand-over-still-going",
+        ),
         pytest.param(1, "Connecting did not finish", "Your agent runs on this computer", id="sign-in-failed"),
     ],
 )
@@ -444,6 +450,7 @@ def test_an_agent_left_in_the_cloud_is_told_how_to_move_it_later(sandbox: Sandbo
     [
         pytest.param(0, "Your agent runs on this computer.", id="runs-here"),
         pytest.param(3, "Your agent still runs in SellerClaw's cloud.", id="stays-in-the-cloud"),
+        pytest.param(4, "Your agent is still moving to this computer.", id="hand-over-still-going"),
         pytest.param(1, "SellerClaw Agent is installed and running.", id="unknown"),
     ],
 )

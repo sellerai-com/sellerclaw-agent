@@ -25,7 +25,9 @@ from sellerclaw_agent.cloud.exceptions import (
 from sellerclaw_agent.cloud.settings import get_sellerclaw_api_url
 from sellerclaw_agent.http_clients import async_client
 
-_DEFAULT_TIMEOUT = httpx.Timeout(30.0)
+# A connection that is not up in 10 s will not come up: on a network that drops SYNs (VPNs, flaky
+# Wi-Fi) a fresh attempt gets through sooner than waiting out the full 30 s on the stuck one.
+_DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 _STATE_BACKUP_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 
 RunsOn = Literal["cloud", "computer"]
@@ -125,12 +127,13 @@ class SellerClawConnectionClient:
         path: str,
         *,
         json_body: dict[str, Any] | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> tuple[int, Any]:
         bearer = self._resolve_bearer_token()
 
         async def _call(token: str) -> httpx.Response:
             url = f"{self._base}{path}"
-            async with async_client(timeout=self._timeout, transport=self._transport) as client:
+            async with async_client(timeout=timeout or self._timeout, transport=self._transport) as client:
                 return await client.request(
                     method,
                     url,
@@ -430,8 +433,8 @@ class SellerClawConnectionClient:
             raise CloudConnectionError("Invalid browser-view session response")
         return UUID(str(data["session_id"]))
 
-    async def fetch_edge_manifest(self) -> dict[str, Any]:
-        status, data = await self._request_json("GET", "/agent/connection/edge-manifest")
+    async def fetch_edge_manifest(self, *, timeout: httpx.Timeout | None = None) -> dict[str, Any]:
+        status, data = await self._request_json("GET", "/agent/connection/edge-manifest", timeout=timeout)
         if status == 401:
             raise CloudAuthError(self._detail_message(data), status_code=401)
         if status >= 400:

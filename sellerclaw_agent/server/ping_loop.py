@@ -37,6 +37,7 @@ from sellerclaw_agent.cloud.credentials import CredentialsStorage
 from sellerclaw_agent.cloud.settings import get_openclaw_version
 from sellerclaw_agent.cloud.whatsapp_channel import get_whatsapp_status_monitor
 from sellerclaw_agent.cloud.exceptions import (
+    CloudAgentMoveInProgressError,
     CloudAgentSuspendedError,
     CloudAuthError,
     CloudConnectionAlreadyActiveError,
@@ -85,6 +86,10 @@ _log = structlog.get_logger(__name__)
 # with a persistent /data (self-hosted, local compose) a session saved by an older agent
 # survives the upgrade, and the cloud would keep gating new commands on the old number.
 AGENT_PROTOCOL_VERSION = 10
+
+#: Seconds between knocks while the cloud says a move to this computer is under way
+#: (``agent_move_in_progress``): the cloud machine is saying goodbye and lets go within seconds.
+HAND_OVER_RETRY_S = 5.0
 
 # Underlying OpenClaw runtime version, baked into the image from the OpenClaw tag at
 # build time (runtime/Dockerfile -> ENV OPENCLAW_VERSION). Reported to the cloud so the
@@ -287,8 +292,14 @@ async def run_edge_ping_loop(
             _log.warning("edge_connect_refused_another_instance_active", code=exc.code, error=str(exc))
             standby.request_standby()
             await _reconcile_cron_standby(standby, openclaw_status)
-            consecutive_errors += 1
             registry.mark_ping_error(str(exc), code=exc.code)
+            if isinstance(exc, CloudAgentMoveInProgressError):
+                # The cloud machine hands over within seconds of its DISCONNECT: knock again soon,
+                # not after the 30 s backoff — and a network error after this backs off from scratch.
+                consecutive_errors = 0
+                await sleep_until(stop, HAND_OVER_RETRY_S)
+                continue
+            consecutive_errors += 1
             await sleep_until(stop, ping_interval_after_error(consecutive_errors))
             continue
         except CloudAgentSuspendedError:

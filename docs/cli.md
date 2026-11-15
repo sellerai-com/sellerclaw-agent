@@ -74,7 +74,7 @@ sellerclaw-agent disconnect      # back to SellerClaw credits
 
 A SellerClaw account has one agent at a time: on a SellerClaw cloud machine or on the owner's computer. While it runs in the cloud, the cloud refuses this computer (409 `agent_runs_in_cloud`, see the [connection protocol](./connection-protocol.md#refusals-protocol-10)) and the agent here stands by, trying again every 30 s.
 
-After signing in, `login` waits for the connection. When the answer is "runs in the cloud" and someone is at the terminal it says *"Your agent runs in SellerClaw's cloud right now."* — *"The cloud machine switches off once this one takes over — your chats, memory and tasks come along."* — and asks *"Move it to this computer?"*. Yes: the CLI asks the cloud to move it (`POST /hosting/move-here` on the local agent → `POST /agent/hosting/move-here`) and waits up to three minutes, *"Taking over from the cloud machine…"*, while the cloud machine stops, saves its state and hands over. No, or no terminal: *"Your agent keeps running in the cloud. To move it here later: open Hosting in SellerClaw and press "Move to your computer"."* — this computer then takes over on its own when the owner presses it. A move started from the web panel (`agent_move_in_progress`) is simply waited out.
+After signing in, `login` waits for the connection. When the answer is "runs in the cloud" and someone is at the terminal it says *"Your agent runs in SellerClaw's cloud right now."* — *"The cloud machine switches off once this one takes over — your chats, memory and tasks come along."* — and asks *"Move it to this computer?"*. Yes: the CLI asks the cloud to move it (`POST /hosting/move-here` on the local agent → `POST /agent/hosting/move-here`) and waits up to three minutes, *"Taking over from the cloud machine…"*, while the cloud machine stops, saves its state and hands over. No, or no terminal: *"Your agent keeps running in the cloud. To move it here later: open Hosting in SellerClaw and press "Move to your computer"."* — this computer then takes over on its own when the owner presses it. A move started from the web panel (`agent_move_in_progress`) is simply waited out; meanwhile the agent knocks every 5 s, since the cloud machine lets go within seconds. A hand-over that outlasts the wait is not a failure: *"Your agent is still moving to this computer. The cloud machine hands it over on its own and this computer keeps trying — nothing to do on your side."* (exit code `4`); a knock lost on the network during the move does not turn it into one.
 
 On the first connection after a sign-in the agent brings back the browser sign-ins and the WhatsApp session the cloud keeps (when this computer has none), before the agent first starts here.
 
@@ -82,8 +82,9 @@ On the first connection after a sign-in the agent brings back the browser sign-i
 
 `sellerclaw-agent connect claude` puts the agent's thinking on the owner's own Claude Pro or Max plan
 instead of SellerClaw credits (images, video, web search and memory still use credits). It installs
-Anthropic's Claude Code on the data volume with Anthropic's official installer (pinned version, no
-self-updates), runs Claude Code's own sign-in in your terminal — the link and the code are between
+Anthropic's Claude Code on the data volume — the pinned build alone, straight from Anthropic's release
+bucket, checked against the SHA-256 in Anthropic's manifest (about 300 MB once; it shows its progress and
+continues where a dropped connection stopped; no self-updates) — runs Claude Code's own sign-in in your terminal — the link and the code are between
 you and Anthropic — and rebuilds the OpenClaw config. Everything lives under
 `/data/ai-subscription/`, so `sellerclaw-agent update` keeps the sign-in. When the plan's usage
 limit is used up the agent waits until it resets; it never switches to paid models. `status` shows
@@ -219,7 +220,7 @@ See the [cloud connection protocol](./connection-protocol.md) for how the ping l
 | `start` | Start the stack only: `docker compose up -d --build` in the agent directory. |
 | `stop` | Stop the stack: `docker compose down`. |
 | `status` | Show whether the agent is connected to the cloud (`GET /auth/status`), and when the agent runs in SellerClaw's cloud instead of here. |
-| `login` | Sign in to the cloud (server must be running): up to 15 s wait for the agent, then the same interactive flow as `setup`, then wait for the connection and offer to move the agent here when it runs in the cloud ([Moving the agent here](#moving-the-agent-here)). `login --browser` skips the menu and signs in by link. Exit code `0` — the agent runs here; `3` — signed in, the agent keeps running in SellerClaw's cloud; `1` — failed. |
+| `login` | Sign in to the cloud (server must be running): up to 15 s wait for the agent, then the same interactive flow as `setup`, then wait for the connection and offer to move the agent here when it runs in the cloud ([Moving the agent here](#moving-the-agent-here)). `login --browser` skips the menu and signs in by link. Exit code `0` — the agent runs here; `3` — signed in, the agent keeps running in SellerClaw's cloud; `4` — the move here is under way and finishes on its own; `1` — failed. While it waits for the browser confirmation (up to 15 min) a cloud the agent cannot reach for a moment does not end the sign-in: it keeps polling until the code expires. |
 | `logout` | Sign out: the cloud revokes this agent's token, and the stored credentials are cleared (`POST /auth/disconnect`). |
 | `where` | For the installer (not in `help`): `login` without the sign-in — wait for the connection, offer the move, same exit codes. |
 | `connect [chatgpt\|claude]` | Without a plan: "What should power your agent?". With one: run the agent on your own plan ([Your own AI plan](#your-own-ai-plan)). In a checkout it runs inside the container (`docker compose exec`), where OpenClaw and Claude Code live. |
