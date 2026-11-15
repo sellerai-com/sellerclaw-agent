@@ -286,3 +286,50 @@ def test_signing_in_to_claude_again_never_claims_a_switch_it_did_not_make(
     assert cli_subscription.cmd_connect(console, ["claude", "--sign-in-again"]) == exit_code
     assert activated == []
     assert message in _text(console)
+
+
+@pytest.mark.parametrize(
+    ("failure", "shown"),
+    [
+        pytest.param(None, "Done.", id="downloaded"),
+        pytest.param(
+            "Could not download Claude Code from downloads.claude.ai (timed out). Check this computer's internet "
+            "connection and run the command again — it continues where it stopped.",
+            "it continues where it stopped.",
+            id="line-down-says-it-resumes",
+        ),
+    ],
+)
+def test_claude_code_download_says_how_big_and_shows_progress(
+    monkeypatch: pytest.MonkeyPatch, console: Console, tmp_path: Path, failure: str | None, shown: str
+) -> None:
+    """The first ``connect claude`` downloads ~300 MB: said up front, with progress, never a silent wait."""
+    reports: list[tuple[int, int]] = []
+    monkeypatch.setattr(cli_subscription, "_agent_reachable", lambda console: True)
+    monkeypatch.setattr(cli_subscription, "_runs_on_host", lambda: False)
+    monkeypatch.setattr(cli_subscription, "_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(claude_cli, "is_installed", lambda data_dir: False)
+
+    def _install(data_dir: Path, *, on_progress: Any = None) -> Path:
+        for done in (100, 300):
+            on_progress(done, 300)
+            reports.append((done, 300))
+        if failure is not None:
+            raise claude_cli.ClaudeInstallError(failure)
+        return data_dir / "claude"
+
+    monkeypatch.setattr(claude_cli, "install", _install)
+    # Past the download the test stops at the sign-in: no terminal to sign in from.
+    monkeypatch.setattr(cli_subscription.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(
+        claude_cli, "auth_status", lambda data_dir: claude_cli.ClaudeAuthStatus(logged_in=False)
+    )
+
+    code = cli_subscription.cmd_connect(console, ["claude"])
+
+    out = _text(console)
+    assert "Downloading Claude Code from Anthropic (about 300 MB, once)" in out
+    assert reports == [(100, 300), (300, 300)]
+    assert shown in out
+    # Downloaded or not, this run ends before a sign-in: there is no terminal in the test.
+    assert code == 1

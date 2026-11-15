@@ -1,23 +1,34 @@
 """The Claude Code CLI on this machine: install it on demand, ask it whether it is signed in.
 
 Claude Code is Anthropic's own program and is not baked into our public image: ``connect claude``
-fetches it with Anthropic's official installer into the data volume (so ``sellerclaw-agent
-update`` keeps it), at a pinned version with self-updating off. The owner signs in through Claude
-Code's own ``auth login`` in their terminal — the code they paste goes straight to it. This module
-never reads Claude Code's credentials; it only asks ``claude auth status``.
+downloads the pinned build from Anthropic's release bucket into the data volume (so ``sellerclaw-agent
+update`` keeps it), checks it against the SHA-256 in Anthropic's manifest, and lays it out the way
+Anthropic's installer does (``versions/<version>`` plus the ``.local/bin/claude`` link), with
+self-updating off. The owner signs in through Claude Code's own ``auth login`` in their terminal —
+the code they paste goes straight to it. This module never reads Claude Code's credentials; it only
+asks ``claude auth status``.
+
+**Why not Anthropic's installer script.** It downloads the *latest* build first and then has it
+install the pinned one, which downloads again — about 660 MB on Linux — and its steps give up on
+their own short timeouts. Live on staging (14.11.2026) a slow connection (~100 KB/s) could never
+finish. Fetching the pinned build alone is one ~290 MB download that resumes where a dropped
+connection stopped and reports its progress.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
-import tempfile
 import time
-import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+import httpx
 
 from sellerclaw_agent.subscription.state import subscription_dir
 
@@ -25,18 +36,19 @@ from sellerclaw_agent.subscription.state import subscription_dir
 #: the pinned OpenClaw (its Claude CLI backend speaks Claude Code's stdio protocol).
 CLAUDE_CODE_VERSION = "2.1.311"
 
-#: Anthropic's official installer (``curl -fsSL https://claude.ai/install.sh | bash`` redirects
-#: here). It downloads the build, verifies its SHA-256 against Anthropic's manifest, then installs.
-CLAUDE_BOOTSTRAP_URL = "https://downloads.claude.ai/claude-code-releases/bootstrap.sh"
+#: Anthropic's release bucket (what ``claude.ai/install.sh`` downloads from): ``<version>/manifest.json``
+#: lists each platform's build with its SHA-256 and size; the build is ``<version>/<platform>/<binary>``.
+CLAUDE_RELEASES_URL = "https://downloads.claude.ai/claude-code-releases"
 
-_DOWNLOAD_ATTEMPTS = 3
-_INSTALL_ATTEMPTS = 2
+#: Tries at the download; each one resumes where the last stopped, so a flaky line still gets there.
+_DOWNLOAD_ATTEMPTS = 8
+#: A connection that is not up in 20 s will not come up; no byte for 60 s means a dead one.
+_DOWNLOAD_TIMEOUT = httpx.Timeout(60.0, connect=20.0)
+_CHUNK_BYTES = 1 << 20
 _STATUS_TIMEOUT_SECONDS = 20.0
 
-#: ``curl`` settings for the installer's own downloads (it runs plain ``curl -fsSL``). From inside
-#: Docker the first connection to downloads.claude.ai sometimes hangs for minutes and then fails,
-#: while the next one connects at once: give up on a dead connection quickly and try again.
-_INSTALLER_CURLRC = "connect-timeout = 20\nretry = 4\nretry-connrefused\n"
+#: ``(bytes so far, total bytes)`` — how ``connect claude`` draws the download's progress.
+ProgressCallback = Callable[[int, int], None]
 
 
 def claude_home(data_dir: Path) -> Path:
@@ -50,8 +62,13 @@ def claude_config_dir(data_dir: Path) -> Path:
 
 
 def claude_binary(data_dir: Path) -> Path:
-    """The real binary the installer links; ``~/.local/bin/claude`` in the image wraps it."""
+    """The link to the real binary; ``~/.local/bin/claude`` in the image wraps it."""
     return claude_home(data_dir) / ".local" / "bin" / "claude"
+
+
+def claude_versions_dir(data_dir: Path) -> Path:
+    """Where the builds live, one file per version — the layout of Anthropic's own installer."""
+    return claude_home(data_dir) / ".local" / "share" / "claude" / "versions"
 
 
 def limits_path(data_dir: Path) -> Path:
@@ -75,51 +92,123 @@ def is_installed(data_dir: Path) -> bool:
     return claude_binary(data_dir).exists()
 
 
-def _download_bootstrap(target: Path) -> None:
-    last_error: Exception | None = None
-    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
-        try:
-            with urllib.request.urlopen(CLAUDE_BOOTSTRAP_URL, timeout=60) as response:  # noqa: S310 - fixed https URL
-                target.write_bytes(response.read())
-            return
-        except OSError as exc:  # URLError is an OSError; a flaky route usually works the next time
-            last_error = exc
-            time.sleep(2 * attempt)
-    raise ClaudeInstallError(
-        f"Could not download Claude Code from downloads.claude.ai ({last_error}). "
-        "Check this computer's internet connection and run the command again."
-    )
+@dataclass(frozen=True)
+class ClaudeBuild:
+    """One platform's build of one version, as Anthropic's manifest lists it."""
+
+    url: str
+    sha256: str
+    size: int
 
 
-def install(data_dir: Path, *, version: str = CLAUDE_CODE_VERSION) -> Path:
+def _platform() -> str:
+    """Anthropic's name for this machine's build (the agent image is Linux, glibc or musl)."""
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64"}:
+        arch = "x64"
+    elif machine in {"arm64", "aarch64"}:
+        arch = "arm64"
+    else:
+        raise ClaudeInstallError(f"Claude Code has no build for this processor ({machine}).")
+    musl = Path(f"/lib/libc.musl-{'x86_64' if arch == 'x64' else 'aarch64'}.so.1").exists()
+    return f"linux-{arch}-musl" if musl else f"linux-{arch}"
+
+
+def _build(client: httpx.Client, version: str) -> ClaudeBuild:
+    target = _platform()
+    response = client.get(f"{CLAUDE_RELEASES_URL}/{version}/manifest.json")
+    response.raise_for_status()
+    try:
+        entry = response.json()["platforms"][target]
+        build = ClaudeBuild(
+            url=f"{CLAUDE_RELEASES_URL}/{version}/{target}/{entry.get('binary') or 'claude'}",
+            sha256=str(entry["checksum"]).lower(),
+            size=int(entry["size"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ClaudeInstallError(f"Anthropic's manifest for Claude Code {version} has no {target} build.") from exc
+    if build.url.endswith(".zst"):
+        raise ClaudeInstallError(f"Claude Code {version} ships only a compressed {target} build.")
+    return build
+
+
+def _download(client: httpx.Client, build: ClaudeBuild, part: Path, on_progress: ProgressCallback | None) -> None:
+    """Fetch ``build`` into ``part``, continuing a partial file. Raises when the line drops."""
+    have = part.stat().st_size if part.exists() else 0
+    if have > build.size:
+        part.unlink()
+        have = 0
+    if have == build.size:
+        return
+    headers = {"Range": f"bytes={have}-"} if have else {}
+    with client.stream("GET", build.url, headers=headers) as response:
+        response.raise_for_status()
+        if have and response.status_code != 206:
+            have = 0  # the server sent the whole file instead of the rest
+        with part.open("ab" if have else "wb") as out:
+            for chunk in response.iter_bytes(_CHUNK_BYTES):
+                out.write(chunk)
+                have += len(chunk)
+                if on_progress is not None:
+                    on_progress(have, build.size)
+    if have < build.size:
+        raise httpx.ReadError(f"the download stopped at {have} of {build.size} bytes")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(_CHUNK_BYTES), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def install(
+    data_dir: Path,
+    *,
+    version: str = CLAUDE_CODE_VERSION,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
     """Install Claude Code ``version`` on the data volume (no-op when it is already there)."""
     binary = claude_binary(data_dir)
     if binary.exists():
         return binary
-    home = claude_home(data_dir)
-    home.mkdir(parents=True, exist_ok=True)
     claude_config_dir(data_dir).mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="claude-bootstrap-") as tmp:
-        script = Path(tmp) / "bootstrap.sh"
-        _download_bootstrap(script)
-        (Path(tmp) / ".curlrc").write_text(_INSTALLER_CURLRC, encoding="utf-8")
-        env = claude_env(data_dir)
-        env["HOME"] = str(home)
-        env["CURL_HOME"] = tmp
-        tail: list[str] = []
-        for _attempt in range(_INSTALL_ATTEMPTS):
-            result = subprocess.run(  # noqa: S603 - Anthropic's installer, fixed arguments
-                ["bash", str(script), version],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=600,
-                check=False,
+    versions = claude_versions_dir(data_dir)
+    versions.mkdir(parents=True, exist_ok=True)
+    part = versions / f"{version}.part"
+    last_error: Exception | None = None
+    build: ClaudeBuild | None = None
+    with httpx.Client(timeout=_DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
+        for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+            try:
+                build = build or _build(client, version)
+                _download(client, build, part, on_progress)
+                break
+            except (httpx.HTTPError, OSError) as exc:  # a flaky route usually works on the next try
+                last_error = exc
+                time.sleep(min(2 * attempt, 10))
+        else:
+            raise ClaudeInstallError(
+                f"Could not download Claude Code from downloads.claude.ai ({last_error or 'no answer'}). "
+                "Check this computer's internet connection and run the command again — "
+                "it continues where it stopped."
             )
-            if result.returncode == 0 and binary.exists():
-                return binary
-            tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
-    raise ClaudeInstallError("Claude Code installation failed: " + " ".join(tail))
+    assert build is not None
+    if _sha256(part) != build.sha256:
+        part.unlink(missing_ok=True)
+        raise ClaudeInstallError(
+            "The downloaded Claude Code does not match Anthropic's checksum. Run the command again."
+        )
+    part.chmod(0o755)
+    target = versions / version
+    part.replace(target)
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    link = binary.with_name(f".{binary.name}.new")
+    link.unlink(missing_ok=True)
+    link.symlink_to(target)
+    link.replace(binary)
+    return binary
 
 
 @dataclass(frozen=True)

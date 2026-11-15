@@ -18,6 +18,7 @@ import httpx
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
+from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TransferSpeedColumn
 
 from sellerclaw_agent.http_clients import sync_client
 from sellerclaw_agent.subscription import chatgpt_auth, claude_cli
@@ -161,12 +162,29 @@ def _connect_claude(console: Console, *, sign_in_again: bool = False) -> int:
         ),
     )
     if not claude_cli.is_installed(data_dir):
-        console.print("[info]Setting up Claude Code from Anthropic…[/info]")
-        try:
-            claude_cli.install(data_dir)
-        except claude_cli.ClaudeInstallError as exc:
-            console.print(f"[error]{escape(str(exc))}[/error]")
-            return 1
+        console.print(
+            "[info]Downloading Claude Code from Anthropic (about 300 MB, once) — "
+            "a minute on a fast connection, longer on a slow one…[/info]"
+        )
+        with Progress(
+            TextColumn("[hint]Claude Code[/hint]"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("download", total=None)
+
+            def _show(done: int, total: int) -> None:
+                progress.update(task, completed=done, total=total)
+
+            try:
+                claude_cli.install(data_dir, on_progress=_show)
+            except claude_cli.ClaudeInstallError as exc:
+                progress.stop()
+                console.print(f"[error]{escape(str(exc))}[/error]")
+                return 1
         console.print("[success]  Done.[/success]")
 
     status = claude_cli.auth_status(data_dir)
