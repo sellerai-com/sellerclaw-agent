@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import urllib.error
 from collections.abc import Callable
@@ -17,9 +18,11 @@ from sellerclaw_agent.cloud.supervisor_manager import (
     _parse_uptime_seconds_from_line,
     bundle_on_disk_matches,
     create_supervisor_manager,
+    litellm_key_changed,
     read_proxy_url_from_runtime_env,
     write_runtime_env,
 )
+from sellerclaw_agent.test_manifest_fixtures import load_manifest_v2_mapping
 
 pytestmark = pytest.mark.unit
 
@@ -495,6 +498,91 @@ def test_update_manifest_rejects_proxy_change(
     assert err is not None and "proxy" in err
     # No subprocess call attempted; the bundle wasn't rebuilt either.
     run.assert_not_called()
+
+
+def _llm_with_keys(**keys: str) -> dict[str, object]:
+    """The fixture manifest's ``llm`` block with some groups' ``api_key`` replaced."""
+    llm = copy.deepcopy(load_manifest_v2_mapping()["llm"])
+    for group, key in keys.items():
+        llm["groups"][group]["api_key"] = key
+    return llm
+
+
+@pytest.mark.parametrize(
+    ("second_llm", "gateway", "expect_restart"),
+    [
+        pytest.param(_llm_with_keys(litellm="sk-NEWLITELLMKEY"), "running", True, id="litellm-key-changed-restarts"),
+        pytest.param(_llm_with_keys(litellm="sk-NEWLITELLMKEY"), "starting", True, id="still-starting-restarts"),
+        pytest.param(
+            _llm_with_keys(litellm="sk-NEWLITELLMKEY"), "stopped", False, id="stopped-gateway-is-not-started"
+        ),
+        pytest.param(_llm_with_keys(google="sk-NEWGOOGLEKEY"), "running", False, id="other-key-changed-hot-reloads"),
+    ],
+)
+def test_update_manifest_restarts_only_for_a_new_litellm_key(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+    second_llm: dict[str, object],
+    gateway: str,
+    expect_restart: bool,
+) -> None:
+    """The gateway holds the LiteLLM key in its env (``LITELLM_API_KEY``, read at start, used ahead
+    of the config), so a hot-reload cannot hand it a new one: a running gateway is restarted with the
+    new bundle written. A stopped one stays stopped (its next start reads the new key), and any
+    other change keeps hot-reloading."""
+    mgr = _mgr(tmp_path)
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", return_value=MagicMock(returncode=0)):
+        assert mgr.update_manifest(make_manifest(proxy_url="")) == ("completed", None)
+    calls: list[list[str]] = []
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect),
+        patch.object(mgr, "probe_openclaw_status", return_value=(gateway, None)),
+    ):
+        outcome, err = mgr.update_manifest(make_manifest(proxy_url="", overrides={"llm": second_llm}))
+
+    assert (outcome, err) == ("completed", None)
+    restarted = [c for c in calls if c[0] == "supervisorctl" and "restart" in c and "openclaw" in c]
+    applied = [c for c in calls if c == [mgr.openclaw_start_cmd, "apply-bundle"]]
+    if expect_restart:
+        assert len(restarted) == 1
+        assert applied == []
+    else:
+        assert restarted == []
+        assert len(applied) == 1
+    staged = json.loads((mgr.bundle_volume_path / "openclaw" / "openclaw.json").read_text(encoding="utf-8"))
+    expected_key = second_llm["groups"]["litellm"]["api_key"]  # type: ignore[index]
+    assert staged["models"]["providers"]["litellm"]["apiKey"] == expected_key
+
+
+def _openclaw_json(litellm_key: str | None) -> str:
+    providers: dict[str, object] = {"google": {"apiKey": "sk-GOOGLE"}}
+    if litellm_key is not None:
+        providers["litellm"] = {"apiKey": litellm_key}
+    return json.dumps({"models": {"providers": providers}})
+
+
+@pytest.mark.parametrize(
+    ("staged", "new", "expected"),
+    [
+        pytest.param(None, _openclaw_json("sk-A"), False, id="nothing-staged-yet"),
+        pytest.param(_openclaw_json("sk-A"), _openclaw_json("sk-A"), False, id="same-key"),
+        pytest.param(_openclaw_json("sk-A"), _openclaw_json("sk-B"), True, id="new-key"),
+        pytest.param(_openclaw_json(None), _openclaw_json("sk-A"), True, id="key-appears"),
+        pytest.param(_openclaw_json("sk-A"), _openclaw_json(None), True, id="key-removed"),
+        pytest.param("{not json", _openclaw_json("sk-A"), True, id="staged-unreadable"),
+    ],
+)
+def test_litellm_key_changed(tmp_path: Path, staged: str | None, new: str, expected: bool) -> None:
+    if staged is not None:
+        (tmp_path / "openclaw").mkdir()
+        (tmp_path / "openclaw" / "openclaw.json").write_text(staged, encoding="utf-8")
+    assert litellm_key_changed(tmp_path, openclaw_config=new) is expected
 
 
 def test_update_manifest_skips_write_when_bundle_unchanged(

@@ -16,6 +16,7 @@ import structlog
 
 from sellerclaw_agent.bundle.builder import BundleBuilder
 from sellerclaw_agent.bundle.manifest import GenericManifest
+from sellerclaw_agent.bundle.result import BundleResult
 from sellerclaw_agent.cloud.openclaw_forwarder import openclaw_gateway_base_url
 from sellerclaw_agent.cloud.state_backup import write_applied_config_version
 from sellerclaw_agent.server.secrets_store import get_secrets
@@ -152,6 +153,33 @@ def bundle_on_disk_matches(
             except OSError:
                 return False
     return existing_shared == (shared_skills or {})
+
+
+def _litellm_api_key(openclaw_config: str) -> str | None:
+    """The ``litellm`` provider's ``apiKey`` in an ``openclaw.json`` payload, or None without one."""
+    try:
+        payload = json.loads(openclaw_config)
+    except ValueError:
+        return None
+    models = payload.get("models") if isinstance(payload, dict) else None
+    providers = models.get("providers") if isinstance(models, dict) else None
+    litellm = providers.get("litellm") if isinstance(providers, dict) else None
+    key = litellm.get("apiKey") if isinstance(litellm, dict) else None
+    return key if isinstance(key, str) and key else None
+
+
+def litellm_key_changed(bundle_volume_path: Path, *, openclaw_config: str) -> bool:
+    """True when ``openclaw_config`` carries another LiteLLM key than the staged ``openclaw.json``.
+
+    ``openclaw_start`` exports that key as ``LITELLM_API_KEY`` when the gateway starts, and OpenClaw
+    sends the env key with every litellm request ahead of the config's — so a hot-reload cannot
+    change it. False when nothing is staged yet (no running gateway took a key from it).
+    """
+    try:
+        on_disk = (bundle_volume_path / "openclaw" / "openclaw.json").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return _litellm_api_key(on_disk) != _litellm_api_key(openclaw_config)
 
 
 def write_bundle_to_disk(
@@ -776,6 +804,13 @@ class SupervisorContainerManager:
     def restart(self, manifest: GenericManifest) -> tuple[str, str | None]:
         try:
             built = self._build_bundle(manifest)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("bundle_build_write_failed", error=str(exc))
+            return "failed", str(exc)[:500]
+        return self._write_and_restart(manifest, built)
+
+    def _write_and_restart(self, manifest: GenericManifest, built: BundleResult) -> tuple[str, str | None]:
+        try:
             write_bundle_to_disk(
                 self.bundle_volume_path,
                 openclaw_config=built.openclaw_config,
@@ -814,7 +849,7 @@ class SupervisorContainerManager:
         changes (e.g. enabling/removing a specialist) carry a separate "Start a new
         chat" hint on the cloud side.
 
-        Two early returns guard against silently doing the wrong thing:
+        Three early returns guard against silently doing the wrong thing:
 
         * **Proxy change** — ``proxy_url`` lives in ``runtime.env`` and is read
           by supervisord at process start. A hot-reload can't apply it; the
@@ -823,6 +858,11 @@ class SupervisorContainerManager:
         * **No-op** — same byte content as on disk. Skipping the write avoids
           waking the file-watcher for nothing (it would re-validate the config
           and emit a noise log line on every duplicate save).
+        * **LiteLLM key change** — the gateway took the key into its env at start
+          (``openclaw_start``: ``LITELLM_API_KEY``) and uses that ahead of the
+          config, so a running gateway gets the new bundle with a restart instead.
+          The cloud only issues a new key when the old one no longer exists, so the
+          agent was not answering on it anyway.
         """
         current_proxy = read_proxy_url_from_runtime_env(self.bundle_volume_path)
         new_proxy = (manifest.proxy_url or "").strip()
@@ -848,6 +888,12 @@ class SupervisorContainerManager:
             # version still advances — otherwise the cloud would re-push forever.
             write_applied_config_version(manifest.config_version)
             return "completed", None
+        if litellm_key_changed(
+            self.bundle_volume_path, openclaw_config=built.openclaw_config
+        ) and self.probe_openclaw_status()[0] in ("running", "starting"):
+            # A stopped gateway is left stopped: its next start exports the new key anyway.
+            _log.info("update_manifest_restart", reason="litellm_key_changed")
+            return self._write_and_restart(manifest, built)
         try:
             write_bundle_to_disk(
                 self.bundle_volume_path,

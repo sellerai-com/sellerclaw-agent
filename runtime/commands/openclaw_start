@@ -192,6 +192,37 @@ except Exception:
     fi
 }
 
+# A scheduled task (cron job) only runs on a credential OpenClaw counts as configured: a stored
+# account, a key in the environment, or provider config. On a machine that starts from a clean disk
+# — every cloud machine — the LiteLLM key reaches OpenClaw only through the agent's generated
+# models.json, which is none of those, so every run fails with "Automation has no recorded
+# inference account" and creating a task in chat with "Automation requires a stored inference
+# account or a key in the environment or provider config". Exporting the per-agent virtual key as
+# LITELLM_API_KEY (the env var the bundled litellm provider declares) turns it into an environment
+# key: jobs stay unbound and run on it (docs/automation/cron-jobs/payloads.md, "Inference account
+# continuity"). On machines whose state still holds the stored litellm account old doctor
+# migrations wrote, a task created in chat keeps binding to that account, as before.
+#
+# OpenClaw then sends this env key with every litellm request, ahead of the config's apiKey, and the
+# env is fixed for the gateway's lifetime — so a manifest that changes the key restarts the gateway
+# instead of hot-reloading it (``SupervisorContainerManager.update_manifest``). Only litellm is
+# exported: GEMINI_API_KEY is set above for its own reason, and ANTHROPIC_API_KEY would make mem0's
+# own modes look usable (see MEM0_UNUSABLE_SKILLS in the bundle's config generator).
+hydrate_litellm_inference_key() {
+    [ -r "${CONFIG_PATH}" ] || return 0
+    local key
+    key="$(python3 -c "import json,pathlib
+try:
+    d = json.loads(pathlib.Path('${CONFIG_PATH}').read_text())
+    print(d.get('models', {}).get('providers', {}).get('litellm', {}).get('apiKey', '') or '')
+except Exception:
+    pass" 2>/dev/null || true)"
+    if [ -n "${key}" ]; then
+        export LITELLM_API_KEY="${key}"
+        log "LITELLM_API_KEY hydrated from config litellm provider (scheduled-task inference key)"
+    fi
+}
+
 start_gateway() {
     local proxy_config="/etc/nginx/openclaw-proxy.conf"
     local nginx_bin=""
@@ -627,6 +658,7 @@ main() {
     ensure_state_dirs
     copy_runtime_config
     hydrate_gemini_passthrough_key
+    hydrate_litellm_inference_key
     cleanup_stale_chrome_locks
     log_runtime_diagnostics
     log_config_summary
