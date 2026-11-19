@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.11.3
+ARG OPENCLAW_TAG=2026.11.5
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -92,12 +92,12 @@ RUN apt-get update \
 # own /app/node_modules. Keep this ARG in lockstep with that version anyway, so both speak the same
 # protocol to the one Chrome — when OPENCLAW_TAG moves:
 #   docker run --rm --entrypoint sh ghcr.io/openclaw/openclaw:$OPENCLAW_TAG -c 'grep playwright-core /app/package.json'
-# (openclaw 2026.11.3 pins playwright-core 1.63.0 exactly. The browser is the Chrome/Chromium the apt
+# (openclaw 2026.11.5 pins playwright-core 1.64.1 exactly. The browser is the Chrome/Chromium the apt
 # step above installs — hence PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD.)
 # Unpinned before: `npm install -g playwright` took whatever npm called latest at build time, so the
 # shipped version changed silently the first time the layer cache missed — a rebuild today would jump
 # to 1.62.0 (Chromium 151) while every existing image runs 1.61.1 (Chromium 149).
-ARG PLAYWRIGHT_VERSION=1.63.0
+ARG PLAYWRIGHT_VERSION=1.64.1
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV NODE_PATH=/usr/local/lib/node_modules
 RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}"

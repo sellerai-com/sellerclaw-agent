@@ -12,6 +12,7 @@ import {
   enterCronStandby,
   executeCronCommand,
   isMirroredJob,
+  isRetiredHeartbeatJob,
   leaveCronStandby,
   publicCronJob,
   registerCronSyncHooks,
@@ -189,10 +190,29 @@ describe("isMirroredJob", () => {
     ["heartbeat namespace", { id: "a", declarationKey: "heartbeat:supervisor", payload: { kind: "heartbeat" } }, false],
     ["memory-core namespace", { id: "a", declarationKey: "memory-core:memory-dreaming-promotion" }, false],
     ["heartbeat payload without key", { id: "a", payload: { kind: "heartbeat" } }, false],
+    [
+      "a switched-off heartbeat OpenClaw 2026.11.5 turned into a job",
+      { id: "a", agentId: "scout", name: "heartbeat-scout", enabled: false, payload: { kind: "agentTurn" } },
+      false,
+    ],
     ["no id", { declarationKey: "sellerclaw:job:1" }, false],
     ["not an object", "job", false],
   ])("%s", (_name, job, expected) => {
     expect(isMirroredJob(job)).toBe(expected);
+  });
+});
+
+describe("isRetiredHeartbeatJob", () => {
+  const retired = { id: "a", agentId: "scout", name: "heartbeat-scout", enabled: false, payload: { kind: "agentTurn" } };
+  it.each([
+    ["the job OpenClaw 2026.11.5 left behind", retired, true],
+    ["one someone switched on", { ...retired, enabled: true }, false],
+    ["one still keyed by its namespace", { ...retired, declarationKey: "heartbeat:scout" }, false],
+    ["one named after another agent", { ...retired, name: "heartbeat-supervisor" }, false],
+    ["an owner's task that merely mentions heartbeat", { ...retired, name: "heartbeat check of the shop" }, false],
+    ["a job without an agent", { ...retired, agentId: undefined, name: "heartbeat-" }, false],
+  ])("%s", (_name, job, expected) => {
+    expect(isRetiredHeartbeatJob(job)).toBe(expected);
   });
 });
 
@@ -278,6 +298,38 @@ describe("snapshot projection", () => {
     await __drainCronSync();
     expect(calls("/agent/cron/state")[2]?.removed_job_ids).toEqual(["gone"]);
     expect(stateFile().pendingRemovedIds).toEqual([]);
+  });
+
+  it("removes the switched-off heartbeats OpenClaw 2026.11.5 left and tells the cloud they are gone", async () => {
+    // Local live check 2026-11-17: after the upgrade the owner's task list showed seven paused
+    // "heartbeat-<agent>" tasks the doctor had made out of the disabled heartbeat monitors.
+    const leftover = makeJob({ id: "hb-scout", agentId: "scout", name: "heartbeat-scout", enabled: false });
+    const switchedOn = makeJob({ id: "hb-writer", agentId: "writer", name: "heartbeat-writer", enabled: true });
+    scheduler.jobs = [makeJob({ id: "ours", declarationKey: "sellerclaw:job:1" }), leftover, switchedOn];
+
+    await reconcile();
+
+    const [snapshot] = calls("/agent/cron/state");
+    expect(snapshot?.jobs).toEqual([
+      publicCronJob(makeJob({ id: "ours", declarationKey: "sellerclaw:job:1" })),
+      publicCronJob(switchedOn),
+    ]);
+    expect(snapshot?.removed_job_ids).toEqual(["hb-scout"]);
+    expect(scheduler.removes).toEqual(["hb-scout"]);
+    expect(scheduler.jobs.map((j) => j.id)).toEqual(["ours", "hb-writer"]);
+    expect(stateFile().pendingRemovedIds).toEqual([]);
+  });
+
+  it("keeps a leftover heartbeat out of the cloud even when it cannot be removed", async () => {
+    scheduler.jobs = [makeJob({ id: "hb-scout", agentId: "scout", name: "heartbeat-scout", enabled: false })];
+    scheduler.failRemoveFor.add("hb-scout");
+
+    await reconcile();
+
+    const [snapshot] = calls("/agent/cron/state");
+    expect(snapshot?.jobs).toEqual([]);
+    expect(snapshot?.removed_job_ids).toEqual(["hb-scout"]);
+    expect(scheduler.jobs.map((j) => j.id)).toEqual(["hb-scout"]);
   });
 
   it("never reports the removal of a foreign job", async () => {

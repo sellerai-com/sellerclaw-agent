@@ -381,13 +381,9 @@ declare module "openclaw/plugin-sdk/channel-entry-contract" {
   }): BundledChannelSetupEntryContract;
 }
 
-declare module "openclaw/plugin-sdk/reply-chunking" {
+declare module "openclaw/plugin-sdk/reply-runtime" {
   /** OpenClaw's own silent-reply token (``NO_REPLY``). */
   export const SILENT_REPLY_TOKEN: string;
-  /** True for a token-only reply: exact, wrapped in JSON, or written after a reasoning block. */
-  export function isSilentReplyPayloadText(text: string, token?: string): boolean;
-  /** True only for a token-only reply (no JSON or reasoning-prefixed forms). */
-  export function isSilentReplyText(text: string, token?: string): boolean;
 }
 
 declare module "openclaw/plugin-sdk/reply-payload" {

@@ -47,7 +47,6 @@ import {
   type ScwUiAccount,
 } from "./send.js";
 import { getRuntime } from "./runtime-store.js";
-import { readAiSubscriptionSettings } from "./subscription-gate.js";
 import { continueRunningTurnsBelow, registerRunningTurn, type RunningTurn } from "./running-turns.js";
 
 interface InboundPayload {
@@ -1499,11 +1498,10 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
         }`,
       );
 
-      // On the owner's own Claude plan the turn's tools run through OpenClaw's MCP loopback and
-      // check this request's authority, which OpenClaw ends with the 202 below: keep it for the
-      // turn (see holdRouteScopeAuthorityForTurn). Credits turns are left exactly as they were.
-      const releaseAuthority =
-        readAiSubscriptionSettings()?.provider === "claude" ? holdRouteScopeAuthorityForTurn() : null;
+      // Some of the turn's tools check this request's authority, which OpenClaw ends with the 202
+      // below: keep it for the turn (see holdRouteScopeAuthorityForTurn). Every turn needs it since
+      // OpenClaw 2026.11.5; before that only the owner's own Claude plan did.
+      const releaseAuthority = holdRouteScopeAuthorityForTurn();
 
       res.statusCode = 202;
       res.end(JSON.stringify({ ok: true }));
@@ -1516,7 +1514,7 @@ export function registerInboundRoute(api: OpenClawPluginApi): void {
       try {
         await startInboundTurn({ api, account, runtime, payload, sessionKey, inboundMessageId });
       } finally {
-        releaseAuthority?.();
+        releaseAuthority();
       }
 
       return true;

@@ -359,14 +359,15 @@ def build_model_defaults(
     - ``model`` <- ``text_model.primary`` (always present).
     - ``imageGenerationModel`` / ``videoGenerationModel`` / ``pdfModel`` <- the matching
       ``llm.*_model`` block, or ``None`` (key omitted) when the manifest lacks it.
-    - ``compaction`` / ``memoryFlush`` <- ``compaction_model`` / ``memory_flush_model``,
-      falling back to ``text_model.primary`` when the manifest omits them.
+    - ``compaction`` <- ``compaction_model``, falling back to ``text_model.primary`` when the
+      manifest omits it. The manifest's ``memory_flush_model`` is not mapped: since OpenClaw
+      2026.11.5 the memory flush runs on the session's own model and the key is rejected.
     """
     llm = manifest.llm
     text_primary_ref = _openclaw_model_ref(manifest, llm.text_model["primary"])
     if subscription is not None:
-        # All the agent's text runs on the owner's plan: the default model, compaction, the memory
-        # flush and (through it) the heartbeat. PDF reading stays on credits.
+        # All the agent's text runs on the owner's plan: the default model and compaction (the
+        # memory flush follows the session model). PDF reading stays on credits.
         supervisor = subscription.supervisor
         model: dict[str, object] = {"primary": supervisor.primary}
         if supervisor.fallbacks:
@@ -374,7 +375,6 @@ def build_model_defaults(
         return ModelDefaults(
             model=model,
             compaction_model=subscription.utility.primary,
-            memory_flush_model=subscription.utility.primary,
             pdf_model=(
                 _model_block(manifest, llm.pdf_model_primary, llm.pdf_model_fallbacks)
                 if llm.pdf_model_primary is not None
@@ -386,11 +386,6 @@ def build_model_defaults(
         compaction_model=(
             _openclaw_model_ref(manifest, llm.compaction_model)
             if llm.compaction_model is not None
-            else text_primary_ref
-        ),
-        memory_flush_model=(
-            _openclaw_model_ref(manifest, llm.memory_flush_model)
-            if llm.memory_flush_model is not None
             else text_primary_ref
         ),
         image_generation_model=(
@@ -485,8 +480,6 @@ class BundleBuilder:
             model_defaults=build_model_defaults(manifest, subscription),
             thinking_default=manifest.agents.thinking_default,
             reasoning_default=manifest.agents.reasoning_default,
-            heartbeat_every=manifest.agents.heartbeat_every,
-            heartbeat_target=manifest.agents.heartbeat_target,
             cron_enabled=manifest.cron_enabled,
             web_fetch_enabled=manifest.web_fetch_enabled,
             memory_enabled=manifest.memory_enabled,

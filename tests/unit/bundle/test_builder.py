@@ -136,8 +136,10 @@ def test_defaults_models_derived_from_manifest_llm() -> None:
         "primary": "anthropic/claude-sonnet-4-6",
         "fallbacks": ["google/gemini-3.1-pro-preview"],
     }
-    assert defaults["compaction"]["model"] == "litellm/u:5fdc144e/simple"
-    assert defaults["compaction"]["memoryFlush"]["model"] == "litellm/u:5fdc144e/simple"
+    assert defaults["compaction"] == {
+        "model": "litellm/u:5fdc144e/simple",
+        "memoryFlush": {"enabled": True, "softThresholdTokens": 10000},
+    }
 
 
 def test_defaults_omit_media_models_when_manifest_omits_them() -> None:
@@ -161,7 +163,9 @@ def test_compaction_falls_back_to_text_primary_when_manifest_omits() -> None:
 
     compaction = _config_from_llm(_drop)["agents"]["defaults"]["compaction"]
     assert compaction["model"] == "litellm/u:5fdc144e/complex"
-    assert compaction["memoryFlush"]["model"] == "litellm/u:5fdc144e/complex"
+    # No flush model, with or without one in the manifest: OpenClaw 2026.11.5 runs the flush on
+    # the session's own model and rejects the key.
+    assert compaction["memoryFlush"] == {"enabled": True, "softThresholdTokens": 10000}
 
 
 def test_providers_built_from_manifest_groups() -> None:
@@ -220,14 +224,15 @@ def test_providers_built_from_manifest_groups() -> None:
 
 
 def test_per_agent_model_from_manifest_text_refs_and_heartbeat_disabled() -> None:
-    """Per-agent ``model`` is the manifest text ref for the agent's role; heartbeat is
-    disabled for every agent (no ``heartbeat`` block emitted)."""
+    """Per-agent ``model`` is the manifest text ref for the agent's role; no ``heartbeat`` block
+    is emitted anywhere (OpenClaw 2026.11.5 retired it), even though the manifest still sends one."""
     cfg = _config_from_llm()
     assert _agent_payload(cfg, "supervisor")["model"] == "litellm/u:5fdc144e/complex"
     assert _agent_payload(cfg, "scout")["model"] == "litellm/u:5fdc144e/complex"
     assert _agent_payload(cfg, "marketing")["model"] == "litellm/u:5fdc144e/complex"
     assert _agent_payload(cfg, "supplier")["model"] == "litellm/u:5fdc144e/simple"
 
+    assert "heartbeat" not in cfg["agents"]["defaults"]
     for agent in cfg["agents"]["entries"].values():
         assert "heartbeat" not in agent
 

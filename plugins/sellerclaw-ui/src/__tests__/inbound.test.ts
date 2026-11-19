@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { getPluginRuntimeGatewayRequestScope } from "openclaw/plugin-sdk/plugin-runtime";
 
 const { dispatchMock, readBodyMock, postWebhookMock, saveMediaBufferMock } = vi.hoisted(() => ({
   dispatchMock: vi.fn().mockResolvedValue(undefined),
@@ -239,6 +240,41 @@ describe("registerInboundRoute", () => {
         inboundAccessAuthorized: true,
       });
     } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps the request's authority current for the whole turn, then lets it go", async () => {
+    // OpenClaw ends a plugin route's caller authority with the 202, and since 2026.11.5 an ordinary
+    // credits turn's tools check it too: without the hold, `pdf` and a `sessions_send` to a running
+    // specialist were refused mid-turn (local live check, 2026-11-17).
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const scope = { hasCurrentClientAuthority: () => false };
+    vi.mocked(getPluginRuntimeGatewayRequestScope).mockReturnValue(scope as never);
+    try {
+      readBodyMock.mockResolvedValue({
+        ok: true,
+        value: { chat_id: "c1", agent_id: "supervisor", user_id: "u1", text: "read this PDF" },
+      });
+      let authorityDuringTurn: boolean | undefined;
+      dispatchMock.mockImplementation(async (arg: DeliverArg) => {
+        authorityDuringTurn = scope.hasCurrentClientAuthority();
+        await answerOwner(arg);
+      });
+
+      const { api, registerHttpRoute } = buildApi();
+      registerInboundRoute(api as import("openclaw/plugin-sdk/core").OpenClawPluginApi);
+      const res = { statusCode: 0, end: vi.fn() } as unknown as ServerResponse;
+      await getHandler(registerHttpRoute)({ headers: {} } as IncomingMessage, res);
+
+      expect(res.statusCode).toBe(202);
+      expect(authorityDuringTurn).toBe(true);
+      expect(scope.hasCurrentClientAuthority()).toBe(false);
+    } finally {
+      vi.mocked(getPluginRuntimeGatewayRequestScope).mockReturnValue(undefined);
       globalThis.fetch = originalFetch;
     }
   });

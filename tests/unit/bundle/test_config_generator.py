@@ -83,7 +83,6 @@ def _sample_model_defaults() -> ModelDefaults:
     return ModelDefaults(
         model={"primary": "litellm/u:abc/complex"},
         compaction_model="litellm/u:abc/simple",
-        memory_flush_model="litellm/u:abc/simple",
         image_generation_model={"primary": "litellm/u:abc/image"},
         video_generation_model={"primary": "google/veo-3.1-fast-generate-preview"},
         pdf_model={
@@ -397,7 +396,6 @@ def test_generate_openclaw_config_model_defaults_drive_and_omit_media(
         model_defaults=ModelDefaults(
             model={"primary": "litellm/p/complex"},
             compaction_model="litellm/p/simple",
-            memory_flush_model="litellm/p/mini",
             image_generation_model=None,
             video_generation_model=None,
             pdf_model=None,
@@ -406,7 +404,6 @@ def test_generate_openclaw_config_model_defaults_drive_and_omit_media(
     defaults = json.loads(raw)["agents"]["defaults"]
     assert defaults["model"] == {"primary": "litellm/p/complex"}
     assert defaults["compaction"]["model"] == "litellm/p/simple"
-    assert defaults["compaction"]["memoryFlush"]["model"] == "litellm/p/mini"
     # None blocks are dropped entirely.
     assert "imageGenerationModel" not in defaults
     assert "videoGenerationModel" not in defaults
@@ -793,79 +790,23 @@ def test_generate_openclaw_config_agent_model_comes_from_model_ref(
     assert payload["agents"]["entries"]["worker"]["model"] == expected
 
 
-def test_generate_openclaw_config_heartbeat_disabled_for_all_agents(
+def test_generate_openclaw_config_omits_keys_openclaw_retired(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """Heartbeat is disabled via an explicit ``agents.defaults.heartbeat.every = "0m"`` —
-    OpenClaw's default is an enabled 30m/1h poll, so omitting the block would leave it running.
-    ``target`` is emitted for the same reason: unset, the runtime delivers heartbeat output into
-    the owner's own chat. It also pins the cheap ``simple`` tier (memory-flush group) as a cost
-    guard in case heartbeat is ever re-enabled. No per-agent heartbeat block is emitted.
-    compaction / memory-flush still come from ``model_defaults``."""
-    raw = _generate(
-        _supervisor_only(make_assembled_agent),
-        model_defaults=ModelDefaults(
-            model={"primary": "litellm/u:abc/complex"},
-            compaction_model="litellm/u:abc/simple",
-            memory_flush_model="litellm/u:abc/simple",
-        ),
-    )
-    payload = json.loads(raw)
+    """OpenClaw 2026.11.5 rejects ``agents.defaults.heartbeat`` and
+    ``compaction.memoryFlush.model`` ("Unrecognized key"), and the gateway does not start on such a
+    config — so neither is emitted, for the fleet or for any agent. The memory flush itself stays
+    on; it runs on the session's own model now."""
+    payload = json.loads(_generate(_supervisor_only(make_assembled_agent)))
     defaults = payload["agents"]["defaults"]
-    assert defaults["heartbeat"] == {
-        "every": "0m",
-        "target": "none",
+
+    assert "heartbeat" not in defaults
+    assert defaults["compaction"] == {
         "model": "litellm/u:abc/simple",
+        "memoryFlush": {"enabled": True, "softThresholdTokens": 10000},
     }
-    assert defaults["compaction"]["model"] == "litellm/u:abc/simple"
-    assert defaults["compaction"]["memoryFlush"]["model"] == "litellm/u:abc/simple"
     for agent in payload["agents"]["entries"].values():
         assert "heartbeat" not in agent
-
-
-def test_generate_openclaw_config_heartbeat_cadence_is_cloud_owned(
-    make_assembled_agent: Callable[..., AssembledAgentConfig],
-) -> None:
-    """The cadence comes from the manifest (``heartbeat_every``); the model stays pinned to the
-    cheap simple tier no matter the cadence, so an enabled heartbeat never burns the primary."""
-    raw = _generate(
-        _supervisor_only(make_assembled_agent),
-        heartbeat_every="30m",
-        model_defaults=ModelDefaults(
-            model={"primary": "litellm/u:abc/complex"},
-            compaction_model="litellm/u:abc/simple",
-            memory_flush_model="litellm/u:abc/simple",
-        ),
-    )
-    defaults = json.loads(raw)["agents"]["defaults"]
-    assert defaults["heartbeat"] == {
-        "every": "30m",
-        "target": "none",
-        "model": "litellm/u:abc/simple",
-    }
-
-
-def test_generate_openclaw_config_heartbeat_target_is_cloud_owned(
-    make_assembled_agent: Callable[..., AssembledAgentConfig],
-) -> None:
-    """The delivery target comes from the manifest too, so the cloud can route heartbeat output
-    back into a chat deliberately — and the default stays ``none`` when it does not."""
-    raw = _generate(
-        _supervisor_only(make_assembled_agent),
-        heartbeat_every="30m",
-        heartbeat_target="last",
-        model_defaults=ModelDefaults(
-            model={"primary": "litellm/u:abc/complex"},
-            compaction_model="litellm/u:abc/simple",
-            memory_flush_model="litellm/u:abc/simple",
-        ),
-    )
-    defaults = json.loads(raw)["agents"]["defaults"]
-    assert defaults["heartbeat"] == {
-        "every": "30m",
-        "target": "last",
-        "model": "litellm/u:abc/simple",
-    }
 
 
 @pytest.mark.parametrize(

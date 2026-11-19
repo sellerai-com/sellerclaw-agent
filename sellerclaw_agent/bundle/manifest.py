@@ -177,14 +177,11 @@ class AgentsManifest:
     video_generation_default: bool
     main_agent: AgentSpec
     subagents: tuple[AgentSpec, ...]
-    # OpenClaw heartbeat cadence (``agents.defaults.heartbeat.every``). Cloud-owned policy.
-    # ``"0m"`` disables the periodic poll; absent in older manifests -> stay disabled.
+    # The cloud's heartbeat policy, still sent and round-tripped, but no longer rendered: OpenClaw
+    # 2026.11.5 retired the heartbeat and rejects ``agents.defaults.heartbeat`` (see
+    # ``config_generator``). Until then it was the cadence (``"0m"`` = off) and the delivery target
+    # (``"none"`` = internal; OpenClaw's own default was the owner's thread).
     heartbeat_every: str = "0m"
-    # Where OpenClaw delivers what a heartbeat run produces
-    # (``agents.defaults.heartbeat.target``). Cloud-owned policy, like the cadence above.
-    # ``"none"`` keeps it internal; absent in older manifests -> stay internal, because the
-    # runtime's own default is the owner's thread — and it carries runtime housekeeping
-    # ("First heartbeat alert: ...") into the chat the owner is reading.
     heartbeat_target: str = "none"
 
 

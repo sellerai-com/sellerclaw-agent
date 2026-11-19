@@ -17,13 +17,14 @@ class ModelDefaults:
     agnostic of how refs are derived. ``image_generation_model`` /
     ``video_generation_model`` / ``pdf_model`` are ``None`` when the manifest omits
     the corresponding ``llm.*_model`` block (the key is then dropped from the config).
-    ``compaction_model`` / ``memory_flush_model`` are always set (the caller falls
-    back to ``text_model.primary`` when the manifest omits them).
+    ``compaction_model`` is always set (the caller falls back to ``text_model.primary``
+    when the manifest omits it). There is no memory-flush model: since OpenClaw 2026.11.5
+    the pre-compaction memory flush runs on the session's own model and the config key
+    (``compaction.memoryFlush.model``) is rejected.
     """
 
     model: dict[str, object]
     compaction_model: str
-    memory_flush_model: str
     image_generation_model: dict[str, object] | None = None
     video_generation_model: dict[str, object] | None = None
     pdf_model: dict[str, object] | None = field(default=None)
@@ -222,8 +223,6 @@ def generate_openclaw_config(
     model_defaults: ModelDefaults,
     thinking_default: str = "adaptive",
     reasoning_default: str = "off",
-    heartbeat_every: str = "0m",
-    heartbeat_target: str = "none",
     cron_enabled: bool = True,
     web_fetch_enabled: bool = True,
     memory_enabled: bool = False,
@@ -240,12 +239,8 @@ def generate_openclaw_config(
     assembled by the bundle builder). ``model_defaults`` carries the manifest-derived
     ``agents.defaults`` model blocks. ``thinking_default`` / ``reasoning_default`` are
     likewise resolved from the manifest by the caller and emitted under
-    ``agents.defaults`` (``thinkingDefault`` / ``reasoningDefault``). The agent heartbeat
-    cadence and delivery target are cloud-owned (``heartbeat_every`` / ``heartbeat_target``, from
-    the manifest); ``"0m"`` disables the poll and ``"none"`` keeps whatever a heartbeat run does
-    produce out of the owner's chat. The block is always emitted because OpenClaw's built-in
-    defaults are an *enabled* 30m/1h poll delivering into the owner's own thread, so omitting it
-    would leave both running; the model is pinned to the cheap ``simple`` tier.
+    ``agents.defaults`` (``thinkingDefault`` / ``reasoningDefault``). No heartbeat block is
+    emitted: OpenClaw 2026.11.5 retired the heartbeat and rejects ``agents.defaults.heartbeat``.
     """
     agent_ids = [agent.agent_id for agent in assembled_agents]
     entry_point = next(agent.agent_id for agent in assembled_agents if agent.is_entry_point)
@@ -568,10 +563,12 @@ def generate_openclaw_config(
             # and caps it against the active model's context window, so the old fixed 20000
             # floor is gone from the schema (it starved small-context models).
             "model": model_defaults.compaction_model,
+            # No `model`: OpenClaw 2026.11.5 runs the flush on the session's own model and
+            # its fallbacks, and rejects the key ("Unrecognized key"), so the gateway would
+            # not start on a config that still carries it.
             "memoryFlush": {
                 "enabled": True,
                 "softThresholdTokens": 10000,
-                "model": model_defaults.memory_flush_model,
             },
         },
     }
@@ -588,29 +585,13 @@ def generate_openclaw_config(
         # Titles, recaps and other small helper calls: on the plan too, never OpenClaw's own pick.
         agents_defaults["utilityModel"] = subscription.utility_model
 
-    # Agent heartbeat. Cadence is cloud-owned (``heartbeat_every`` from the manifest); the cloud
-    # also owns HEARTBEAT.md, so the on/off policy lives there. ``"0m"`` disables the periodic
-    # poll — emitting the block is required because OpenClaw's built-in default is an enabled
-    # 30m/1h poll, so omitting it would leave that running. Scheduled/proactive work runs via the
-    # separate ``cron`` system, so this never affects scheduled tasks.
-    #
-    # ``target`` decides where a heartbeat run's output goes, and it must be emitted for the same
-    # reason as the cadence: left unset, OpenClaw routes it to the owner's own thread. A heartbeat
-    # run is not only the periodic poll — the runner also wakes on system events (a finished
-    # background exec, cron) — so a disabled cadence alone does not keep it quiet. With the target
-    # unset, one such run put the runtime's own housekeeping notice ("First heartbeat alert: your
-    # bot runs periodic background checks…") plus a silent-token reply into a chat the owner was
-    # reading (staging chat 1d925fb0, 2026-09-07). ``"none"`` makes the runner skip delivery
-    # entirely; the run still happens and still updates the agent's own state.
-    #
-    # ``model`` is a belt-and-suspenders cost guard owned here: whatever cadence the cloud sets,
-    # an enabled heartbeat must use the cheap ``simple`` tier, never the primary ``complex`` model
-    # with high thinking. We reuse the simple-tier group already resolved for memory-flush.
-    agents_defaults["heartbeat"] = {
-        "every": heartbeat_every,
-        "target": heartbeat_target,
-        "model": model_defaults.memory_flush_model,
-    }
+    # No `heartbeat` block. Until 2026.11.4 one was required — `every: "0m"` and `target: "none"` —
+    # because OpenClaw's built-in heartbeat was an enabled 30m/1h poll delivering into the owner's
+    # own thread (staging chat 1d925fb0, 2026-09-07: its housekeeping notice reached a live chat).
+    # 2026.11.5 retired the heartbeat: `agents.defaults.heartbeat` is rejected, and a periodic check
+    # is an ordinary automation job that only `openclaw setup` / `onboard` / `agents add` provision
+    # (docs/gateway/heartbeat.md) — never the gateway on start or reload, and we run none of those.
+    # Background-command and task follow-ups now run as normal session execution.
 
     # A multi-agent fleet has no default agent in 2026.8: every ambient surface (channels,
     # heartbeat, cron, bare CLI) must resolve an explicit owner or fail closed. OpenClaw

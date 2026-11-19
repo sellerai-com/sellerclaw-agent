@@ -72,8 +72,9 @@ export function isCompletionRun(runId: unknown, messages: unknown): boolean {
  * does not belong beside the answer: it is commentary on runtime plumbing (retried events, reply
  * sentinels), and shown in the Thought panel it displaces the reasoning that produced the answer.
  *
- * The reading of "said nothing" is the engine's own — see ``silent-token.ts``. A run that wrote a
- * real answer is never silent here, however its last word happens to read.
+ * The reading of "said nothing" is the one in ``silent-token.ts`` (the engine's, as it read it until
+ * 2026.11.5). A run that wrote a real answer is never silent here, however its last word happens to
+ * read.
  */
 export function isSilentRun(messages: unknown): boolean {
   return isSilentAnswer(lastAssistantText(messages));

@@ -63,12 +63,13 @@ export function ensureRouteScopeGatewayResolver(): boolean {
  *
  * OpenClaw counts a plugin route's caller authority as current only until the HTTP response ends
  * (`http-request-authority`: `!res.writableEnded && !res.destroyed`). The inbound route answers 202
- * at once and runs the turn afterwards, inside the handler. The embedded runner does not mind — its
- * tools carry the run's own operator authority. A Claude CLI turn (the owner's own Claude plan)
- * runs OpenClaw's tools through the MCP loopback instead, inside the request scope captured at turn
- * start, and some of them check that scope: with the 202 already sent, `pdf` failed with "Gateway
- * caller authority is no longer active." and `sessions_list` with "Gateway requester authority
- * changed". Measured on 2026.11.2.
+ * at once and runs the turn afterwards, inside the handler. Some of the turn's tools check that
+ * scope: with the 202 already sent, `pdf` fails with "Gateway caller authority is no longer
+ * active." and `sessions_list` / `sessions_send` with "Gateway requester authority changed".
+ * Until 2026.11.4 only a Claude CLI turn (the owner's own Claude plan, tools through the MCP
+ * loopback) hit this — measured on 2026.11.2; the embedded runner's tools carried the run's own
+ * authority. From 2026.11.5 an ordinary credits turn hits it too (local live check 2026-11-17:
+ * `pdf` and a `sessions_send` steer to a running specialist both refused), so every turn holds it.
  *
  * Call before the 202 and the dispatch; call the returned release when the turn has finished. From
  * then on the scope answers "not current", as it would have without this. Without a scope (a plain

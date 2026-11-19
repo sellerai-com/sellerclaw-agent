@@ -12,6 +12,8 @@ describe("silent-token", () => {
     ["json string", '"NO_REPLY"'],
     ["json envelope", '{"action":"NO_REPLY"}'],
     ["after a reasoning block", "<thinking>duplicate event</thinking>\nNO_REPLY"],
+    ["after a namespaced reasoning block", "<mm:think>duplicate event</mm:think>NO_REPLY"],
+    ["after a plain reasoning heading", "Thinking:\nNO_REPLY"],
     ["empty", "   "],
   ])("says nothing for %s", (_label, text) => {
     expect(isSilentAnswer(text)).toBe(true);
@@ -44,6 +46,14 @@ describe("silent-token", () => {
     // The owner asked what the word means, and the agent explained it. Stripping a token that is
     // the subject of the sentence would mangle the answer.
     const text = "NO_REPLY — это служебный ответ агента, владелец его видеть не должен.";
+
+    expect(isSilentAnswer(text)).toBe(false);
+    expect(visibleAnswerText(text)).toBe(text);
+  });
+
+  it("leaves JSON that carries more than the token alone", () => {
+    // Only a bare ``{"action": "NO_REPLY"}`` is the ask; an object with anything else in it is data.
+    const text = '{"action":"NO_REPLY","reason":"duplicate"}';
 
     expect(isSilentAnswer(text)).toBe(false);
     expect(visibleAnswerText(text)).toBe(text);

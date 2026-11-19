@@ -101,8 +101,8 @@ def test_claude_moves_every_text_role_onto_the_claude_code_cli(tmp_path: Path) -
     assert defaults["model"] == {"primary": "anthropic/claude-opus-5-5", "fallbacks": ["anthropic/claude-sonnet-5-5"]}
     assert defaults["utilityModel"] == "anthropic/claude-haiku-5-5"
     assert defaults["compaction"]["model"] == "anthropic/claude-haiku-5-5"
-    assert defaults["compaction"]["memoryFlush"]["model"] == "anthropic/claude-haiku-5-5"
-    assert defaults["heartbeat"]["model"] == "anthropic/claude-haiku-5-5"
+    # The memory flush has no model of its own any more (OpenClaw 2026.11.5): it follows the session.
+    assert "model" not in defaults["compaction"]["memoryFlush"]
     # The runtime is pinned per model — never provider-wide — and covers every candidate.
     assert defaults["models"] == {
         ref: {"agentRuntime": {"id": "claude-cli"}}

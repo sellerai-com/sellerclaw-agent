@@ -348,11 +348,32 @@ function currentWriter(): CronWriter | null {
   }
 }
 
+/**
+ * A switched-off heartbeat monitor that OpenClaw 2026.11.5 turned into an ordinary job.
+ *
+ * Until 2026.11.4 the gateway kept one `heartbeat-<agent>` job per agent (payload `heartbeat`, key
+ * `heartbeat:<agent>`), always disabled here — the config sets the cadence to `0m`. 2026.11.5
+ * retired the heartbeat and its doctor rewrote each of those as a plain `agentTurn` job with no
+ * declaration key (docs/gateway/heartbeat.md), which is exactly how a task made in a chat looks: the
+ * cloud listed all of them as the owner's paused tasks ("heartbeat-supervisor, every 30m"; local
+ * live check, 2026-11-17). Nobody asked for them and an enabled one would run a check every 30
+ * minutes, so they are neither mirrored nor kept (see {@link retireHeartbeatJobs}). A job someone
+ * switched on is left alone: it does work now, and the owner should see it.
+ */
+export function isRetiredHeartbeatJob(job: unknown): job is JsonRecord & { id: string } {
+  if (!isRecord(job) || !asString(job.id)) return false;
+  const key = job.declarationKey;
+  if (key !== undefined && key !== null && key !== "") return false;
+  const agentId = asString(job.agentId);
+  return agentId !== "" && job.name === `heartbeat-${agentId}` && job.enabled === false;
+}
+
 /** A job of a foreign namespace (`heartbeat:*`, `memory-core:*`, …) or a system payload. */
 export function isMirroredJob(job: unknown): job is JsonRecord & { id: string } {
   if (!isRecord(job) || !asString(job.id)) return false;
   const payload = isRecord(job.payload) ? job.payload : {};
   if (payload.kind === "heartbeat") return false;
+  if (isRetiredHeartbeatJob(job)) return false;
   const key = job.declarationKey;
   if (key === undefined || key === null || key === "") return true;
   return typeof key === "string" && key.startsWith(SELLERCLAW_DECLARATION_PREFIX);
@@ -648,7 +669,10 @@ async function projectOnce(reader: CronReader, signal: AbortSignal): Promise<voi
 
   const jobs = await reader.list({ includeDisabled: true });
   if (signal.aborted) return;
-  const mirrored = rememberJobIds(Array.isArray(jobs) ? jobs : []);
+  const listed = Array.isArray(jobs) ? jobs : [];
+  const mirrored = rememberJobIds(listed);
+  await retireHeartbeatJobs(listed);
+  if (signal.aborted) return;
   if (mirrored.length > MAX_SNAPSHOT_JOBS) {
     warnOnce("too-many-jobs", `sellerclaw-ui[cron]: ${mirrored.length} jobs; reporting the first ${MAX_SNAPSHOT_JOBS}`);
   }
@@ -1084,6 +1108,31 @@ async function removeJob(writer: CronWriter, id: string): Promise<boolean> {
     if (await commandTarget(writer, id)) throw err;
     warn(`sellerclaw-ui[cron]: job ${id} removed with a cleanup error: ${errorText(err)}`);
     return true;
+  }
+}
+
+/**
+ * Drop the switched-off heartbeat jobs OpenClaw 2026.11.5 left behind ({@link isRetiredHeartbeatJob}).
+ *
+ * Each is reported as removed first — in the snapshot this projection is about to send — so the
+ * cloud deletes the copy an earlier snapshot already gave it; then it is removed from the machine.
+ * Deleting it is a lasting choice in OpenClaw (a provisioning receipt stays), so it does not come
+ * back. Without a service handle yet it is only kept out of the cloud; the next projection removes it.
+ */
+async function retireHeartbeatJobs(jobs: unknown[]): Promise<void> {
+  const retired = jobs.filter(isRetiredHeartbeatJob);
+  if (!retired.length) return;
+  const writer = currentWriter();
+  for (const job of retired) {
+    await noteRemovedJobId(job.id);
+    if (!writer) continue;
+    try {
+      if (await removeJob(writer, job.id)) {
+        info(`sellerclaw-ui[cron]: removed ${String(job.name)}, a switched-off heartbeat OpenClaw left as a job`);
+      }
+    } catch (err) {
+      warn(`sellerclaw-ui[cron]: could not remove ${String(job.name)}: ${errorText(err)}`);
+    }
   }
 }
 
