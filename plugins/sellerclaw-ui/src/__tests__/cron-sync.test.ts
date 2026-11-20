@@ -56,7 +56,10 @@ function makeJob(overrides: Partial<Job> & { id: string }): Job {
 /** A scheduler/service handle over an in-memory job list. */
 class FakeScheduler {
   jobs: Job[] = [];
-  adds: Array<{ input: Record<string, unknown>; at: number }> = [];
+  /** `via`: the service handle, or the gateway's `cron.add` RPC the agent server calls for the plugin. */
+  adds: Array<{ input: Record<string, unknown>; at: number; via: "handle" | "gateway" }> = [];
+  /** The gateway's refusal of every `cron.add` (as the agent server reports it), or null. */
+  gatewayAddError: string | null = null;
   updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
   removes: string[] = [];
   failUpdateFor = new Set<string>();
@@ -84,10 +87,14 @@ class FakeScheduler {
   }
 
   async add(input: Record<string, unknown>): Promise<unknown> {
-    this.adds.push({ input, at: Date.now() });
+    return { created: true, job: this.store(input, "handle") };
+  }
+
+  store(input: Record<string, unknown>, via: "handle" | "gateway"): Job {
+    this.adds.push({ input, at: Date.now(), via });
     const job = makeJob({ ...(input as Partial<Job>), id: `new-${this.adds.length}` });
     this.jobs.push(job);
-    return { created: true, job };
+    return job;
   }
 
   async update(id: string, patch: Record<string, unknown>): Promise<unknown> {
@@ -158,12 +165,20 @@ beforeEach(async () => {
   scheduler = new FakeScheduler(join(dir, "state", "openclaw.sqlite"));
   handlers = new Map();
   cloudResponses = [];
-  fetchMock = vi.fn(async (url: string) => {
+  fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (String(url).endsWith("/agent/cron/state")) {
       const next = cloudResponses.shift() ?? { status: 200, body: { accepted: true, restore: [] } };
       return new Response(next.body === undefined ? null : JSON.stringify(next.body), { status: next.status });
     }
     if (String(url).endsWith("/agent/cron/runs")) return new Response(null, { status: 204 });
+    if (String(url) === "http://127.0.0.1:8001/internal/openclaw/cron/add") {
+      // The agent server's answer for the gateway's `cron.add` RPC.
+      if (scheduler.gatewayAddError) {
+        return Response.json({ ok: false, job: null, error: scheduler.gatewayAddError });
+      }
+      const { job } = JSON.parse(String(init?.body)) as { job: Record<string, unknown> };
+      return Response.json({ ok: true, job: scheduler.store(job, "gateway"), error: null });
+    }
     return new Response(null, { status: 202 });
   });
   globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -374,7 +389,7 @@ describe("snapshot projection", () => {
 });
 
 describe("restore", () => {
-  it("adds every restore item through the service handle, paced", async () => {
+  it("adds every restore item over the gateway's cron.add (via the agent server), paced", async () => {
     const restore = [
       { name: "a", declarationKey: "sellerclaw:job:a", schedule: { kind: "cron", expr: "0 9 * * *" }, enabled: true },
       { name: "b", declarationKey: "sellerclaw:job:b", schedule: { kind: "every", everyMs: 3_600_000 }, enabled: false },
@@ -383,9 +398,25 @@ describe("restore", () => {
     await reconcile();
 
     expect(scheduler.adds.map((a) => a.input)).toEqual(restore);
+    // Never the service handle: it would leave the job without its inference account.
+    expect(scheduler.adds.map((a) => a.via)).toEqual(["gateway", "gateway"]);
     const gap = (scheduler.adds[1]?.at ?? 0) - (scheduler.adds[0]?.at ?? 0);
     expect(gap).toBeGreaterThanOrEqual(RESTORE_ADD_SPACING_MS - 5);
+    const post = fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/internal/openclaw/cron/add"));
+    expect((post?.[1] as RequestInit).headers).toMatchObject({ Authorization: "Bearer hooks-secret" });
   }, 10_000);
+
+  it("leaves a restore item the gateway refuses for the next snapshot", async () => {
+    scheduler.gatewayAddError = "cron.add failed: INVALID_REQUEST: Automation requires a stored inference account";
+    cloudResponses.push({
+      status: 200,
+      body: { accepted: true, restore: [{ name: "a", declarationKey: "sellerclaw:job:a", schedule: { kind: "cron", expr: "0 9 * * *" } }] },
+    });
+    await reconcile();
+
+    expect(scheduler.jobs.map((j) => j.declarationKey)).not.toContain("sellerclaw:job:a");
+    expect(calls("/internal/openclaw/cron/add")).toHaveLength(1);
+  });
 
   it("skips a one-shot whose moment has passed", async () => {
     cloudResponses.push({
@@ -605,12 +636,34 @@ describe("executeCronCommand", () => {
     await reconcile();
   });
 
-  it("adds a job and answers with it as the scheduler stored it", async () => {
+  it("adds a job over the gateway's cron.add and answers with it as the gateway stored it", async () => {
     const job = { name: "New", declarationKey: "sellerclaw:job:new", schedule: { kind: "cron", expr: "0 8 * * *" } };
     const result = await executeCronCommand({ request_id: "r", action: "add", job });
-    expect(scheduler.adds.map((a) => a.input)).toEqual([job]);
+    expect(scheduler.adds.map((a) => [a.input, a.via])).toEqual([[job, "gateway"]]);
+    expect(calls("/internal/openclaw/cron/add")).toEqual([{ job }]);
     expect(result).toMatchObject({ ok: true, error: null, run_id: null, store_epoch: stateFile().storeEpoch });
     expect(result.job).toMatchObject({ id: "new-1", name: "New", declarationKey: "sellerclaw:job:new" });
+  });
+
+  it("answers the gateway's own reason when it refuses the add", async () => {
+    scheduler.gatewayAddError =
+      "cron.add failed: INVALID_REQUEST: Automation requires a stored inference account or a key in the environment or provider config.";
+    const job = { name: "New", declarationKey: "sellerclaw:job:new", schedule: { kind: "cron", expr: "0 8 * * *" } };
+    const result = await executeCronCommand({ request_id: "r", action: "add", job });
+    expect(result).toMatchObject({ ok: false, error: scheduler.gatewayAddError, job: null });
+    expect(scheduler.adds).toEqual([]);
+  });
+
+  it("answers a failure when the agent server cannot be reached", async () => {
+    const base = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/internal/openclaw/cron/add")) throw new TypeError("fetch failed");
+      return base?.(url, init);
+    });
+    const job = { name: "New", declarationKey: "sellerclaw:job:new", schedule: { kind: "cron", expr: "0 8 * * *" } };
+    const result = await executeCronCommand({ request_id: "r", action: "add", job });
+    expect(result).toMatchObject({ ok: false, error: "The assistant could not create the task: fetch failed" });
+    expect(scheduler.adds).toEqual([]);
   });
 
   it("updates a job and reads it back", async () => {

@@ -83,3 +83,45 @@ def test_backfill_needs_the_hooks_token(client: TestClient, backfill: _FakeBackf
     response = client.post("/internal/openclaw/cron/backfill-runs", headers=headers, json={})
     assert response.status_code == 401
     assert backfill.requests == []
+
+
+class _FakeAdd:
+    def __init__(self) -> None:
+        self.jobs: list[dict] = []
+
+    async def __call__(self, job: dict) -> dict:
+        self.jobs.append(job)
+        return {"ok": True, "job": {**job, "id": "new-1"}, "error": None}
+
+
+@pytest.fixture()
+def fake_add(backfill: _FakeBackfill, monkeypatch: pytest.MonkeyPatch) -> _FakeAdd:
+    fake = _FakeAdd()
+    monkeypatch.setattr(cron_routes.cron_add, "add_cron_job", fake)
+    return fake
+
+
+def test_add_creates_the_job_over_the_gateway_and_answers_with_it(client: TestClient, fake_add: _FakeAdd) -> None:
+    job = {"name": "Morning summary", "declarationKey": "sellerclaw:job:1"}
+    response = client.post(
+        "/internal/openclaw/cron/add", headers={"Authorization": "Bearer hooks-secret"}, json={"job": job}
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "job": {**job, "id": "new-1"}, "error": None}
+    assert fake_add.jobs == [job]
+
+
+@pytest.mark.parametrize(
+    ("headers", "body", "status"),
+    [
+        pytest.param({}, {"job": {"declarationKey": "sellerclaw:job:1"}}, 401, id="no-token"),
+        pytest.param({"Authorization": "Bearer wrong"}, {"job": {}}, 401, id="wrong-token"),
+        pytest.param({"Authorization": "Bearer hooks-secret"}, {}, 422, id="no-job"),
+    ],
+)
+def test_add_needs_the_hooks_token_and_a_job(
+    client: TestClient, fake_add: _FakeAdd, headers: dict[str, str], body: dict, status: int
+) -> None:
+    response = client.post("/internal/openclaw/cron/add", headers=headers, json=body)
+    assert response.status_code == status
+    assert fake_add.jobs == []

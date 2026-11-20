@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Body, Depends
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
+from sellerclaw_agent.cloud import cron_add
 from sellerclaw_agent.cloud.cron_runs_backfill import MAX_TARGETED_JOB_IDS, get_cron_runs_backfill
 from sellerclaw_agent.server.media_upload import require_hooks_token
 
@@ -25,3 +28,14 @@ async def backfill_runs(body: BackfillRunsRequest | None = Body(default=None)) -
     """Backfill recent run history into the cloud, in the background (see ``cron_runs_backfill``)."""
     get_cron_runs_backfill().request(body.job_ids if body is not None else None)
     return JSONResponse({"accepted": True}, status_code=202)
+
+
+class AddJobRequest(BaseModel):
+    #: ``cron.add`` parameters as the cloud built them (restore or the page's Create).
+    job: dict[str, Any]
+
+
+@router.post("/add")
+async def add_job(body: AddJobRequest) -> JSONResponse:
+    """Create a cloud job over the gateway's ``cron.add`` RPC (see ``cron_add``); ``{ok, job, error}``."""
+    return JSONResponse(await cron_add.add_cron_job(body.job))

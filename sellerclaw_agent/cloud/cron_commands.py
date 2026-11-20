@@ -3,9 +3,10 @@
 The cloud's scheduled-tasks page (pause / resume / edit / delete / run now, and Create in the
 wizard) sends one frame per action on the agent's event stream:
 ``{request_id, user_id, action: add|update|remove|run, job_id, job, patch}``. The
-``sellerclaw-ui`` plugin executes add / update / remove through the gateway's scheduler
-(``cron-sync.ts``: the plugin service's ``ctx.getCron()`` normalizes input exactly like the
-``cron.add`` RPC). "Run now" goes over the gateway's own ``cron.run`` RPC instead: a run started
+``sellerclaw-ui`` plugin executes update / remove through the gateway's scheduler
+(``cron-sync.ts``: the plugin service's ``ctx.getCron()`` normalizes input like the RPC does) and
+add by calling back here, over the ``cron.add`` RPC, which also records the job's inference account
+(``cron_add``). "Run now" goes over the gateway's own ``cron.run`` RPC instead: a run started
 through the plugin service's handle dies at once ("Async work scope is closed", OpenClaw
 2026.10.9), while the RPC — what ``openclaw cron run`` uses — runs it. This module posts the
 outcome to ``POST /agent/cron/commands/{request_id}``.

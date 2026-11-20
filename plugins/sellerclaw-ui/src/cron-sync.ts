@@ -26,17 +26,20 @@ import { takeSkippedRun } from "./subscription-gate.js";
  *   grows; the cloud drops stale ones and never deletes a job because a snapshot lacks it — only
  *   `removed_job_ids` (from `removed` events) or the owner's own delete remove one.
  * - The cloud answers with `restore`: `cron.add` parameters of jobs it knows and this store has
- *   never had. They are added back through the scheduler, paced, and `declarationKey` makes a
- *   repeated add harmless.
+ *   never had. They are added back over the `cron.add` RPC (see below), paced, and
+ *   `declarationKey` makes a repeated add harmless.
  * - A `finished` event is posted as a run (`POST /agent/cron/runs`); after each reconciliation the
  *   agent server backfills recent run history (the scheduler handle has no history read).
  *
- * Writes (restore, cloud commands add / update / remove, standby) go through the handle a plugin
- * SERVICE gets from `ctx.getCron()`: it normalizes input exactly like the gateway's `cron.add` RPC
- * does (`normalizeCronJobCreate` / `normalizeCronJobPatch`). "Run now" is not here — a run started
- * through that handle dies at once, so the agent server sends it over `cron.run`. The scheduler a
- * hook gets is the raw one — it would store an un-normalized job (no `deleteAfterRun` on one-shot
- * jobs, no default stagger) — so it is only ever read here.
+ * Updates, removals and standby go through the handle a plugin SERVICE gets from `ctx.getCron()`: it
+ * normalizes input exactly like the gateway's RPC does (`normalizeCronJobPatch`). New jobs (restore
+ * and the cloud's add command) do not: the handle also skips recording the job's inference account,
+ * which only the `cron.add` RPC does for its caller, and OpenClaw refuses every run of an unbound
+ * job on a machine holding a stored account. So they go to the agent server, which calls `cron.add`
+ * (`addThroughGateway`). "Run now" is not here either — a run started through the handle dies at
+ * once, so the agent server sends it over `cron.run`. The scheduler a hook gets is the raw one — it
+ * would store an un-normalized job (no `deleteAfterRun` on one-shot jobs, no default stagger) — so
+ * it is only ever read here.
  *
  * Standby: when another agent instance took over this owner's session, the agent server puts this
  * plugin on standby. Nothing leaves the machine any more (no snapshot, no run, no restore), and
@@ -335,6 +338,43 @@ function inServiceBackground<T>(work: () => Promise<T>): Promise<T> {
       reject(err);
     }
   });
+}
+
+/** `cron.add` over RPC waits on the gateway (30 s there); the agent server answers within that. */
+const GATEWAY_ADD_TIMEOUT_MS = 40_000;
+
+/**
+ * Add a cloud job over the gateway's `cron.add` RPC, which the agent server calls for us
+ * (`POST /internal/openclaw/cron/add`, `sellerclaw_agent/cloud/cron_add.py`). Not through the
+ * service handle: it skips recording the job's inference account, and on a machine holding a stored
+ * account (`litellm:default` from older doctor migrations) OpenClaw then refuses every run with
+ * "Automation has no recorded inference account". The RPC records it — or leaves the job on the
+ * environment key where no account is stored — as for a task created in chat.
+ * Returns the gateway's `{ok, job}`; throws with the gateway's reason otherwise.
+ */
+async function addThroughGateway(job: JsonRecord): Promise<JsonRecord> {
+  const account = currentAccount();
+  if (!account) throw new Error("The assistant is not signed in to SellerClaw yet.");
+  let res: Response;
+  try {
+    res = await fetch(`${account.localAgentBaseUrl.replace(/\/$/, "")}/internal/openclaw/cron/add`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${account.internalWebhookSecret}`,
+      },
+      body: JSON.stringify({ job }),
+      signal: AbortSignal.timeout(GATEWAY_ADD_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new Error(`The assistant could not create the task: ${errorText(err)}`);
+  }
+  const body: unknown = await res.json().catch(() => null);
+  if (!res.ok || !isRecord(body) || body.ok !== true) {
+    const reason = isRecord(body) ? asString(body.error) : "";
+    throw new Error(reason || `The assistant could not create the task (HTTP ${res.status}).`);
+  }
+  return body;
 }
 
 function currentWriter(): CronWriter | null {
@@ -777,7 +817,7 @@ async function drainRestoreQueue(): Promise<void> {
       if (wait > 0) await abortableSleep(wait, lifecycleSignal);
       if (isStandby()) continue;
       s.lastAddAt = Date.now();
-      await writer.add(item);
+      await addThroughGateway(item);
       warn(`sellerclaw-ui[cron]: restored job ${key}`);
     } catch (err) {
       if (lifecycleSignal.aborted) {
@@ -1148,8 +1188,8 @@ function addedJob(result: unknown): JsonRecord | null {
 }
 
 /**
- * Run one `cron_command` from the cloud (add / update / remove / run) through the service's
- * scheduler handle. Never throws: every failure becomes `{ok: false, error}` for the cloud.
+ * Run one `cron_command` from the cloud (add over the `cron.add` RPC, update / remove through the
+ * service's scheduler handle). Never throws: every failure becomes `{ok: false, error}` for the cloud.
  */
 export async function executeCronCommand(frame: JsonRecord): Promise<CronCommandResult> {
   let storeEpoch: string | null = null;
@@ -1182,7 +1222,7 @@ export async function executeCronCommand(frame: JsonRecord): Promise<CronCommand
       if (!asString(frame.job.declarationKey).startsWith(SELLERCLAW_DECLARATION_PREFIX)) {
         return result({ error: `add needs a declarationKey starting with ${SELLERCLAW_DECLARATION_PREFIX}` });
       }
-      const job = addedJob(await writer.add(frame.job));
+      const job = addedJob(await addThroughGateway(frame.job));
       void requestCronProjection();
       return result({ ok: true, job: job ? publicCronJob(job) : null });
     }
