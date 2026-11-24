@@ -40,6 +40,17 @@ VNC_PORT=6080
 
 MIN_RAM_MB=2048
 HEALTH_TIMEOUT_S=240
+
+# Docker Desktop on macOS: the official download per CPU and its command-line install
+# (https://docs.docker.com/desktop/setup/install/mac-install/). DOCKER_APP is where the app
+# lands — always /Applications; the override only lets the tests look somewhere else.
+DOCKER_APP="${SELLERCLAW_DOCKER_APP:-/Applications/Docker.app}"
+DOCKER_DMG_BASE_URL="https://desktop.docker.com/mac/main"
+DOCKER_DESKTOP_DOCS_URL="https://docs.docker.com/desktop/setup/install/mac-install/"
+DOCKER_TERMS_URL="https://www.docker.com/legal/docker-subscription-service-agreement"
+# The first start after an install sets up Docker's virtual machine and takes minutes, not seconds.
+DOCKER_START_TIMEOUT_S=300
+
 # Time the agent gets to say goodbye to the cloud before the container is removed. Without it the
 # cloud keeps the old session for about a minute and refuses the new container meanwhile.
 STOP_TIMEOUT_S=30
@@ -277,13 +288,90 @@ check_memory() {
     log_ok "RAM: ${mem_mb} MB"
 }
 
+add_docker_desktop_to_path() {
+    # Docker Desktop keeps its command-line tools inside the app, links them into ~/.docker/bin
+    # on its first start and puts that on PATH for terminals opened *afterwards*. Both places go
+    # on this run's PATH, so a fresh install — or one this terminal predates — works at once,
+    # docker-credential-desktop included (`docker pull` calls it).
+    have_cmd docker && return 0
+    for dir in "${HOME:-/root}/.docker/bin" "$DOCKER_APP/Contents/Resources/bin"; do
+        if [ -d "$dir" ]; then
+            case ":$PATH:" in
+                *":$dir:"*) ;;
+                *) PATH="$PATH:$dir" ;;
+            esac
+        fi
+    done
+    export PATH
+}
+
+install_docker_desktop() {
+    # Straight from Docker rather than through Homebrew: most Macs have no Homebrew, and the
+    # command-line install accepts the terms up front, so Docker Desktop's first start does not
+    # stop on its agreement window while this script waits for it.
+
+    # The chip, not the shell: a Terminal running under Rosetta reports x86_64 on Apple silicon,
+    # and the Intel build of Docker Desktop is not what that Mac needs. Intel Macs lack the key.
+    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = "1" ]; then
+        cpu="arm64"
+    else
+        cpu="$(uname -m)"
+    fi
+    case "$cpu" in
+        arm64|aarch64) dmg_arch="arm64"; chip="Apple silicon" ;;
+        *)             dmg_arch="amd64"; chip="Intel" ;;
+    esac
+    dmg_url="$DOCKER_DMG_BASE_URL/$dmg_arch/Docker.dmg"
+    manual_hint="install Docker Desktop yourself from $DOCKER_DESKTOP_DOCS_URL, then run this command again"
+
+    log_warn "Docker Desktop is not installed — SellerClaw Agent runs inside it."
+    printf "      Docker Desktop is free for personal use, education and small businesses (fewer than\n"
+    printf "      250 employees and less than \$10 million in annual revenue); larger companies and\n"
+    printf "      government bodies need a paid Docker subscription. Terms: %s\n" "$DOCKER_TERMS_URL"
+    # Saying yes here is what accepts the terms: the install below passes --accept-license.
+    confirm "Download and install Docker Desktop for $chip, accepting its terms?" \
+        || die "Docker Desktop is required. To set it up another way, $manual_hint."
+    have_cmd curl || die "curl is required to download Docker Desktop. Otherwise, $manual_hint."
+    have_cmd hdiutil || die "hdiutil (part of macOS) was not found. Please $manual_hint."
+
+    log_step "Installing Docker Desktop"
+    work_dir="$(mktemp -d)"
+    dmg="$work_dir/Docker.dmg"
+    mount_dir="$work_dir/mount"
+    mkdir "$mount_dir"
+
+    printf "    Downloading Docker Desktop for %s…\n" "$chip"
+    if ! curl -fL --retry 3 --progress-bar -o "$dmg" "$dmg_url"; then
+        rm -rf "$work_dir"
+        die "Could not download Docker Desktop — see the error above. Check your internet connection and free disk space, then run this command again."
+    fi
+    if ! hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mount_dir" -quiet "$dmg"; then
+        rm -rf "$work_dir"
+        die "Could not open the Docker Desktop download. Run this command again to download it anew."
+    fi
+
+    printf "    Copying it into Applications — macOS may ask for your password, and this can take a few minutes…\n"
+    installed=1
+    sudo_cmd "$mount_dir/Docker.app/Contents/MacOS/install" --accept-license || installed=0
+    # The volume stays mounted until the install has finished, as Docker asks.
+    hdiutil detach -quiet "$mount_dir" >/dev/null 2>&1 \
+        || hdiutil detach -quiet -force "$mount_dir" >/dev/null 2>&1 \
+        || true
+    rm -rf "$work_dir" 2>/dev/null || true
+    if [ "$installed" -eq 0 ]; then
+        die "Docker Desktop could not be installed — see the message above. It supports the current and the two previous macOS versions, so on an older Mac update macOS first; otherwise $manual_hint."
+    fi
+
+    add_docker_desktop_to_path
+    have_cmd docker \
+        || die "Docker Desktop is installed, but its docker command was not found. Open Docker Desktop once, then run this command again."
+    log_ok "Docker Desktop installed"
+}
+
 install_docker() {
     os_name="$(uname -s)"
     if [ "$os_name" = "Darwin" ]; then
-        have_cmd brew || die "Docker is not installed. Install Docker Desktop from https://docs.docker.com/desktop/setup/install/mac-install/ and run this command again."
-        confirm "Install Docker Desktop with Homebrew?" || die "Docker is required."
-        brew install --cask docker
-        have_cmd open && open -a Docker || true
+        install_docker_desktop
         return 0
     fi
     confirm "Docker is missing. Install it now (uses the official get.docker.com script)?" \
@@ -304,10 +392,11 @@ ensure_docker_running() {
     os_name="$(uname -s)"
     if [ "$os_name" = "Darwin" ]; then
         if have_cmd open; then
-            log_warn "Starting Docker Desktop…"
+            log_warn "Starting Docker Desktop — the first start after an install takes a few minutes."
+            log_warn "If its window asks you anything, answer it; the install carries on by itself."
             open -a Docker || true
             waited=0
-            while [ "$waited" -lt 120 ]; do
+            while [ "$waited" -lt "$DOCKER_START_TIMEOUT_S" ]; do
                 if docker info >/dev/null 2>&1; then
                     log_ok "docker daemon is running"
                     return 0
@@ -316,7 +405,7 @@ ensure_docker_running() {
                 waited=$((waited + 3))
             done
         fi
-        die "Docker daemon is not reachable. Start Docker Desktop, wait until it finishes starting, then run this command again."
+        die "Docker Desktop did not finish starting. Open it, wait until it shows that Docker is running, then run this command again."
     fi
     if have_cmd systemctl; then
         log_warn "Starting the docker service…"
@@ -478,7 +567,15 @@ install_wrapper() {
         printf 'LOCAL_INSTALLER=%s/install.sh\n' "$HOME_DIR"
         printf 'INSTALL_FLAGS="%s"\n' "$SAVED_FLAGS"
         printf 'VNC_URL=http://127.0.0.1:%s\n' "$VNC_PORT"
+        printf "DOCKER_APP='%s'\n" "$DOCKER_APP"
         cat <<'WRAPPER'
+
+# Docker Desktop on macOS puts its tools on PATH only for terminals opened after its first start;
+# the copy inside the app works everywhere, so a terminal that predates the install still works.
+if ! command -v docker >/dev/null 2>&1; then
+    PATH="$PATH:${HOME:-/root}/.docker/bin:$DOCKER_APP/Contents/Resources/bin"
+    export PATH
+fi
 
 host_tz() {
     # This computer's time zone, so the times the CLI prints (when a plan's limit resets) are on
@@ -774,6 +871,10 @@ final_message() {
 
 main() {
     parse_args "$@"
+
+    if [ "$(uname -s)" = "Darwin" ]; then
+        add_docker_desktop_to_path
+    fi
 
     if [ "$ACTION" = "uninstall" ]; then
         uninstall

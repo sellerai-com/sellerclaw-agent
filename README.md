@@ -35,7 +35,7 @@ In other words, SellerClaw Agent moves only the runtime to your hardware. The pr
 curl -fsSL https://get.sellerclaw.ai/agent.sh | sh
 ```
 
-That is the whole installation. The script checks the machine, installs Docker if it is missing, downloads the prebuilt runtime image, starts it, and prints a code to confirm in your browser — after which the agent is paired with your SellerClaw account. If your agent runs in SellerClaw's cloud right now, it asks whether to move it to this computer: the cloud machine keeps working until this one takes over, then switches off, and your chats, memory and tasks come along. There is nothing to clone and nothing to build; the CLI, OpenClaw, the browser and `sellerclaw-cli` all live inside the image.
+That is the whole installation. The script checks the machine, installs Docker if it is missing (on a Mac, Docker Desktop straight from Docker — no Homebrew needed; it asks first, as saying yes accepts [Docker's terms](https://www.docker.com/legal/docker-subscription-service-agreement)), downloads the prebuilt runtime image, starts it, and prints a code to confirm in your browser — after which the agent is paired with your SellerClaw account. If your agent runs in SellerClaw's cloud right now, it asks whether to move it to this computer: the cloud machine keeps working until this one takes over, then switches off, and your chats, memory and tasks come along. There is nothing to clone and nothing to build; the CLI, OpenClaw, the browser and `sellerclaw-cli` all live inside the image.
 
 You need Docker-capable hardware with more than 2 GB of RAM, on Linux or macOS (x86_64 or Apple Silicon).
 

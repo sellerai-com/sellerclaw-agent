@@ -85,7 +85,23 @@ class Sandbox:
             "SELLERCLAW_BIN_DIR": str(self.bin_target),
             "SELLERCLAW_HOME": str(self.home / ".sellerclaw-agent"),
             "DOCKER_LOG": str(self.docker_log),
+            "TOOL_LOG": str(self.tool_log),
+            "TMPDIR": str(self.tmp),
         }
+
+    @property
+    def tool_log(self) -> Path:
+        """Calls to the other host tools a test stubs (curl, hdiutil, sudo, open, the Docker installer)."""
+        return self.docker_log.with_name("tools.log")
+
+    @property
+    def tmp(self) -> Path:
+        return self.docker_log.with_name("tmp")
+
+    def tool_calls(self) -> list[str]:
+        if not self.tool_log.exists():
+            return []
+        return [line for line in self.tool_log.read_text().splitlines() if line]
 
     @property
     def wrapper(self) -> Path:
@@ -114,6 +130,7 @@ def sandbox(tmp_path: Path) -> Sandbox:
 
     home = tmp_path / "home"
     home.mkdir()
+    (tmp_path / "tmp").mkdir()
     bin_target = tmp_path / "target-bin"
     return Sandbox(
         work=work,
@@ -134,8 +151,12 @@ def _install_docker_stub(
     login_exit: int = 0,
     where_exit: int = 0,
     supports_where: bool = True,
+    into: Path | None = None,
 ) -> None:
     """Stub `docker` that records every call and answers the handful of queries used.
+
+    ``into``: where to put it instead of the sandbox PATH — the Mac tests keep it off PATH, as
+    Docker Desktop's own copy is until something adds the app to PATH.
 
     ``login_exit`` / ``where_exit``: what the in-container `login` / `where` answer — 0 the agent
     runs here, 3 it keeps running in SellerClaw's cloud, anything else a failure.
@@ -169,7 +190,76 @@ def _install_docker_stub(
             *) exit 0 ;;
         esac
     """).strip()
-    _write_stub(sandbox.bin, "docker", body)
+    _write_stub(into or sandbox.bin, "docker", body)
+
+
+DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement"
+
+
+def _make_mac(sandbox: Sandbox, *, arch: str = "arm64", apple_chip: bool | None = None) -> dict[str, str]:
+    """A Mac without Docker: stubs for the tools the Docker Desktop install uses.
+
+    The Docker installer inside the downloaded image "installs" Docker Desktop by putting the
+    docker stub into the app's bin directory — off PATH, as on a real Mac before the first start.
+    ``arch`` is what the shell reports (``uname -m``); ``apple_chip`` what the hardware is — they
+    differ in a Terminal running under Rosetta. By default the hardware matches ``arch``.
+    Returns the environment the installer needs on top of the sandbox's.
+    """
+    if apple_chip is None:
+        apple_chip = arch == "arm64"
+    # Intel Macs have no hw.optional.arm64 at all: sysctl fails for it.
+    arm64_key = "echo 1" if apple_chip else "exit 1"
+    _write_stub(sandbox.bin, "uname", f'case "${{1:-}}" in -m) echo {arch} ;; *) echo Darwin ;; esac')
+    _write_stub(
+        sandbox.bin,
+        "sysctl",
+        f'case "${{2:-}}" in hw.optional.arm64) {arm64_key} ;; *) echo "$((8 * 1024 * 1024 * 1024))" ;; esac',
+    )
+    _write_stub(sandbox.bin, "sudo", 'printf \'sudo %s\\n\' "$*" >> "$TOOL_LOG"; exec "$@"')
+    _write_stub(sandbox.bin, "open", 'printf \'open %s\\n\' "$*" >> "$TOOL_LOG"')
+    _write_stub(
+        sandbox.bin,
+        "curl",
+        textwrap.dedent("""
+            printf 'curl %s\\n' "$*" >> "$TOOL_LOG"
+            [[ -n "${CURL_FAIL:-}" ]] && exit 22
+            out="" prev=""
+            for arg in "$@"; do [[ "$prev" == "-o" ]] && out="$arg"; prev="$arg"; done
+            [[ -n "$out" ]] && printf 'dmg' > "$out"
+            exit 0
+        """).strip(),
+    )
+    _write_stub(
+        sandbox.bin,
+        "hdiutil",
+        textwrap.dedent("""
+            printf 'hdiutil %s\\n' "$*" >> "$TOOL_LOG"
+            [[ "${1:-}" == attach ]] || exit 0
+            [[ -n "${HDIUTIL_FAIL:-}" ]] && exit 1
+            mnt="" prev=""
+            for arg in "$@"; do [[ "$prev" == "-mountpoint" ]] && mnt="$arg"; prev="$arg"; done
+            mkdir -p "$mnt/Docker.app/Contents/MacOS"
+            cat > "$mnt/Docker.app/Contents/MacOS/install" <<'INSTALLER'
+            #!/bin/bash
+            printf 'install %s\\n' "$*" >> "$TOOL_LOG"
+            [[ -n "${DOCKER_INSTALL_FAIL:-}" ]] && exit 1
+            mkdir -p "$SELLERCLAW_DOCKER_APP/Contents/Resources/bin"
+            cp "$DOCKER_DIST/docker" "$SELLERCLAW_DOCKER_APP/Contents/Resources/bin/docker"
+            INSTALLER
+            chmod +x "$mnt/Docker.app/Contents/MacOS/install"
+        """).strip(),
+    )
+    dist = sandbox.work / "docker-dist"
+    dist.mkdir()
+    _install_docker_stub(sandbox, into=dist)
+    return {
+        "SELLERCLAW_DOCKER_APP": str(sandbox.work / "Applications" / "Docker.app"),
+        "DOCKER_DIST": str(dist),
+    }
+
+
+def _tool_names(sandbox: Sandbox) -> list[str]:
+    return [call.split()[0] for call in sandbox.tool_calls()]
 
 
 def _run(
@@ -332,12 +422,106 @@ def test_arm_machine_is_accepted(sandbox: Sandbox) -> None:
     assert "platform: Darwin arm64" in result.stdout
 
 
-def test_missing_docker_without_a_terminal_asks_for_yes(sandbox: Sandbox) -> None:
+@pytest.mark.parametrize("os_name", [pytest.param("Linux", id="linux"), pytest.param("Darwin", id="mac")])
+def test_missing_docker_without_a_terminal_asks_for_yes(sandbox: Sandbox, os_name: str) -> None:
     """No docker, no tty: installing Docker is privileged, so consent must be explicit."""
-    result = _run(sandbox, [])
+    env = _make_mac(sandbox) if os_name == "Darwin" else {}
+
+    result = _run(sandbox, [], env_overrides=env)
 
     assert result.returncode != 0
     assert "--yes" in result.stderr
+    assert sandbox.tool_calls() == []  # nothing downloaded, nothing installed
+    assert sandbox.docker_calls() == []
+
+
+@pytest.mark.parametrize(
+    ("arch", "apple_chip", "dmg_url"),
+    [
+        pytest.param("arm64", True, "https://desktop.docker.com/mac/main/arm64/Docker.dmg", id="apple-silicon"),
+        pytest.param("x86_64", False, "https://desktop.docker.com/mac/main/amd64/Docker.dmg", id="intel"),
+        pytest.param(
+            "x86_64", True, "https://desktop.docker.com/mac/main/arm64/Docker.dmg", id="apple-silicon-under-rosetta"
+        ),
+    ],
+)
+def test_mac_without_docker_gets_docker_desktop_then_the_agent(
+    sandbox: Sandbox, arch: str, apple_chip: bool, dmg_url: str
+) -> None:
+    """No Homebrew needed: Docker's own image, installed from the command line with its terms accepted."""
+    env = _make_mac(sandbox, arch=arch, apple_chip=apple_chip)
+
+    result = _run(sandbox, ["--yes"], env_overrides=env)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    download, attach, sudo, install, detach = sandbox.tool_calls()
+    assert download.startswith("curl -fL ") and download.endswith(dmg_url)
+    mount_dir = attach.split("-mountpoint ")[1].split()[0]
+    assert attach == f"hdiutil attach -nobrowse -readonly -noautoopen -mountpoint {mount_dir} -quiet {Path(mount_dir).parent}/Docker.dmg"
+    assert sudo == f"sudo {mount_dir}/Docker.app/Contents/MacOS/install --accept-license"
+    assert install == "install --accept-license"
+    assert detach == f"hdiutil detach -quiet {mount_dir}"
+    assert list(sandbox.tmp.iterdir()) == []  # the download and its mount point are cleaned up
+    # The owner is told what saying yes accepts before anything is downloaded.
+    assert f"Terms: {DOCKER_TERMS_URL}" in result.stdout
+    assert "fewer than\n      250 employees and less than $10 million" in result.stdout
+    assert "government bodies need a paid Docker subscription" in result.stdout
+    assert "Docker Desktop installed" in result.stdout
+    # The freshly installed Docker is used straight away, though this terminal's PATH predates it.
+    assert any(c.startswith("pull ghcr.io/sellerai-com/sellerclaw-agent:latest") for c in sandbox.docker_calls())
+    assert any(c.startswith("run -d --name sellerclaw-agent") for c in sandbox.docker_calls())
+
+
+def test_mac_with_docker_desktop_off_path_is_used_without_downloading(sandbox: Sandbox) -> None:
+    """Docker Desktop is installed but this terminal has no `docker` yet: no second install."""
+    env = _make_mac(sandbox)
+    app_bin = Path(env["SELLERCLAW_DOCKER_APP"]) / "Contents" / "Resources" / "bin"
+    app_bin.mkdir(parents=True)
+    shutil.copy(Path(env["DOCKER_DIST"]) / "docker", app_bin / "docker")
+
+    result = _run(sandbox, ["--yes"], env_overrides=env)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert sandbox.tool_calls() == []
+    assert "Docker Desktop is not installed" not in result.stdout
+    assert any(c.startswith("pull ghcr.io/sellerai-com/sellerclaw-agent:latest") for c in sandbox.docker_calls())
+
+
+@pytest.mark.parametrize(
+    ("failure", "message", "tools_run"),
+    [
+        pytest.param(
+            {"CURL_FAIL": "1"},
+            "Could not download Docker Desktop — see the error above. Check your internet connection",
+            ["curl"],
+            id="download-fails",
+        ),
+        pytest.param(
+            {"HDIUTIL_FAIL": "1"},
+            "Could not open the Docker Desktop download",
+            ["curl", "hdiutil"],
+            id="image-does-not-open",
+        ),
+        pytest.param(
+            {"DOCKER_INSTALL_FAIL": "1"},
+            "Docker Desktop could not be installed — see the message above. It supports the current and the two previous macOS versions",
+            ["curl", "hdiutil", "sudo", "install", "hdiutil"],
+            id="installer-refuses",
+        ),
+    ],
+)
+def test_mac_docker_desktop_failure_stops_with_a_readable_message(
+    sandbox: Sandbox, failure: dict[str, str], message: str, tools_run: list[str]
+) -> None:
+    env = _make_mac(sandbox)
+
+    result = _run(sandbox, ["--yes"], env_overrides={**env, **failure})
+
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert _tool_names(sandbox) == tools_run  # a failed install still unmounts the image
+    assert list(sandbox.tmp.iterdir()) == []
+    assert sandbox.docker_calls() == []
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +788,26 @@ def test_control_command_prints_times_on_this_computers_clock(sandbox: Sandbox, 
     [call] = sandbox.docker_calls()[calls_before:]
     assert call.startswith("exec -i -e TZ=Europe/Moscow ")
     assert call.endswith("python -m sellerclaw_agent " + " ".join(command))
+
+
+def test_control_command_finds_docker_desktop_in_a_terminal_without_it(sandbox: Sandbox) -> None:
+    """Docker Desktop adds itself to PATH only for terminals opened after its first start."""
+    env = _make_mac(sandbox)
+    assert _run(sandbox, ["--yes"], env_overrides=env).returncode == 0
+    calls_before = len(sandbox.docker_calls())
+
+    result = subprocess.run(
+        ["/bin/sh", str(sandbox.wrapper), "version"],
+        env={**sandbox.env, **env},
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+        start_new_session=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sandbox.docker_calls()[calls_before:] == ["exec sellerclaw-agent printenv SELLERCLAW_AGENT_VERSION"]
 
 
 def test_an_unattended_install_never_asks_about_the_ai_plan(sandbox: Sandbox) -> None:
