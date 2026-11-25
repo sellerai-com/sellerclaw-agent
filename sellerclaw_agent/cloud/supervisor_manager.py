@@ -98,6 +98,56 @@ def _openclaw_config_payload_signature(raw: str) -> object:
     return payload
 
 
+def _config_file_matches(path: Path, openclaw_config: str) -> bool:
+    """Whether ``path`` holds ``openclaw_config``, ``meta`` bookkeeping aside; False when unreadable."""
+    try:
+        on_disk_raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        return _openclaw_config_payload_signature(on_disk_raw) == _openclaw_config_payload_signature(
+            openclaw_config
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _tree_matches(root: Path, files: dict[str, str]) -> bool:
+    """Whether the files under ``root`` are exactly ``files`` (relative path → text)."""
+    existing: dict[str, str] = {}
+    if root.exists():
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                existing[str(path.relative_to(root))] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return False
+    return existing == files
+
+
+def bundle_is_live(
+    templates_root: Path,
+    runtime_config_root: Path,
+    *,
+    openclaw_config: str,
+    workspaces: dict[str, str],
+) -> bool:
+    """Return True iff ``openclaw_start`` has materialised exactly this bundle.
+
+    The staged copy (``/opt/config-bundle``) only becomes what OpenClaw reads when
+    ``openclaw_start`` copies it into ``/opt/openclaw-config`` and the workspace templates
+    ``/opt/openclaw-workspaces`` — at process start, or by ``apply-bundle``. Both copies are
+    verbatim (the state-dir copy ``openclaw doctor`` edits is made from them), so comparing
+    them tells whether the staged bundle ever went live. A staged bundle that did not: a
+    ``start`` that wrote it while another start was already running, or an ``apply-bundle``
+    that failed after the write.
+    """
+    return _config_file_matches(runtime_config_root / "openclaw.json", openclaw_config) and _tree_matches(
+        templates_root, workspaces
+    )
+
+
 def bundle_on_disk_matches(
     bundle_volume_path: Path,
     *,
@@ -113,30 +163,9 @@ def bundle_on_disk_matches(
     normal write. Ignores OpenClaw's ``meta`` bookkeeping — see
     :func:`_openclaw_config_payload_signature`.
     """
-    oc_path = bundle_volume_path / "openclaw" / "openclaw.json"
-    try:
-        on_disk_raw = oc_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
+    if not _config_file_matches(bundle_volume_path / "openclaw" / "openclaw.json", openclaw_config):
         return False
-    try:
-        if _openclaw_config_payload_signature(
-            on_disk_raw
-        ) != _openclaw_config_payload_signature(openclaw_config):
-            return False
-    except (TypeError, ValueError):
-        return False
-
-    ws_root = bundle_volume_path / "workspaces"
-    existing_ws: dict[str, str] = {}
-    if ws_root.exists():
-        for path in ws_root.rglob("*"):
-            if not path.is_file():
-                continue
-            try:
-                existing_ws[str(path.relative_to(ws_root))] = path.read_text(encoding="utf-8")
-            except OSError:
-                return False
-    if existing_ws != workspaces:
+    if not _tree_matches(bundle_volume_path / "workspaces", workspaces):
         return False
 
     shared_root = bundle_volume_path / "shared-skills"
@@ -319,6 +348,11 @@ class SupervisorContainerManager:
     # "the listener is not up yet" and reported ``starting`` forever, leaving the owner on
     # the launch screen while their agent was already serving chat.
     gateway_internal_base_url: str = "http://127.0.0.1:7789"
+    # Where ``openclaw_start`` materialises the staged bundle — its hard-coded ``TEMPLATES_ROOT``
+    # and ``RUNTIME_CONFIG_ROOT``, keep them in step: what OpenClaw actually runs on.
+    # ``update_manifest`` checks them, not only the staged copy, before calling a manifest applied.
+    templates_root: Path = Path("/opt/openclaw-workspaces")
+    runtime_config_root: Path = Path("/opt/openclaw-config")
 
     def _run_ctl(self, *args: str, timeout: float) -> subprocess.CompletedProcess[str]:
         cmd = ["supervisorctl", "-c", self.supervisord_config, *args]
@@ -772,7 +806,13 @@ class SupervisorContainerManager:
 
     def start(self, manifest: GenericManifest) -> tuple[str, str | None]:
         probe, _ = self.probe_openclaw_status()
-        if probe == "running":
+        # ``starting`` is a process that is up with its gateway not ready yet: its
+        # ``openclaw_start`` already materialised a bundle. Staging another one now would never
+        # go live — supervisord only answers "already started" — and would make the next
+        # ``update_manifest`` of the same content look applied (local stack, 2026-11-25: the
+        # cloud's start landed 10 s after `make agent-start`, the agent kept yesterday's
+        # instructions through two reloads).
+        if probe in ("running", "starting"):
             return "rejected", REJECT_ALREADY_RUNNING
 
         try:
@@ -794,11 +834,13 @@ class SupervisorContainerManager:
             return "failed", str(exc)[:500]
 
         out = (proc.stdout or "") + (proc.stderr or "")
+        # Read before the exit code: supervisorctl can report "already started" with status 0,
+        # and taking that for a start would record a config version nothing materialised.
+        if "already started" in out.lower():
+            return "rejected", REJECT_ALREADY_RUNNING
         if proc.returncode == 0:
             write_applied_config_version(manifest.config_version)
             return "completed", None
-        if "already started" in out.lower():
-            return "rejected", REJECT_ALREADY_RUNNING
         return "failed", out.strip()[:500] or f"exit {proc.returncode}"
 
     def restart(self, manifest: GenericManifest) -> tuple[str, str | None]:
@@ -855,9 +897,11 @@ class SupervisorContainerManager:
           by supervisord at process start. A hot-reload can't apply it; the
           cloud classifier should never route a proxy change here, but reject
           loudly if the contract slips.
-        * **No-op** — same byte content as on disk. Skipping the write avoids
-          waking the file-watcher for nothing (it would re-validate the config
-          and emit a noise log line on every duplicate save).
+        * **No-op** — same byte content as on disk, staged *and* materialised
+          (:func:`bundle_is_live`). Skipping the write avoids waking the
+          file-watcher for nothing (it would re-validate the config and emit a
+          noise log line on every duplicate save). Staged but not live is not a
+          no-op: it is applied again.
         * **LiteLLM key change** — the gateway took the key into its env at start
           (``openclaw_start``: ``LITELLM_API_KEY``) and uses that ahead of the
           config, so a running gateway gets the new bundle with a restart instead.
@@ -876,12 +920,24 @@ class SupervisorContainerManager:
         except Exception as exc:  # noqa: BLE001
             _log.warning("bundle_build_failed", error=str(exc))
             return "failed", str(exc)[:500]
-        if bundle_on_disk_matches(
+        staged = bundle_on_disk_matches(
             self.bundle_volume_path,
             openclaw_config=built.openclaw_config,
             workspaces=built.workspaces,
             shared_skills=built.shared_skills,
-        ):
+        )
+        live = staged and bundle_is_live(
+            self.templates_root,
+            self.runtime_config_root,
+            openclaw_config=built.openclaw_config,
+            workspaces=built.workspaces,
+        )
+        if staged and not live:
+            # Staged but never materialised — a start that lost to one already running, or an
+            # apply-bundle that failed after the write. The staged copy alone would read as
+            # "unchanged" on every retry while OpenClaw keeps the old bundle, so apply it again.
+            _log.info("update_manifest_reapply", reason="staged_bundle_not_live")
+        if live:
             _log.info("update_manifest_noop", reason="bundle_unchanged")
             # Bundle byte-identical, but the cloud may have bumped config_version (a change
             # that doesn't alter the rendered bundle). Record it so the reported applied

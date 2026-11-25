@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 import urllib.error
 from collections.abc import Callable
 from pathlib import Path
@@ -16,10 +17,12 @@ from sellerclaw_agent.cloud.supervisor_manager import (
     SupervisorContainerManager,
     _is_ready_payload,
     _parse_uptime_seconds_from_line,
+    bundle_is_live,
     bundle_on_disk_matches,
     create_supervisor_manager,
     litellm_key_changed,
     read_proxy_url_from_runtime_env,
+    write_bundle_to_disk,
     write_runtime_env,
 )
 from sellerclaw_agent.test_manifest_fixtures import load_manifest_v2_mapping
@@ -51,9 +54,33 @@ def _mgr(
         "kasm_program_name": "kasmvnc",
         "gost_program_name": "gost",
         "credentials_data_dir": tmp_path,
+        "templates_root": tmp_path / "openclaw-workspaces",
+        "runtime_config_root": tmp_path / "openclaw-config",
     }
     defaults.update(kwargs)
     return SupervisorContainerManager(**defaults)  # type: ignore[arg-type]
+
+
+def _materialize(mgr: SupervisorContainerManager) -> None:
+    """What ``openclaw_start`` does with the staged bundle at start and on ``apply-bundle``:
+    copy its config and workspaces, verbatim, to where OpenClaw reads them."""
+    staged = mgr.bundle_volume_path
+    shutil.rmtree(mgr.templates_root, ignore_errors=True)
+    shutil.copytree(staged / "workspaces", mgr.templates_root)
+    mgr.runtime_config_root.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(staged / "openclaw" / "openclaw.json", mgr.runtime_config_root / "openclaw.json")
+
+
+def _applying(mgr: SupervisorContainerManager, *, returncode: int = 0) -> Callable[..., MagicMock]:
+    """A ``subprocess.run`` stand-in whose ``apply-bundle`` really materialises (when it succeeds)."""
+
+    def run(cmd: list[str], **kw: object) -> MagicMock:
+        if cmd == [mgr.openclaw_start_cmd, "apply-bundle"] and returncode == 0:
+            _materialize(mgr)
+        stderr = "" if returncode == 0 else "materialize failed\n"
+        return MagicMock(returncode=returncode, stdout="", stderr=stderr)
+
+    return run
 
 
 def test_probe_running_stopped_fatal_starting(
@@ -349,6 +376,64 @@ def test_start_maps_already_started_to_rejected(
     assert err == REJECT_ALREADY_RUNNING
 
 
+def test_start_rejects_while_starting_without_staging_a_bundle(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """A process up with its gateway not ready yet already materialised a bundle at its start.
+    Staging another one would never go live and would make the next update look applied."""
+    mgr = _mgr(tmp_path)
+    calls: list[list[str]] = []
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(
+            returncode=0,
+            stdout="openclaw                         RUNNING   pid 1, uptime 0:00:05\n",
+            stderr="",
+        )
+
+    with (
+        patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect),
+        patch.object(mgr, "_gateway_is_ready", return_value=False),
+    ):
+        outcome, err = mgr.start(make_manifest())
+
+    assert (outcome, err) == ("rejected", REJECT_ALREADY_RUNNING)
+    assert not (mgr.bundle_volume_path / "openclaw" / "openclaw.json").exists()
+    assert not any("start" in c for c in calls)
+
+
+def test_start_reads_already_started_before_the_exit_code(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """supervisorctl can say "already started" and exit 0; that is no start, and no config
+    version gets recorded as applied."""
+    from sellerclaw_agent.cloud.state_backup import read_applied_config_version
+
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(tmp_path))
+    mgr = _mgr(tmp_path)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        if "status" in cmd:
+            return MagicMock(
+                returncode=0,
+                stdout="openclaw                         STOPPED   Not started\n",
+                stderr="",
+            )
+        return MagicMock(returncode=0, stdout="openclaw: ERROR (already started)\n", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.start(make_manifest(overrides={"config_version": 9}))
+
+    assert (outcome, err) == ("rejected", REJECT_ALREADY_RUNNING)
+    assert read_applied_config_version(tmp_path) is None
+
+
 def test_start_supervisorctl_failure(
     tmp_path: Path,
     make_manifest: Callable[..., GenericManifest],
@@ -597,18 +682,131 @@ def test_update_manifest_skips_write_when_bundle_unchanged(
     """
     mgr = _mgr(tmp_path)
     manifest = make_manifest(proxy_url="")
-    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", return_value=MagicMock(returncode=0)):
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=_applying(mgr)):
         first = mgr.update_manifest(manifest)
     assert first == ("completed", None)
 
     oc_path = mgr.bundle_volume_path / "openclaw" / "openclaw.json"
     mtime_before = oc_path.stat().st_mtime_ns
+    calls: list[list[str]] = []
 
-    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", return_value=MagicMock(returncode=0)):
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        calls.append(list(cmd))
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
         second = mgr.update_manifest(manifest)
     assert second == ("completed", None)
-    # File untouched on the second pass.
+    # File untouched on the second pass, and nothing activated.
     assert oc_path.stat().st_mtime_ns == mtime_before
+    assert calls == []
+
+
+def test_update_manifest_reapplies_a_staged_bundle_that_never_went_live(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """A start that lost to one already running staged its bundle and nothing materialised it.
+
+    Local stack, 2026-11-25: the agent kept yesterday's instructions through two reloads, each
+    answered ``update_manifest_noop`` because the staged copy already matched. The same manifest
+    arriving again is applied, since OpenClaw never got it.
+    """
+    mgr = _mgr(tmp_path)
+    manifest = make_manifest(proxy_url="")
+    built = mgr._build_bundle(manifest)
+    write_bundle_to_disk(
+        mgr.bundle_volume_path,
+        openclaw_config=built.openclaw_config,
+        workspaces=built.workspaces,
+        shared_skills=built.shared_skills,
+        proxy_url=manifest.proxy_url,
+    )
+    calls: list[list[str]] = []
+    apply = _applying(mgr)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        calls.append(list(cmd))
+        return apply(cmd, **kw)
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.update_manifest(manifest)
+
+    assert (outcome, err) == ("completed", None)
+    assert calls == [[mgr.openclaw_start_cmd, "apply-bundle"]]
+    assert bundle_is_live(
+        mgr.templates_root,
+        mgr.runtime_config_root,
+        openclaw_config=built.openclaw_config,
+        workspaces=built.workspaces,
+    )
+
+
+def test_update_manifest_retries_an_apply_that_failed(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    """A failed ``apply-bundle`` leaves the bundle staged; the cloud's retry must apply it again,
+    not find the staged copy current and report the change applied."""
+    mgr = _mgr(tmp_path)
+    manifest = make_manifest(proxy_url="")
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=_applying(mgr, returncode=3)):
+        assert mgr.update_manifest(manifest)[0] == "failed"
+    calls: list[list[str]] = []
+    apply = _applying(mgr)
+
+    def run_side_effect(cmd: list[str], **kw: object) -> MagicMock:
+        calls.append(list(cmd))
+        return apply(cmd, **kw)
+
+    with patch("sellerclaw_agent.cloud.supervisor_manager.subprocess.run", side_effect=run_side_effect):
+        outcome, err = mgr.update_manifest(manifest)
+
+    assert (outcome, err) == ("completed", None)
+    assert calls == [[mgr.openclaw_start_cmd, "apply-bundle"]]
+
+
+def test_bundle_is_live_after_materialising_the_staged_bundle(
+    tmp_path: Path,
+    make_manifest: Callable[..., GenericManifest],
+    with_agent_api_key: None,
+) -> None:
+    mgr = _mgr(tmp_path)
+    built = mgr._build_bundle(make_manifest(proxy_url=""))
+    write_bundle_to_disk(
+        mgr.bundle_volume_path,
+        openclaw_config=built.openclaw_config,
+        workspaces=built.workspaces,
+        shared_skills=built.shared_skills,
+    )
+
+    def live() -> bool:
+        return bundle_is_live(
+            mgr.templates_root,
+            mgr.runtime_config_root,
+            openclaw_config=built.openclaw_config,
+            workspaces=built.workspaces,
+        )
+
+    assert not live()  # staged only
+    _materialize(mgr)
+    assert live()
+
+    agents_md = mgr.templates_root / "supervisor" / "AGENTS.md"
+    agents_md.write_text(agents_md.read_text(encoding="utf-8") + "\nstale line\n", encoding="utf-8")
+    assert not live()  # a workspace that differs from the bundle
+
+    _materialize(mgr)
+    config = json.loads((mgr.runtime_config_root / "openclaw.json").read_text(encoding="utf-8"))
+    config["meta"] = {"lastTouchedVersion": "2026.11.7"}
+    (mgr.runtime_config_root / "openclaw.json").write_text(json.dumps(config), encoding="utf-8")
+    assert live()  # OpenClaw's own meta bookkeeping is not a difference
+
+    config["agents"] = {}
+    (mgr.runtime_config_root / "openclaw.json").write_text(json.dumps(config), encoding="utf-8")
+    assert not live()  # a config that differs from the bundle
 
 
 def test_update_manifest_writes_applied_config_version(
