@@ -16,6 +16,7 @@ from sellerclaw_agent.bundle.config_generator import (
     OPENCLAW_BUNDLE_LOG_LEVEL,
     OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
     OPENCLAW_WEB_READABILITY_PLUGIN_ID,
+    OPENCLAW_DEEP_RESEARCH_PLUGIN_ID,
     OPENCLAW_LOCAL_AGENT_BASE_URL,
     OPENCLAW_PLUGIN_PATH_MEM0,
     OPENCLAW_BUNDLED_DIR_SELLERCLAW_UI,
@@ -191,8 +192,9 @@ def test_generate_openclaw_config_has_gateway_and_models(
     # ``agent_end``) are silently dropped at plugin load.
     assert payload["plugins"]["entries"]["sellerclaw-ui"]["hooks"] == {
         "allowConversationAccess": True,
-        # The owner's active goal reaches the supervisor's turns through ``before_prompt_build``.
-        "allowPromptInjection": True,
+        # The owner's active goal reaches the supervisor's turns through ``before_prompt_build``
+        # (OpenClaw 2026.11.10 name; the old ``allowPromptInjection`` is rejected).
+        "allowPromptModification": True,
     }
 
 
@@ -303,14 +305,19 @@ def test_generate_openclaw_config_allowlists_only_healthcheck_bundled_skill(
     assert payload["skills"]["allowBundled"] == ["healthcheck"]
 
 
-def test_generate_openclaw_config_disables_skill_workshop_autonomy(
+def test_generate_openclaw_config_keeps_skill_workshop_plugin_off(
     make_assembled_agent: Callable[..., AssembledAgentConfig],
 ) -> None:
-    """Override OpenClaw's auto default so daily collection review does not run."""
+    """Skill Workshop is the bundled ``skill-workshop`` plugin (OpenClaw 2026.11.10): kept off by
+    leaving it out of the exclusive allow-list, so no daily collection review or unattended skill
+    rewrites. The retired ``skills.workshop`` key would make the config invalid."""
     payload = json.loads(
         _generate(_supervisor_only(make_assembled_agent), sellerclaw_api_url="http://api/")
     )
-    assert payload["skills"]["workshop"] == {"autonomous": {"mode": "off"}}
+    assert payload["plugins"]["allow"]
+    assert "skill-workshop" not in payload["plugins"]["allow"]
+    assert "skill-workshop" not in payload["plugins"]["entries"]
+    assert "workshop" not in payload["skills"]
 
 
 _OFF = {"enabled": False}
@@ -351,9 +358,8 @@ def test_generate_openclaw_config_switches_off_plugin_skills_the_runtime_cannot_
         )
     )
     assert payload["skills"].get("entries") == expected_entries
-    # The bundled-skill gate and the workshop pin are not disturbed by the extra entries.
+    # The bundled-skill gate is not disturbed by the extra entries.
     assert payload["skills"]["allowBundled"] == ["healthcheck"]
-    assert payload["skills"]["workshop"] == {"autonomous": {"mode": "off"}}
 
 
 def test_generate_openclaw_config_cron_failures_redirect_to_cloud_error_sink(
@@ -1054,3 +1060,14 @@ def test_generate_openclaw_config_enables_web_readability_plugin_for_web_fetch(
     plugins = payload["plugins"]
     assert OPENCLAW_WEB_READABILITY_PLUGIN_ID in plugins["allow"]
     assert plugins["entries"][OPENCLAW_WEB_READABILITY_PLUGIN_ID] == {"enabled": True}
+
+
+def test_generate_openclaw_config_enables_deep_research_plugin(
+    make_assembled_agent: Callable[..., AssembledAgentConfig],
+) -> None:
+    """The bundled Deep Research plugin backs the `deep_research` tool every agent holds. It is
+    default-enabled upstream, but a non-empty `plugins.allow` disables everything missing from it."""
+    payload = _generate_default_config(make_assembled_agent)
+    plugins = payload["plugins"]
+    assert plugins["allow"].count(OPENCLAW_DEEP_RESEARCH_PLUGIN_ID) == 1
+    assert plugins["entries"][OPENCLAW_DEEP_RESEARCH_PLUGIN_ID] == {"enabled": True}

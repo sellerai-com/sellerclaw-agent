@@ -159,7 +159,7 @@ declare module "openclaw/plugin-sdk/core" {
     /**
      * Session workflow (OpenClaw 2026.11). `steerActiveRun` hands text to the session's active run
      * at its next step without starting a turn; the input is hidden plugin-authored context with no
-     * sender or owner authority. Needs `hooks.allowPromptInjection` and a live plugin instance.
+     * sender or owner authority. Needs `hooks.allowPromptModification` (named `allowPromptInjection` before 2026.11.10) and a live plugin instance.
      * Optional: older hosts and metadata-only passes lack it.
      */
     session?: {

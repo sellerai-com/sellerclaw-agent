@@ -563,7 +563,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             True, True,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
-                "message", "browser", "exec", "pdf", "process", *_MEMORY_TOOLS_EXPECTED,
+                "message", "browser", "exec", "pdf", "process", *_MEMORY_TOOLS_EXPECTED, "deep_research",
             ],
             [],
             id="entry-point",
@@ -572,7 +572,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             True, False,
             [
                 "group:sessions", "agents_list", "group:fs", "group:web", "web_search",
-                "message", "exec", "pdf", "process", *_MEMORY_TOOLS_EXPECTED,
+                "message", "exec", "pdf", "process", *_MEMORY_TOOLS_EXPECTED, "deep_research",
             ],
             [],
             id="entry-point-browser-disabled",
@@ -581,7 +581,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             False, True,
             [
                 "group:fs", "exec", "process", "web_fetch", "web_search", "browser", "pdf",
-                *_MEMORY_TOOLS_EXPECTED,
+                *_MEMORY_TOOLS_EXPECTED, "deep_research",
             ],
             ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
             id="subagent-never-gets-cron",
@@ -590,7 +590,7 @@ def test_compose_agent_api_base_url_concatenates_host_and_path(
             False, False,
             [
                 "group:fs", "exec", "process", "web_fetch", "web_search", "pdf",
-                *_MEMORY_TOOLS_EXPECTED,
+                *_MEMORY_TOOLS_EXPECTED, "deep_research",
             ],
             ["group:sessions", "group:messaging", "canvas", "nodes", "cron", "gateway"],
             id="subagent-browser-disabled",
@@ -652,6 +652,24 @@ def test_derive_agent_tools_grants_memory_tools_to_every_agent(is_entry_point: b
     for tool in ("memory_add", "memory_search", "memory_update", "memory_delete"):
         assert tool in allow
         assert tool not in deny
+
+
+@pytest.mark.parametrize(
+    "is_entry_point",
+    [
+        pytest.param(True, id="entry-point"),
+        pytest.param(False, id="subagent"),
+    ],
+)
+def test_derive_agent_tools_grants_deep_research_to_every_agent(is_entry_point: bool) -> None:
+    """Every agent holds ``deep_research``: specialists inherit only what the supervisor holds, so
+    the supervisor must have it for any of them to keep it."""
+    allow, deny = derive_agent_tools(
+        is_entry_point=is_entry_point,
+        browser_enabled=True,
+    )
+    assert allow.count("deep_research") == 1
+    assert "deep_research" not in deny
 
 
 def _cfg_from_mapping(mapping: dict[str, Any]) -> dict[str, Any]:

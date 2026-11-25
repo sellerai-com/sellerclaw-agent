@@ -76,6 +76,13 @@ _MEMORY_TOOLS = [
     "memory_delete",
 ]
 
+# The deep-research plugin's tool (OpenClaw 2026.11.10+, see OPENCLAW_DEEP_RESEARCH_PLUGIN_ID):
+# granted to EVERY agent. Children inherit only what the supervisor itself holds, so the
+# supervisor needs it for any specialist to keep it; each run is bounded by the plugin's own
+# model-call / search / fetch budgets, and the instructions say when it is worth that cost.
+# A plugin tool, not part of a builtin ``group:``, so it is listed by name.
+_DEEP_RESEARCH_TOOL = "deep_research"
+
 
 def derive_agent_tools(
     *,
@@ -96,6 +103,7 @@ def derive_agent_tools(
     - Subagent: filesystem/exec/process/web + browser/pdf; ``cron`` is always denied.
     - Long-term memory tools (``_MEMORY_TOOLS``) are granted to every agent so the injected
       mem0 triage protocol can actually persist/look up facts inline (see the constant's note).
+    - ``deep_research`` (``_DEEP_RESEARCH_TOOL``) is granted to every agent as well.
     - ``browser`` is present per agent only when ``browser_enabled``. The builtin
       ``image_generate`` / ``video_generate`` tools are **never** allowed here: media generation
       goes through sellerclaw-cli (cloud endpoints) and the builtins are denied in config
@@ -161,8 +169,10 @@ def derive_agent_tools(
             "gateway",
         ]
     # Every agent gets the long-term memory tools (entry point and subagents alike) so the mem0
-    # triage protocol can persist/recall facts. Appended last → predictable, deterministic order.
+    # triage protocol can persist/recall facts, and Deep Research. Appended last → predictable,
+    # deterministic order.
     allow.extend(_MEMORY_TOOLS)
+    allow.append(_DEEP_RESEARCH_TOOL)
     if not browser_enabled:
         allow = [tool for tool in allow if tool != "browser"]
     return allow, deny

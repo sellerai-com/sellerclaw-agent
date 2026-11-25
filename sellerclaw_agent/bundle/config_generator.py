@@ -121,6 +121,15 @@ OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID = "document-extract"
 # runtime/Dockerfile.
 OPENCLAW_WEB_READABILITY_PLUGIN_ID = "web-readability"
 
+# Bundled OpenClaw plugin (2026.11.10+) behind the ``deep_research`` tool: a bounded multi-source
+# investigation run by the plugin's own engine — sub-questions, search + fetch through the agent's
+# web tools, quote-checked findings, a contradiction pass and an "Unresolved" section — returned to
+# the agent as one cited report, on the calling agent's model. Default-enabled upstream, but our
+# ``plugins.allow`` is non-empty, so it needs the allow entry and an explicit enable like the others;
+# the image keeps its extension dir (prune in runtime/Dockerfile) and every agent gets the tool
+# (``derive_agent_tools``).
+OPENCLAW_DEEP_RESEARCH_PLUGIN_ID = "deep-research"
+
 # OpenClaw's bundled advisor (experimental, off upstream by default): during user-triggered runs it
 # reviews a fork of the conversation on the session's own model and, when it finds a clear wrong
 # turn (repeating a failing call, drifting from the owner's request), steers the run with one short
@@ -693,6 +702,7 @@ def generate_openclaw_config(
                 "browser",
                 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID,
                 OPENCLAW_WEB_READABILITY_PLUGIN_ID,
+                OPENCLAW_DEEP_RESEARCH_PLUGIN_ID,
                 *(
                     [web_search_plugin_id]
                     if web_search_enabled and web_search_plugin_id is not None
@@ -720,14 +730,17 @@ def generate_openclaw_config(
                     # capture (``llm_output`` + ``agent_end``) and the reasoning relay are silently
                     # dropped at load — the owner then gets the subagent's raw internal envelope
                     # instead of the supervisor's answer, and no "Thinking…" panel at all.
-                    # Prompt injection carries the owner's active goal into the supervisor's turns
-                    # (``before_prompt_build``); it is allowed by default, stated here so a changed
-                    # default cannot silently drop the goal from every session.
-                    "hooks": {"allowConversationAccess": True, "allowPromptInjection": True},
+                    # Prompt modification carries the owner's active goal into the supervisor's turns
+                    # (``before_prompt_build``) and lets the plugin steer an active run; it is allowed
+                    # by default, stated here so a changed default cannot silently drop the goal from
+                    # every session. OpenClaw 2026.11.10 renamed the key from ``allowPromptInjection``
+                    # and rejects the old name.
+                    "hooks": {"allowConversationAccess": True, "allowPromptModification": True},
                     "config": sellerclaw_ui_plugin_config,
                 },
                 OPENCLAW_DOCUMENT_EXTRACT_PLUGIN_ID: {"enabled": True},
                 OPENCLAW_WEB_READABILITY_PLUGIN_ID: {"enabled": True},
+                OPENCLAW_DEEP_RESEARCH_PLUGIN_ID: {"enabled": True},
                 **(
                     {web_search_plugin_id: web_search_plugin_entry}
                     if web_search_enabled
@@ -819,13 +832,10 @@ def generate_openclaw_config(
         },
         "skills": {
             "allowBundled": list(OPENCLAW_BUNDLE_ALLOWED_SKILLS),
-            # OpenClaw defaults workshop.autonomous.mode to "auto": a daily
-            # collection-review session plus post-run self-learning. We pin "off"
-            # because per-agent tools.allow does not include skill_workshop, so
-            # auto review fails closed and spams gateway health; we also do not
-            # want unattended skill rewrites. Manual /learn and Workshop UI still
-            # work. "propose" would still spawn background capture runs.
-            "workshop": {"autonomous": {"mode": "off"}},
+            # No Skill Workshop settings: since OpenClaw 2026.11.10 Workshop is the bundled
+            # ``skill-workshop`` plugin and the old ``skills.workshop`` key is rejected. Leaving
+            # it out of the exclusive ``plugins.allow`` above keeps it off — no daily collection
+            # review, no unattended skill rewrites.
             **({"entries": unusable_skill_entries} if unusable_skill_entries else {}),
         },
     }

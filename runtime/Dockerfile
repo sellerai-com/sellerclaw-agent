@@ -23,7 +23,7 @@
 # generated-media direct fallback, merged 2026-05-22), use the from-source
 # workflow above.
 ARG OPENCLAW_REPO=ghcr.io/openclaw/openclaw
-ARG OPENCLAW_TAG=2026.11.5
+ARG OPENCLAW_TAG=2026.11.10
 FROM ${OPENCLAW_REPO}:${OPENCLAW_TAG} AS base
 
 ENV OPENCLAW_PORT=7788
@@ -92,7 +92,7 @@ RUN apt-get update \
 # own /app/node_modules. Keep this ARG in lockstep with that version anyway, so both speak the same
 # protocol to the one Chrome — when OPENCLAW_TAG moves:
 #   docker run --rm --entrypoint sh ghcr.io/openclaw/openclaw:$OPENCLAW_TAG -c 'grep playwright-core /app/package.json'
-# (openclaw 2026.11.5 pins playwright-core 1.64.1 exactly. The browser is the Chrome/Chromium the apt
+# (openclaw 2026.11.10 pins playwright-core 1.64.1 exactly. The browser is the Chrome/Chromium the apt
 # step above installs — hence PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD.)
 # Unpinned before: `npm install -g playwright` took whatever npm called latest at build time, so the
 # shipped version changed silently the first time the layer cache missed — a rebuild today would jump
@@ -184,6 +184,9 @@ RUN node --input-type=module -e "await import('grammy')"
 #                                                correction on a clear wrong turn (a loop of
 #                                                failing calls). Enabled by config_generator when
 #                                                the manifest carries `advisor`.
+#   deep-research                             -> the `deep_research` tool every agent holds (cited
+#                                                multi-source research, OpenClaw 2026.11.10+).
+#                                                Enabled in config_generator too.
 #   openai                                    -> the owner's own ChatGPT plan: its device-code
 #                                                sign-in and the `openai` provider the agent then
 #                                                thinks on. Allowed in config only while that plan
@@ -202,7 +205,7 @@ RUN node --input-type=module -e "await import('grammy')"
 # and the breakage only surfaces at runtime as a missing provider/plugin. Our own two plugins are
 # deliberately not checked — they arrive later in the build.
 RUN cd /app/dist/extensions && \
-    keep="browser telegram litellm memory-core anthropic google document-extract web-readability advisor openai" && \
+    keep="browser telegram litellm memory-core anthropic google document-extract web-readability deep-research advisor openai" && \
     ours="sellerclaw-ui sellerclaw-web-search" && \
     for dir in */; do \
         case " $keep $ours " in \
