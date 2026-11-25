@@ -52,6 +52,7 @@ vi.mock("../runtime-store.js", () => ({
 import {
   pickDeltaJoin,
   readDeliverPayload,
+  readLeadingLineBreak,
   registerInboundRoute,
   STEP_WAIT_MS,
   TURN_ALIVE_INTERVAL_MS,
@@ -950,6 +951,83 @@ describe("registerInboundRoute", () => {
     /** The model's own final text for a sub-message. */
     const final = (index = 0) => ({ kind: "final", assistantMessageIndex: index });
 
+    describe("joins with the line break the engine cut on", () => {
+      // OpenClaw cuts a long reply on line breaks and starts the next block of the same message
+      // with the break it cut on. With block streaming no final follows, so these joins are the
+      // stored message: trimming the break away is how a paragraph after a table became an extra
+      // cell of its last row (local chat 08cb5805, 2026-11-24; every boundary of November's chats).
+
+      it("keeps the paragraph after a table out of the table", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "| Order | Paid |\n|---|---:|\n| SC-1005 | $70,95 |" }, block());
+        await deliver({ text: "\n\n**Важно:** все три оформления тестовые." }, block());
+        expect(previewTexts().join("")).toBe(
+          "| Order | Paid |\n|---|---:|\n| SC-1005 | $70,95 |\n\n**Важно:** все три оформления тестовые.",
+        );
+      });
+
+      it("keeps one newline between two rows of a table cut in the middle", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "| Order | Paid |\n|---|---:|\n| SC-1007 | $19,00 |" }, block());
+        await deliver({ text: "\n| SC-1006 | $82,52 |" }, block());
+        expect(previewTexts().join("")).toBe(
+          "| Order | Paid |\n|---|---:|\n| SC-1007 | $19,00 |\n| SC-1006 | $82,52 |",
+        );
+      });
+
+      it("keeps a paragraph break between two prose paragraphs", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "Пока подтверждённых трёх товаров нет." }, block());
+        await deliver({ text: "\n\nВажное различие: наценка не равна марже." }, block());
+        expect(previewTexts().join("")).toBe(
+          "Пока подтверждённых трёх товаров нет.\n\nВажное различие: наценка не равна марже.",
+        );
+      });
+
+      it("keeps the paragraph after a quote out of the quote", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "> From stirring to serving, all in one place." }, block());
+        await deliver({ text: "\n\nНа витрине описание не менял." }, block());
+        expect(previewTexts().join("")).toBe(
+          "> From stirring to serving, all in one place.\n\nНа витрине описание не менял.",
+        );
+      });
+
+      it("keeps the indent of a nested list item that opens the block", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "- Kitchen" }, block());
+        await deliver({ text: "\n  - Silicone lids" }, block());
+        expect(previewTexts().join("")).toBe("- Kitchen\n  - Silicone lids");
+      });
+
+      it("drops the break a first block starts with", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "\n\nHello" }, block());
+        expect(previewTexts()).toEqual(["Hello"]);
+      });
+
+      it("still guesses for a block cut inside a line", async () => {
+        const deliver = await dispatchOnce();
+        await deliver({ text: "**Продолжительность:** несколько" }, block());
+        await deliver({ text: "часов (самая короткая кампания)" }, block());
+        expect(previewTexts().join("")).toBe(
+          "**Продолжительность:** несколько часов (самая короткая кампания)",
+        );
+      });
+
+      it("separates a new sub-message by a blank line whatever its first block starts with", async () => {
+        const deliver = await dispatchOnce();
+        // A cloud without the step road keeps the words in the reply, so the two sub-messages
+        // meet in one preview and the boundary between them is visible.
+        fetchMock.mockImplementation(async (url: unknown) =>
+          new Response(null, { status: String(url).endsWith("/step") ? 404 : 200 }),
+        );
+        await deliver({ text: "Checking the orders." }, block(0));
+        await deliver({ text: "\nThree orders found." }, block(1));
+        expect(previewTexts().join("")).toBe("Checking the orders.\n\nThree orders found.");
+      });
+    });
+
     it("sends the first preview delta verbatim", async () => {
       const deliver = await dispatchOnce();
       await deliver({ text: "Hello" }, block());
@@ -1439,6 +1517,28 @@ describe("registerInboundRoute", () => {
         // One reply, closed once, at the end of the run.
         expect(roads.filter((r) => r.road === "end" && r.id === parts[0]!.id)).toHaveLength(1);
       });
+    });
+  });
+
+  describe("readLeadingLineBreak", () => {
+    it.each([
+      ["a paragraph break", "\n\n**Важно:** text", "\n\n"],
+      ["a row break inside a table", "\n| SC-1006 | $82,52 |", "\n"],
+      ["the indent of a nested item after the break", "\n\n  - nested", "\n\n  "],
+    ])("returns %s the block starts with", (_label, text, expected) => {
+      expect(readLeadingLineBreak({ text })).toBe(expected);
+    });
+
+    it.each([
+      ["text starting on the same line", { text: "word" }],
+      ["leading spaces without a newline", { text: "  word" }],
+      ["whitespace-only text", { text: "\n\n" }],
+      ["a payload without text", { mediaUrl: "/a.png" }],
+      ["a non-string text", { text: 42 }],
+      ["a non-object payload", "nope"],
+      ["null", null],
+    ])("returns nothing for %s", (_label, raw) => {
+      expect(readLeadingLineBreak(raw)).toBe("");
     });
   });
 

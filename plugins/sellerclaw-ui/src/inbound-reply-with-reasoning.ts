@@ -128,10 +128,10 @@ export async function dispatchInboundDirectDmWithReasoning(params: DispatchParam
           ...replyPipeline,
           // SECOND DIVERGENCE from upstream: forward the dispatcher's per-delivery info
           // (``{ kind: "block" | "final" | "tool", assistantMessageIndex }``) as the second
-          // argument. The engine streams each reply block (``kind: "block"``) and then
-          // re-delivers the whole reply once more as a consolidated final (``kind: "final"``);
-          // without this label the bridge can't tell them apart and double-posts multi-block
-          // replies. See ``inbound.ts`` deliver for how the label is consumed.
+          // argument. The engine streams a long reply as blocks (``kind: "block"``) and delivers
+          // a reply that never streamed whole (``kind: "final"``); without this label the bridge
+          // can't tell a preview block from a committed message. See ``inbound.ts`` deliver for
+          // how the label is consumed.
           // THIRD DIVERGENCE from upstream: keep ``isError``.
           //
           // ``normalizeOutboundReplyPayload`` extracts text and media only — by design, since

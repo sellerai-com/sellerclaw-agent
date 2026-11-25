@@ -301,17 +301,19 @@ const TABLE_LINE_RE = /^\s*\|/;
 /**
  * Picks a joiner string to insert between two consecutive streaming deltas.
  *
- * This shapes the LIVE PREVIEW only — the throwaway render of a reply while the
- * model is still writing it, plus the copy an interrupted turn falls back on. The
- * reply we persist is the model's own final text, which needs no joining. Keep the
- * distinction: guesswork is fine for something the final text replaces seconds
- * later, and was never fine for the message itself (a cut inside a table used to
- * leave the report's rows rendered as plain text — that is what moved the persisted
- * road off this function).
+ * The fallback join only: the deliver path joins with {@link readLeadingLineBreak} first. The
+ * OpenClaw block-streaming chunker cuts a long reply on line breaks and starts the next block of
+ * the same message with the break it cut on, so that break is the exact join. This guess is for a
+ * block that starts without one — a cut inside a line (a line longer than the chunk limit), or a
+ * runtime that does not carry the break.
  *
- * The OpenClaw block-streaming chunker cuts the assistant reply at internal
- * boundaries and drops the whitespace it cut on. We can't see what was
- * dropped, so we use heuristics on the visible content at the boundary:
+ * What it joins is kept: with block streaming the engine sends no separate final for a reply it
+ * already streamed (an exact duplicate final is suppressed), so the preview the blocks build is
+ * what the cloud stores when the turn ends. A wrong guess here is a wrong message, not a moment
+ * of rough live rendering.
+ *
+ * We can't see what was dropped at such a cut, so we use heuristics on the visible content at the
+ * boundary:
  *
  *   * Table row on BOTH sides of the boundary → exactly one `\n`. We are inside
  *     a table, where a blank line does not separate rows, it ends the table —
@@ -364,6 +366,27 @@ export function pickDeltaJoin(prevTail: string, nextHead: string): string {
   if (/```$/.test(tail)) return "\n\n";
   if (ATX_HEADING_RE.test(tailLastLine)) return "\n\n";
   return " ";
+}
+
+/**
+ * The line break a streamed block starts with — the exact join to the block before it.
+ *
+ * The chunker cuts a long reply on a line break and the next block of the same message begins
+ * with it (OpenClaw keeps it there on purpose: ``streamedSourceBoundary``): `\n\n` after a table
+ * or paragraph, `\n` between two table rows. {@link readDeliverPayload} trims the text, so this
+ * reads the raw payload. Returns the whole leading whitespace run — the indent after the last
+ * newline belongs to the next line (a nested list item) — or "" when the block does not start on
+ * a new line, which leaves the join to {@link pickDeltaJoin}.
+ *
+ * Exported for unit-testing without spinning up the HTTP route.
+ */
+export function readLeadingLineBreak(raw: unknown): string {
+  if (!raw || typeof raw !== "object") return "";
+  const text = (raw as Record<string, unknown>).text;
+  if (typeof text !== "string") return "";
+  const lead = /^\s*/.exec(text)?.[0] ?? "";
+  if (!lead.includes("\n") || lead.length === text.length) return "";
+  return lead;
 }
 
 /**
@@ -927,19 +950,12 @@ async function startInboundTurn(params: {
           }
         }
         if (text.trim()) {
-          // The engine streams a long reply block-by-block (``kind === "block"``) and then
-          // delivers the same sub-message once more, whole, as the model wrote it
-          // (``kind === "final"``). The two are not interchangeable: a block arrives with the
-          // whitespace the chunker cut on already dropped, so blocks re-glued are only
-          // approximately formatted, while the final carries the model's exact wording.
-          //
-          // So blocks feed the live preview — shown, then thrown away — and the final is what
-          // we persist. A short reply that never streamed still arrives as a final, so it
-          // takes the same road and needs no special case.
+          // The engine streams a long reply block-by-block (``kind === "block"``); a reply that
+          // never streamed arrives whole as a final (``kind === "final"``). After its blocks a
+          // streamed reply normally gets no final — the engine suppresses an exact duplicate —
+          // so the preview the blocks build is what `end_turn` stores: every join below is part
+          // of the message the owner keeps. A final that does come is committed below.
           if (dispatchInfo?.kind === "block") {
-            // A preview that outlives its turn is what the user keeps: `end_turn` persists it
-            // when no final ever arrived. So the boundary between sub-messages has to be right
-            // here too, not only on the committed road below.
             const messageIndex = dispatchInfo.assistantMessageIndex ?? null;
             if (previewMessageIndex !== null && messageIndex !== previewMessageIndex) {
               await promotePreviewToStep();
@@ -947,7 +963,13 @@ async function startInboundTurn(params: {
             const startsNewSubMessage =
               previewMessageIndex !== null && messageIndex !== previewMessageIndex;
             previewMessageIndex = messageIndex;
-            const joiner = startsNewSubMessage ? "\n\n" : pickDeltaJoin(prevTail, text);
+            // Within one message the block brings the break it was cut on — the exact join; only
+            // a block without one leaves the gap to a guess. The first block keeps none: nothing
+            // stands before it to be separated from.
+            const leadingBreak = prevTail ? readLeadingLineBreak(replyPayload) : "";
+            const joiner = startsNewSubMessage
+              ? "\n\n"
+              : leadingBreak || pickDeltaJoin(prevTail, text);
             const outText = joiner + text;
             prevTail = outText.slice(-TAIL_KEEP_CHARS);
             try {
