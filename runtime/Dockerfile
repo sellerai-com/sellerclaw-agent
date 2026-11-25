@@ -217,6 +217,28 @@ RUN cd /app/dist/extensions && \
         [ -d "$name" ] || { echo "FATAL: bundled extension '$name' is not in the base image (renamed, moved into core, or dropped upstream) — update the keep list in runtime/Dockerfile" >&2; exit 1; }; \
     done
 
+# Deep Research's model calls get their own time limit and low reasoning.
+# Its portable engine calls runtime.llm.complete with neither `execution.timeoutMs` nor `reasoning`
+# (extensions/deep-research/src/portable-tool.ts, unchanged on upstream main as of 2026.11.10), so every
+# call is cut at the host default of 30 s and runs at the model's default thinking. Reasoning models
+# never answer inside that: Kimi K3.1 Pro (the customers' default) needed 64 s for a plan step, and
+# GLM-5.3 spent all 4,096 output tokens on reasoning and returned no answer, so every research came
+# back empty ("The model did not produce a complete response"). With `low` both answered valid JSON in
+# ~23 s (local replay, 25.11.2026). The limit is per call; the research deadline (`durationMs`,
+# 180 s by default) still aborts everything through the engine's own signal. `low` is a level every
+# route we run accepts (LiteLLM groups, Claude and ChatGPT plans); an unsupported level would make the
+# host reject the call. The checks fail the build when upstream changes the call, so the patch is
+# revisited on every OpenClaw bump; drop it once upstream passes a timeout and a reasoning level.
+RUN target="$(grep -l 'You are an evidence extraction function' /app/dist/*.mjs)" && \
+    [ "$(printf '%s\n' "$target" | grep -c .)" = 1 ] || { echo "FATAL: Deep Research's model call is not in exactly one /app/dist module — revisit its patch in runtime/Dockerfile" >&2; exit 1; } && \
+    sed -i \
+        -e 's/{execution:{mode:`isolated-agent-runtime`}}/{execution:{mode:`isolated-agent-runtime`,timeoutMs:6e5}}/' \
+        -e 's/maxTokens:4096,systemPrompt:`You are an evidence extraction function\./maxTokens:4096,reasoning:`low`,systemPrompt:`You are an evidence extraction function./' \
+        "$target" && \
+    [ "$(grep -o 'isolated-agent-runtime`,timeoutMs:6e5}' "$target" | wc -l)" = 1 ] && \
+    [ "$(grep -o 'maxTokens:4096,reasoning:`low`,systemPrompt:`You are an evidence extraction function' "$target" | wc -l)" = 1 ] || { echo "FATAL: Deep Research's model call changed upstream — revisit its patch in runtime/Dockerfile" >&2; exit 1; } && \
+    node --check "$target"
+
 
 # Pre-build OpenClaw's persisted plugin registry with the vendored mem0 plugin already installed.
 #

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import pytest
+from sellerclaw_agent.bundle.config_generator import OPENCLAW_DEEP_RESEARCH_PLUGIN_ID
 from sellerclaw_agent.subscription import chatgpt_auth, claude_cli
 from sellerclaw_agent.subscription.overlay import _ROUTES
 
@@ -43,3 +44,8 @@ def test_every_plugin_a_plan_switches_on_survives_the_image_prune() -> None:
     needed = {route.plugin_id for route in _ROUTES.values()} | {chatgpt_auth.OPENAI_PROVIDER}
 
     assert needed <= _kept_extensions()
+
+
+def test_deep_research_survives_the_image_prune() -> None:
+    """Every agent holds ``deep_research``; a pruned extension dir would leave the tool unbacked."""
+    assert OPENCLAW_DEEP_RESEARCH_PLUGIN_ID in _kept_extensions()
